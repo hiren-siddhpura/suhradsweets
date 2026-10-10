@@ -1,0 +1,48 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { normalizeItemCode, validateMasterInput } from '../js/master-validation.js';
+import { canAccessPage, canPerform, profileName, validateProfile } from '../js/permissions.js';
+
+test('existing Admin profile with fullName is valid and shown by name', () => {
+  const profile = { fullName: 'Suhrad Admin', email: 'admin@example.test', role: 'admin', active: true, createdAt: {} };
+  assert.equal(validateProfile(profile), null);
+  assert.equal(profileName(profile, { email: 'auth@example.test' }), 'Suhrad Admin');
+  assert.equal(validateProfile({ ...profile, active: false }), 'inactive');
+  assert.equal(validateProfile({ ...profile, role: 'owner' }), 'invalid');
+  assert.equal(validateProfile(null), 'missing');
+});
+
+test('item validation normalizes code and rejects invalid prices', () => {
+  const item = validateMasterInput('items', {
+    itemCode: 'sw-01', name: '  Kaju Katli  ', description: '',
+    defaultSellingPrice: '125.50', defaultUnitId: 'unit-1', active: true,
+  });
+  assert.equal(item.itemCode, 'SW-01');
+  assert.equal(item.name, 'Kaju Katli');
+  assert.equal(item.defaultSellingPrice, 125.5);
+  assert.equal(validateMasterInput('items', { ...item, defaultSellingPrice: '0.29' }).defaultSellingPrice, 0.29);
+  for (const price of ['-1', '1.001', 'abc']) {
+    assert.throws(() => validateMasterInput('items', { ...item, defaultSellingPrice: price }), /price/);
+  }
+  assert.throws(() => normalizeItemCode('bad code'), /Item code/);
+  assert.throws(() => validateMasterInput('items', { ...item, itemCode: 'SW-02' }, { existing: item }), /cannot be changed/);
+});
+
+test('required fields and staff role assignment are validated', () => {
+  assert.throws(() => validateMasterInput('units', { name: ' ', symbol: 'kg', active: true }), /Name is required/);
+  assert.throws(() => validateMasterInput('purchaseTypes', { name: 'Local', description: 'x'.repeat(501), active: true }), /Description/);
+  assert.throws(() => validateMasterInput('users', { displayName: 'User', role: 'admin', active: true }, { actorRole: 'account_admin' }), /Only an Admin/);
+  assert.equal(validateMasterInput('users', { fullName: 'User', email: 'USER@example.test', role: 'user', active: true }, { actorRole: 'account_admin' }).role, 'user');
+  assert.throws(() => validateMasterInput('users', { fullName: 'User', email: 'invalid', role: 'user', active: true }), /valid email/);
+});
+
+test('User navigation and the paid action remain restricted', () => {
+  const user = { role: 'user', active: true };
+  const admin = { role: 'admin', active: true };
+  const account = { role: 'account_admin', active: true };
+  assert.equal(canAccessPage(user, 'master'), false);
+  assert.equal(canAccessPage(account, 'master'), true);
+  assert.equal(canPerform(admin, 'markInvoicePaid'), false);
+  assert.equal(canPerform(account, 'markInvoicePaid'), true);
+  assert.equal(canPerform({ ...account, active: false }, 'manageOperations'), false);
+});

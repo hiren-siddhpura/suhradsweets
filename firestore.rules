@@ -1,0 +1,357 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function profilePath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function activeProfile() {
+      return signedIn()
+        && exists(profilePath())
+        && get(profilePath()).data.active == true
+        && get(profilePath()).data.role in ['admin', 'account_admin', 'user']
+        && ((get(profilePath()).data.get('displayName', '') is string
+          && get(profilePath()).data.get('displayName', '').size() > 0)
+          || (get(profilePath()).data.get('fullName', '') is string
+          && get(profilePath()).data.get('fullName', '').size() > 0));
+    }
+
+    function isStaff() {
+      return activeProfile()
+        && get(profilePath()).data.role in ['admin', 'account_admin'];
+    }
+
+    function ownsRecord() {
+      return activeProfile() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    function linkedCustomer(customerId) {
+      let links = resource.data.get('orderLinks', {});
+      let orderId = links.get(request.auth.uid, '');
+      let orderPath = /databases/$(database)/documents/orders/$(orderId);
+      return activeProfile()
+        && links is map
+        && orderId is string
+        && orderId.size() > 0
+        && exists(orderPath)
+        && get(orderPath).data.ownerUid == request.auth.uid
+        && get(orderPath).data.customerId == customerId;
+    }
+
+    function validText(value, maxLength) {
+      return value is string && value.size() > 0 && value.size() <= maxLength;
+    }
+
+    function validOptionalText(value, maxLength) {
+      return value is string && value.size() <= maxLength;
+    }
+
+    function customerContactKey(contact) {
+      return hashing.sha256(contact.trim().lower().replace('[\\s()-]', '')).toHexString().lower();
+    }
+    function customerAuditFields(data) {
+      return { 'fullName': data.fullName, 'contact': data.contact, 'address': data.address,
+        'area': data.area, 'dateOfBirth': data.get('dateOfBirth', null), 'sabha': data.sabha };
+    }
+    function customerCalendarDate(value) {
+      let parts = value.split('-');
+      let date = timestamp.date(int(parts[0]), int(parts[1]), int(parts[2]));
+      return date.year() == int(parts[0]) && date.month() == int(parts[1]) && date.day() == int(parts[2]);
+    }
+    function validCustomerFields(data) {
+      return validText(data.fullName, 120) && data.fullName == data.fullName.trim()
+        && validText(data.contact, 80) && data.contact == data.contact.trim()
+        && data.contact.lower().replace('[\\s()-]', '').size() > 0
+        && validText(data.address, 300) && data.address == data.address.trim()
+        && validText(data.area, 100) && data.area == data.area.trim()
+        && data.sabha is bool
+        && (data.dateOfBirth == null || (data.dateOfBirth is string
+          && data.dateOfBirth.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') && customerCalendarDate(data.dateOfBirth)))
+        && data.contactKey == customerContactKey(data.contact)
+        && data.lastAuditId is string && data.lastAuditId.size() > 0
+        && data.lastAuditId.size() <= 128 && !data.lastAuditId.matches('.*[/].*')
+        && data.updatedBy == request.auth.uid && data.updatedAt == request.time;
+    }
+    function validCustomerAudit(eventId, event) {
+      let path = /databases/$(database)/documents/customers/$(event.referenceId);
+      let after = getAfter(path).data;
+      return event.keys().hasOnly(['type', 'actorUid', 'referenceType', 'referenceId', 'detail', 'at'])
+        && event.actorUid == request.auth.uid && event.at == request.time
+        && event.referenceType == 'customer'
+        && event.type == (exists(path) ? 'customer.updated' : 'customer.created')
+        && event.detail.keys().hasOnly(['before', 'after'])
+        && event.detail.before == (exists(path) ? customerAuditFields(get(path).data) : null)
+        && event.detail.after == customerAuditFields(after)
+        && after.lastAuditId == eventId && after.updatedAt == request.time
+        && after.updatedBy == request.auth.uid
+        && (!exists(path) || get(path).data.get('lastAuditId', '') != eventId);
+    }
+    function validCustomerDependencies(customerId, data) {
+      let reservation = /databases/$(database)/documents/customerContacts/$(data.contactKey);
+      let audit = /databases/$(database)/documents/auditLogs/$(data.lastAuditId);
+      return getAfter(reservation).data.customerId == customerId
+        && getAfter(audit).data.referenceId == customerId
+        && validCustomerAudit(data.lastAuditId, getAfter(audit).data);
+    }
+
+    function validMasterTimestampsOnCreate() {
+      return request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+    }
+
+    function validMasterUpdate(allowedFields) {
+      return request.resource.data.updatedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(allowedFields)
+        && request.resource.data.diff(resource.data).affectedKeys().hasAny(['updatedAt']);
+    }
+
+    function validRole(role) {
+      return role in ['admin', 'account_admin', 'user'];
+    }
+
+    function canManageProfile(uid, newRole) {
+      return isStaff() && request.auth.uid != uid
+        && validRole(newRole)
+        && (get(profilePath()).data.role == 'admin' || newRole == 'user');
+    }
+
+    function activeUnit(unitId) {
+      let unitPath = /databases/$(database)/documents/units/$(unitId);
+      return unitId is string && unitId.size() > 0
+        && exists(unitPath) && get(unitPath).data.active == true;
+    }
+
+    function validItemFields() {
+      let data = request.resource.data;
+      return validText(data.itemCode, 32)
+        && data.itemCode.matches('^[A-Z0-9][A-Z0-9_-]{1,31}$')
+        && validText(data.name, 120)
+        && validOptionalText(data.description, 500)
+        && (data.defaultSellingPrice is int || data.defaultSellingPrice is float)
+        && data.defaultSellingPrice >= 0
+        && data.defaultSellingPrice <= 100000000
+        && data.defaultUnitId is string
+        && data.active is bool;
+    }
+
+    function validUnitFields() {
+      let data = request.resource.data;
+      return validText(data.name, 120) && validText(data.symbol, 16) && data.active is bool;
+    }
+
+    function validPurchaseTypeFields() {
+      let data = request.resource.data;
+      return validText(data.name, 120)
+        && validOptionalText(data.description, 500) && data.active is bool;
+    }
+
+    function validSettingFields() {
+      let data = request.resource.data;
+      return validText(data.key, 80) && validText(data.value, 1000)
+        && validOptionalText(data.description, 500) && data.active is bool;
+    }
+
+    match /users/{uid} {
+      // A user may read their own profile even if inactive, so the UI can explain denial.
+      allow get: if signedIn() && (request.auth.uid == uid || isStaff());
+      allow list: if isStaff();
+      // Profile changes require a trusted operation and an atomic audit entry.
+      allow create, update, delete: if false;
+    }
+
+    match /units/{unitId} {
+      allow get, list: if isStaff() || (activeProfile() && resource.data.active == true);
+      allow create: if isStaff()
+        && request.resource.data.keys().hasOnly(['name', 'symbol', 'active', 'createdAt', 'updatedAt'])
+        && request.resource.data.keys().hasAll(['name', 'symbol', 'active', 'createdAt', 'updatedAt'])
+        && validUnitFields() && validMasterTimestampsOnCreate();
+      allow update: if isStaff() && validUnitFields()
+        && validMasterUpdate(['name', 'symbol', 'active', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /purchaseTypes/{purchaseTypeId} {
+      allow get, list: if isStaff();
+      allow create: if isStaff()
+        && request.resource.data.keys().hasOnly(['name', 'description', 'active', 'createdAt', 'updatedAt'])
+        && request.resource.data.keys().hasAll(['name', 'description', 'active', 'createdAt', 'updatedAt'])
+        && validPurchaseTypeFields() && validMasterTimestampsOnCreate();
+      allow update: if isStaff() && validPurchaseTypeFields()
+        && validMasterUpdate(['name', 'description', 'active', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /items/{itemId} {
+      allow get, list: if isStaff() || (activeProfile() && resource.data.active == true);
+      allow create: if isStaff()
+        && request.resource.data.keys().hasOnly(['itemCode', 'name', 'description', 'defaultSellingPrice', 'defaultUnitId', 'active', 'createdAt', 'createdBy', 'updatedAt'])
+        && request.resource.data.keys().hasAll(['itemCode', 'name', 'description', 'defaultSellingPrice', 'defaultUnitId', 'active', 'createdAt', 'createdBy', 'updatedAt'])
+        && validItemFields()
+        && request.resource.data.createdBy == request.auth.uid
+        && validMasterTimestampsOnCreate()
+        && activeUnit(request.resource.data.defaultUnitId)
+        && getAfter(/databases/$(database)/documents/itemCodes/$(request.resource.data.itemCode)).data.itemId == itemId
+        && getAfter(/databases/$(database)/documents/itemCodes/$(request.resource.data.itemCode)).data.createdAt == request.time;
+      allow update: if isStaff() && validItemFields()
+        && validMasterUpdate(['name', 'description', 'defaultSellingPrice', 'defaultUnitId', 'active', 'updatedAt'])
+        && (request.resource.data.defaultUnitId == resource.data.defaultUnitId
+          || (!exists(/databases/$(database)/documents/inventory/$(itemId))
+            && activeUnit(request.resource.data.defaultUnitId)));
+      allow delete: if false;
+    }
+
+    match /itemCodes/{code} {
+      allow get: if isStaff();
+      allow list: if false;
+      allow create: if isStaff()
+        && request.resource.data.keys().hasOnly(['itemId', 'createdAt'])
+        && request.resource.data.keys().hasAll(['itemId', 'createdAt'])
+        && request.resource.data.itemId is string
+        && request.resource.data.createdAt == request.time
+        && getAfter(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.itemCode == code
+        && getAfter(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /settings/{settingId} {
+      function validDashboardTarget() {
+        return settingId == 'dashboard_sales_target'
+          ? request.resource.data.key == 'dashboardSalesTargetKg'
+            && request.resource.data.value.matches('^([0-9]{1,9}|1000000000)([.][0-9]{1,3})?$')
+          : request.resource.data.key != 'dashboardSalesTargetKg';
+      }
+      allow get: if isStaff() || (activeProfile() && settingId == 'dashboard_sales_target');
+      allow list: if isStaff();
+      allow create: if isStaff()
+        && request.resource.data.keys().hasOnly(['key', 'value', 'description', 'active', 'createdAt', 'updatedAt'])
+        && request.resource.data.keys().hasAll(['key', 'value', 'description', 'active', 'createdAt', 'updatedAt'])
+        && validSettingFields() && validDashboardTarget() && validMasterTimestampsOnCreate();
+      allow update: if isStaff() && validSettingFields() && validDashboardTarget()
+        && validMasterUpdate(['value', 'description', 'active', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /orders/{orderId} {
+      allow get, list: if isStaff() || ownsRecord();
+      // Confirmation/cancellation, snapshots and ownership require a trusted operation.
+      allow create, update, delete: if false;
+    }
+
+    match /invoices/{invoiceId} {
+      allow get, list: if isStaff() || ownsRecord();
+      // Even Account Admin must use the authenticated Mark as Paid backend operation.
+      allow create, update, delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow get, list: if isStaff() || ownsRecord();
+      allow create, update, delete: if false;
+    }
+
+    match /paymentReferences/{referenceId} {
+      allow read, write: if false;
+    }
+
+    match /paymentReversals/{paymentId} {
+      allow get, list: if isStaff() || (activeProfile() && exists(/databases/$(database)/documents/payments/$(paymentId)) && get(/databases/$(database)/documents/payments/$(paymentId)).data.ownerUid == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
+    match /customers/{customerId} {
+      allow get: if isStaff() || linkedCustomer(customerId);
+      // Users look up customer IDs from their own orders; rules cannot filter a collection query.
+      allow list: if isStaff();
+      allow create: if isStaff()
+        && request.resource.data.keys().hasOnly(['fullName', 'contact', 'address', 'area', 'dateOfBirth', 'sabha', 'contactKey', 'ownerUserIds', 'orderLinks', 'createdBy', 'createdAt', 'updatedBy', 'updatedAt', 'lastAuditId'])
+        && validCustomerFields(request.resource.data)
+        && request.resource.data.ownerUserIds == [] && request.resource.data.orderLinks == {}
+        && request.resource.data.createdBy == request.auth.uid && request.resource.data.createdAt == request.time
+        && validCustomerDependencies(customerId, request.resource.data);
+      allow update: if isStaff() && validCustomerFields(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'contact', 'address', 'area', 'dateOfBirth', 'sabha', 'contactKey', 'updatedBy', 'updatedAt', 'lastAuditId'])
+        && validCustomerDependencies(customerId, request.resource.data)
+        && (resource.data.get('contactKey', customerContactKey(resource.data.contact)) == request.resource.data.contactKey
+          || !existsAfter(/databases/$(database)/documents/customerContacts/$(resource.data.get('contactKey', customerContactKey(resource.data.contact)))));
+      allow delete: if false;
+    }
+
+    match /customerContacts/{contactKey} {
+      allow get: if isStaff();
+      allow list, update: if false;
+      allow create: if isStaff()
+        && request.resource.data.keys().hasOnly(['customerId', 'createdAt'])
+        && request.resource.data.createdAt == request.time
+        && getAfter(/databases/$(database)/documents/customers/$(request.resource.data.customerId)).data.contactKey == contactKey
+        && getAfter(/databases/$(database)/documents/customers/$(request.resource.data.customerId)).data.updatedAt == request.time;
+      allow delete: if isStaff()
+        && get(/databases/$(database)/documents/customers/$(resource.data.customerId)).data.contactKey == contactKey
+        && getAfter(/databases/$(database)/documents/customers/$(resource.data.customerId)).data.contactKey != contactKey
+        && getAfter(/databases/$(database)/documents/customers/$(resource.data.customerId)).data.updatedAt == request.time;
+    }
+
+    match /inventory/{itemId} {
+      allow get, list: if isStaff();
+      allow create, update, delete: if false;
+    }
+
+    match /inventoryMovements/{movementId} {
+      // User queries must include where('ownerUid', '==', their UID).
+      allow get, list: if isStaff() || ownsRecord();
+      allow create, update, delete: if false;
+    }
+
+    match /purchases/{purchaseId} {
+      allow get, list: if isStaff();
+      allow create, update, delete: if false;
+    }
+
+    match /specialProducts/{specialProductId} {
+      allow get, list: if isStaff() || (activeProfile() && resource.data.active == true);
+      allow create, update, delete: if false;
+    }
+
+    match /orderControls/{controlId} {
+      allow get: if controlId == 'global' && activeProfile();
+      allow list, create, update, delete: if false;
+    }
+
+    match /targets/{targetId} {
+      // User queries must constrain ownerUid to their own UID.
+      allow get, list: if isStaff() || ownsRecord();
+      allow create, update, delete: if false;
+    }
+
+    match /announcements/{announcementId} {
+      // User queries must constrain active=true and audience in all/users.
+      allow get, list: if isStaff() || (activeProfile() && resource.data.active == true && resource.data.audience in ['all', 'users']);
+      allow create, update, delete: if false;
+    }
+
+    match /loginLogs/{eventId} {
+      allow get, list: if isStaff();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['uid', 'type', 'at'])
+        && request.resource.data.keys().hasAll(['uid', 'type', 'at'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.type in ['login', 'logout']
+        && request.resource.data.at == request.time;
+      allow update, delete: if false;
+    }
+
+    match /auditLogs/{eventId} {
+      allow get, list: if isStaff();
+      // Client audit creation is restricted to a matching atomic customer change.
+      allow create: if isStaff() && validCustomerAudit(eventId, request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // Any collection or subcollection not explicitly matched is denied.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

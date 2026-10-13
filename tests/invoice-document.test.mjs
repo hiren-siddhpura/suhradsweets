@@ -24,7 +24,8 @@ test('preview uses snapshots, safe business details and verified payments only',
   assert.equal(model.status, 'Partially Paid'); assert.equal(model.balanceDuePaise, 80000);
   assert.equal(model.verifiedPayments.length, 1); assert.equal(model.lines[1].description, 'Gift Box');
   const html = invoicePreviewHtml(invoice('in_process', 40000), { fssaiLicenseNo: '00123456789012' }, [payment, pending]);
-  for (const text of ['FSSAI License No.: 00123456789012', 'Asha', 'INV-SS-1', 'SS-1', 'Kaju Katli', 'Gift Box', '₹1,200.00', '₹400.00', '₹800.00', 'UPI-123']) assert.ok(html.includes(text), text);
+  for (const text of ['FSSAI License No.', '00123456789012', 'Asha', 'INV-SS-1', 'SS-1', 'Kaju Katli', 'Gift Box', '₹1,200.00', '₹400.00', '₹800.00', 'Payment Status', 'Amount Paid']) assert.ok(html.includes(text), text);
+  assert.doesNotMatch(html, /UPI-123|Thank you for your business|Electronically generated invoice|<footer>/);
   assert.doesNotMatch(html, /sabha|9876543210.*sabha/i);
   assert.doesNotMatch(invoicePreviewHtml(invoice(), {}, []), /FSSAI License No\./);
   assert.equal(invoicePdfModel(invoice('unpaid', 0), {}, []).status, 'Unpaid');
@@ -35,7 +36,7 @@ test('preview uses snapshots, safe business details and verified payments only',
   assert.ok(readFileSync(new URL('../css/styles.css', import.meta.url), 'utf8').includes('body>:not(#invoice-preview-dialog)'));
 });
 
-test('downloaded PDF draws FSSAI, logo and multiple pages', async () => {
+test('downloaded PDF matches the clean invoice layout and supports multiple pages', async () => {
   const original = { window: globalThis.window, document: globalThis.document, Image: globalThis.Image, createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
   const drawn = [];
   const ctx = { scale() {}, fillRect() {}, drawImage() { drawn.push('logo'); }, fillText(value) { drawn.push(String(value)); }, measureText(value) { return { width: String(value).length * 6 }; }, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, set fillStyle(_) {}, set font(_) {}, set textAlign(_) {}, set strokeStyle(_) {} };
@@ -49,12 +50,15 @@ test('downloaded PDF draws FSSAI, logo and multiple pages', async () => {
     await downloadInvoicePdf(many, { fssaiLicenseNo: '00123456789012' });
     assert.equal(pages, 2);
     assert.equal(drawn.filter((value) => value === 'logo').length, 2);
-    assert.equal(drawn.filter((value) => value === 'FSSAI License No.: 00123456789012').length, 2);
+    assert.equal(drawn.filter((value) => value === 'FSSAI License No.').length, 2);
+    assert.equal(drawn.filter((value) => value === '00123456789012').length, 2);
     assert.ok(drawn.includes('Balance Due'));
+    assert.ok(drawn.includes('Payment Status'));
+    assert.equal(drawn.some((value) => /Thank you for your business|Electronically generated invoice|Other Charges|Tax \/ GST/.test(value)), false);
     drawn.length = 0;
     await downloadInvoicePdf(invoice('partial', 40000), {}, [{ amountPaise: 40000, verificationStatus: 'verified', mode: 'upi', transactionNumber: 'UPI-123' }]);
     assert.equal(drawn.some((value) => value.includes('FSSAI License No.')), false);
-    assert.ok(drawn.some((value) => value.includes('UPI-123')));
+    assert.equal(drawn.some((value) => value.includes('UPI-123')), false);
   } finally {
     globalThis.window = original.window; globalThis.document = original.document; globalThis.Image = original.Image;
     URL.createObjectURL = original.createObjectURL; URL.revokeObjectURL = original.revokeObjectURL;

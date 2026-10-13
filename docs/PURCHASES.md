@@ -2,8 +2,8 @@
 
 Purchases are staff-only supplier expenses. They have no Item or inventory dependency.
 The form stores supplierName, purchaseDate, purchaseTypeId and its name snapshot,
-totalPaise, paidAmountPaise, paymentMode, paymentReference, paymentStatus, notes,
-documentUrl, creator/update identities, server timestamps and schemaVersion 2.
+quantity, unit, totalPaise, paidAmountPaise, paymentMode, paymentReference, paymentStatus, notes,
+documentUrl, creator/update identities, server timestamps and schemaVersion 3.
 Amounts use integer paise; new totals/payment amounts are nonnegative and at most
 100,000,000,000 paise. Paid amount cannot exceed the total. Zero paid amount is unpaid;
 a positive lesser amount is partial; a positive full amount is paid. These are manually
@@ -50,3 +50,5 @@ The operation suite uses an isolated demo-independent-purchase-tests emulator na
 It covers item-free create/edit/confirm/cancel, no stock mutation, authorization, payment
 validation, legacy preservation, duplicate/concurrent confirmation and independent
 inventory adjustments. Callable test fixtures also use the new purchase payload.
+
+Quantity is required free text of at most 120 characters. Plain numeric quantities must be greater than zero. Unit is optional free text of at most 80 characters. Both are trimmed and saved independently from Items, Master Data units, stock and the entered total. Existing numeric quantities remain readable; new saves store quantity as text. Missing quantity or unit displays "Not recorded". Editing a legacy draft requires entering quantity, while its Unit may remain blank. Confirming or cancelling historical records does not require a migration.

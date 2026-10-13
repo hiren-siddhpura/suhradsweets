@@ -17,7 +17,9 @@ test('a missing dashboard index preserves other cards without a visible warning 
     reportUsers: async () => [], targetPercentage,
     dashboardOrderKg: async () => ({ orderCount: 7, totalKg: 10, items: [{ name: 'Sweet', kg: 10 }], excludedQuantities: 0 }),
     dashboardTargetKg: async () => 20,
-    dashboardStockKg: async () => { throw missingIndex; },
+    dashboardStockKg: async (_db, role) => role === 'user'
+      ? { totalKg: 2.5, items: [{ name: 'Sweet', kg: 2.5 }], excludedQuantities: 0 }
+      : Promise.reject(missingIndex),
     recentActivity: async () => [], activeAnnouncements: async () => { throw missingIndex; },
     currentTargets: async () => [], targetAchievement: async () => 0,
     console: { warn() {} }, Intl, Date, Set, Object, Promise, Number, String,
@@ -39,6 +41,10 @@ test('a missing dashboard index preserves other cards without a visible warning 
   assert.equal(elements.has('dashboard-index-links'), false);
   assert.equal(elements.has('dashboard-from'), false);
   assert.equal(elements.has('dashboard-to'), false);
+  await ui.setSession({ uid: 'test-user' }, { role: 'user', active: true, fullName: 'Test User' });
+  await element('dashboard-refresh').onclick();
+  assert.match(element('dashboard-cards').innerHTML, /Available Stock[\s\S]*Total 2\.5/);
+  assert.doesNotMatch(element('dashboard-cards').innerHTML, /Stock totals are available to administrators/);
 });
 
 test('KG conversion excludes count units and sales snapshots count combos once', () => {

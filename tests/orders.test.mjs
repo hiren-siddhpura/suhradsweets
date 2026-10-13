@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { saveCustomer, saveSpecialProduct, saveOrderDraft, confirmOrder, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder } from '../functions/order-operations.js';
+import { saveCustomer, saveSpecialProduct, saveOrderDraft, confirmOrder, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment } from '../functions/order-operations.js';
+import { getOrderStock, listOrderActivity } from '../functions/order-reads.js';
 import { setInventoryControl } from '../functions/operations.js';
 
 const require = createRequire(new URL('../functions/package.json', import.meta.url));
@@ -16,7 +17,7 @@ const customer = { fullName: 'Asha Shah', contact: '9876543210', address: 'Main 
 const regularOrder = (customerId, extra = {}) => ({ customerId, assignedUserId: 'userA', orderDate: '2026-10-10', deliveryDate: null, notes: '', lines: [{ kind: 'item', productId: 'itemA', quantityQty: 2000 }], ...extra });
 
 test.beforeEach(async () => {
-  for (const name of ['users', 'items', 'units', 'inventory', 'customers', 'customerContacts', 'orders', 'orderCounters', 'orderControls', 'specialProducts', 'inventoryMovements', 'auditLogs', 'invoices']) {
+  for (const name of ['users', 'items', 'units', 'inventory', 'customers', 'customerContacts', 'orders', 'orderCounters', 'orderControls', 'specialProducts', 'inventoryMovements', 'auditLogs', 'invoices', 'payments']) {
     const docs = await db.collection(name).get(); if (!docs.empty) { const batch = db.batch(); docs.forEach((doc) => batch.delete(doc.ref)); await batch.commit(); }
   }
   await Promise.all([
@@ -79,6 +80,30 @@ test('special recipe deducts all underlying components and preserves snapshot', 
   assert.deepEqual((await db.doc(`orders/${orderId}`).get()).data().lines[1].specialSnapshot, before);
 });
 
+test('only Admin may create, edit, or confirm special orders; assignee remains the owner', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { specialId } = await saveSpecialProduct(db, 'adminA', { name: 'Festive box', description: '', finalPricePaise: 50000, active: true, components: [{ itemId: 'itemA', unitId: 'kg', quantityQty: 500 }, { itemId: 'itemB', unitId: 'kg', quantityQty: 250 }] });
+  const specialOrder = regularOrder(customerId, { lines: [{ kind: 'special', productId: specialId, quantityQty: 1000 }] });
+  await assert.rejects(saveOrderDraft(db, 'accountA', specialOrder), /Only Admin/);
+  await assert.rejects(saveOrderDraft(db, 'userA', specialOrder), /Only Admin/);
+  const { orderId } = await saveOrderDraft(db, 'adminA', specialOrder);
+  const saved = (await db.doc(`orders/${orderId}`).get()).data();
+  assert.equal(saved.ownerUid, 'userA');
+  assert.equal(saved.assignedUserId, 'userA');
+  assert.equal(saved.lines[0].specialSnapshot.name, 'Festive box');
+  await assert.rejects(saveOrderDraft(db, 'userA', regularOrder(customerId, { orderId })), /Only Admin/);
+  await assert.rejects(saveOrderDraft(db, 'accountA', regularOrder(customerId, { orderId })), /Only Admin/);
+  await assert.rejects(confirmOrder(db, 'userA', orderId), /Only Admin/);
+  await assert.rejects(confirmOrder(db, 'accountA', orderId), /Only Admin/);
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 5000);
+  await confirmOrder(db, 'adminA', orderId);
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 4500);
+  await assert.rejects(archiveOrder(db, 'userA', { orderId }), /view special orders/);
+  await assert.rejects(requestOrderPayment(db, 'userA', { orderId }), /view special orders/);
+  await assert.rejects(cancelOrder(db, 'userA', orderId, 'No longer needed'), /view special orders/);
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 4500);
+});
+
 test('global pause, item block and stale price prevent confirmation', async () => {
   const { customerId } = await saveCustomer(db, 'adminA', customer);
   const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
@@ -92,6 +117,20 @@ test('global pause, item block and stale price prevent confirmation', async () =
   await db.doc('items/itemA').update({ defaultSellingPrice: 120 });
   await assert.rejects(confirmOrder(db, 'adminA', orderId), /price or recipe changed/);
   assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 5000);
+});
+
+test('blocking preserves an already confirmed order and its stock history', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const first = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  await confirmOrder(db, 'userA', first.orderId);
+  const before = (await db.doc('inventory/itemA').get()).data().onHandQty;
+  const movements = (await db.collection('inventoryMovements').get()).size;
+  await setInventoryControl(db, 'adminA', { itemId: 'itemA', sellingBlocked: true, lowStockThresholdQty: 1000, reason: 'Quality hold' });
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, before);
+  assert.equal((await db.collection('inventoryMovements').get()).size, movements);
+  assert.equal((await db.doc(`orders/${first.orderId}`).get()).data().status, 'confirmed');
+  const second = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  await assert.rejects(confirmOrder(db, 'adminA', second.orderId), /blocked/);
 });
 
 test('edited special recipe makes an existing draft stale', async () => {
@@ -144,4 +183,104 @@ test('User can create own customer within draft but not another User order', asy
   await assert.rejects(cancelOrder(db, 'userB', orderId, 'No'), /Only staff/);
   await cancelOrder(db, 'userA', orderId, 'Draft no longer needed');
   assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 5000);
+});
+
+test('only Admin assigns new orders; active staff are eligible; draft owners remain immutable', async () => {
+  const {customerId} = await saveCustomer(db, 'adminA', customer);
+  for (const assignedUserId of ['adminA', 'accountA', 'userA']) {
+    const result = await saveOrderDraft(db, 'adminA', {...regularOrder(customerId), assignedUserId});
+    assert.equal((await db.doc('orders/'+result.orderId).get()).data().ownerUid, assignedUserId);
+  }
+  await assert.rejects(saveOrderDraft(db, 'accountA', regularOrder(customerId)), /only Admin/);
+  const own = await saveOrderDraft(db, 'accountA', {...regularOrder(customerId), assignedUserId: 'accountA'});
+  await saveOrderDraft(db, 'accountA', {...regularOrder(customerId), orderId: own.orderId, assignedUserId: 'accountA'});
+  await assert.rejects(saveOrderDraft(db, 'adminA', {...regularOrder(customerId), orderId: own.orderId}), /ownership/);
+  await assert.rejects(saveOrderDraft(db, 'userA', {...regularOrder(customerId), assignedUserId: 'userB'}), /only Admin/);
+  await db.doc('users/userB').update({active:false});
+  await assert.rejects(saveOrderDraft(db, 'adminA', {...regularOrder(customerId), assignedUserId:'userB'}), /active OMS/);
+  await db.doc('users/userB').update({active:true,role:'invalid'});
+  await assert.rejects(saveOrderDraft(db, 'adminA', {...regularOrder(customerId), assignedUserId:'userB'}), /active OMS/);
+});
+
+test('User edits own confirmed order with one atomic stock correction and field-level audit', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  await confirmOrder(db, 'userA', orderId);
+  await assert.rejects(saveOrderDraft(db, 'userB', regularOrder(customerId, { orderId })), /own order/);
+  await saveOrderDraft(db, 'userA', regularOrder(customerId, { orderId, notes: 'Revised', lines: [{ kind: 'item', productId: 'itemA', quantityQty: 3000 }] }));
+  const saved = (await db.doc(`orders/${orderId}`).get()).data();
+  assert.equal(saved.status, 'confirmed');
+  assert.equal(saved.grandTotal, 30000);
+  assert.equal(saved.stockDeductions[0].quantityQty, 3000);
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 2000);
+  assert.equal((await db.doc(`inventoryMovements/order_edit_${orderId}_1_itemA`).get()).data().changeQty, -1000);
+  const auditRows = await db.collection('auditLogs').where('referenceId', '==', orderId).get();
+  const edited = auditRows.docs.find((snap) => snap.data().type === 'order.edited').data();
+  assert.equal(edited.actorName, 'User A');
+  assert.equal(edited.customerName, customer.fullName);
+  assert.deepEqual(edited.detail.changedFields.notes, { before: '', after: 'Revised' });
+  const beforeCount = auditRows.size;
+  await assert.rejects(saveOrderDraft(db, 'userA', regularOrder(customerId, { orderId, lines: [{ kind: 'item', productId: 'itemA', quantityQty: 6000 }] })), /Insufficient available stock/);
+  assert.equal((await db.collection('auditLogs').where('referenceId', '==', orderId).get()).size, beforeCount);
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 2000);
+});
+
+test('invoice creation and confirmed edit serialize; invoices lock later edits and archives', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  await confirmOrder(db, 'userA', orderId);
+  const concurrent = await Promise.allSettled([
+    saveOrderDraft(db, 'userA', regularOrder(customerId, { orderId, notes: 'Changed', lines: [{ kind: 'item', productId: 'itemA', quantityQty: 3000 }] })),
+    createInvoiceFromOrder(db, 'accountA', orderId),
+  ]);
+  // Both may succeed when the edit commits before invoice creation. The final
+  // invoice must still match the committed order, and later edits must fail.
+  assert.ok(concurrent.some((result) => result.status === 'fulfilled'));
+  if (!(await db.doc(`invoices/${orderId}`).get()).exists) await createInvoiceFromOrder(db, 'accountA', orderId);
+  assert.equal((await db.doc(`invoices/${orderId}`).get()).data().paymentStatus, 'unpaid');
+  assert.equal((await listOrderActivity(db, 'userA', { filters: { order: orderId, type: 'order.locked' } })).rows.length, 1);
+  await assert.rejects(saveOrderDraft(db, 'userA', regularOrder(customerId, { orderId })), /invoice exists/);
+  await assert.rejects(archiveOrder(db, 'userA', { orderId }), /invoice exists/);
+  assert.equal((await db.doc(`invoices/${orderId}`).get()).data().totalPaise, (await db.doc(`orders/${orderId}`).get()).data().grandTotal);
+});
+
+test('archive retains stock and reporting status, restore works, payment request locks workflow', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  await confirmOrder(db, 'userA', orderId);
+  await assert.rejects(archiveOrder(db, 'userB', { orderId }), /own order/);
+  await archiveOrder(db, 'userA', { orderId, reason: 'Hold for review' });
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 3000);
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, 'confirmed');
+  assert.ok((await db.doc(`orders/${orderId}`).get()).data().archivedAt);
+  await assert.rejects(saveOrderDraft(db, 'userA', regularOrder(customerId, { orderId })), /Restore/);
+  await assert.rejects(createInvoiceFromOrder(db, 'accountA', orderId), /Restore/);
+  await restoreOrder(db, 'accountA', { orderId });
+  await requestOrderPayment(db, 'userA', { orderId });
+  await assert.rejects(requestOrderPayment(db, 'userA', { orderId }), /already/);
+  await assert.rejects(saveOrderDraft(db, 'userA', regularOrder(customerId, { orderId })), /payment was requested/);
+  await assert.rejects(archiveOrder(db, 'userA', { orderId }), /payment was requested/);
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 3000);
+  const history = await listOrderActivity(db, 'userA', { filters: { order: orderId } });
+  assert.deepEqual(history.rows.slice(0, 2).map((row) => row.type).sort(), ['order.locked', 'order.payment_requested']);
+  assert.deepEqual(history.rows.slice(2).map((row) => row.type), ['order.restored', 'order.archived', 'order.confirmed', 'order.created']);
+  assert.equal(history.rows[3].reason, 'Hold for review');
+  assert.equal(history.rows[3].customerName, customer.fullName);
+  assert.equal((await listOrderActivity(db, 'userB', { filters: { order: orderId } })).rows.length, 0);
+});
+
+test('archive versus payment request allows one winner and stock visibility remains read only', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  await confirmOrder(db, 'userA', orderId);
+  const results = await Promise.allSettled([archiveOrder(db, 'userA', { orderId }), requestOrderPayment(db, 'userA', { orderId })]);
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  const stock = await getOrderStock(db, 'userA', { itemIds: ['itemA', 'itemB'] });
+  assert.equal(stock.items[0].availableQty, 3000);
+  assert.equal(stock.items[0].unit, 'kg');
+  assert.equal(stock.items[0].reservedQty, 0);
+  await db.doc('inventory/itemB').delete();
+  assert.equal((await getOrderStock(db, 'userA', { itemIds: ['itemB'] })).items[0].status, 'unavailable');
+  await db.doc('users/userB').update({ active: false });
+  await assert.rejects(getOrderStock(db, 'userB', { itemIds: ['itemA'] }), /Active OMS/);
 });

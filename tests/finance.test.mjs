@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { submitPayment, reviewPayment, reversePayment, markInvoicePaid } from '../functions/finance-operations.js';
+import { submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid } from '../functions/finance-operations.js';
 import { invoicePdfModel } from '../js/invoice-pdf.js';
 import { createInvoiceFromOrder } from '../functions/order-operations.js';
+import { getPaymentNames, listOrderActivity, listPaymentActivity } from '../functions/order-reads.js';
 
 const require = createRequire(new URL('../functions/package.json', import.meta.url));
 const { initializeApp, deleteApp } = require('firebase-admin/app');
@@ -36,11 +37,15 @@ test('manual invoice is unique and customer-facing PDF model excludes Sabha', as
 
 test('partial and multiple payments count only after verification', async () => {
   const a = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 4000, mode: 'cash' });
-  const b = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 6000, mode: 'upi', transactionNumber: 'upi-123' });
+  assert.equal((await invoice()).paymentStatus, 'in_process');
   assert.equal((await invoice()).verifiedPaidPaise, 0);
+  await assert.rejects(submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 6000, mode: 'upi', transactionNumber: 'upi-123' }), /already in process/);
   assert.equal((await db.doc(`payments/${a.paymentId}`).get()).data().transactionNumber, '-');
   await reviewPayment(db, 'adminA', { paymentId: a.paymentId, decision: 'verified' });
   assert.equal((await invoice()).paymentStatus, 'partial');
+  const b = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 6000, mode: 'upi', transactionNumber: 'upi-123' });
+  assert.equal((await invoice()).paymentStatus, 'in_process');
+  assert.equal((await invoice()).verifiedPaidPaise, 4000);
   await reviewPayment(db, 'accountA', { paymentId: b.paymentId, decision: 'verified' });
   assert.equal((await invoice()).paymentStatus, 'ready_to_mark_paid');
   assert.equal((await invoice()).verifiedPaidPaise, 10000);
@@ -53,6 +58,13 @@ test('online references are unique after normalization and cannot be reused', as
   await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'upi', transactionNumber: 'AbC-123' });
   await assert.rejects(submitPayment(db, 'adminA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'bank_transfer', transactionNumber: 'abc-123' }), /already been submitted/);
   await assert.rejects(submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'upi', transactionNumber: '' }), /reference/);
+});
+
+test('review refuses a malformed legacy online payment even when staff requests verification', async () => {
+  const result = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'upi', transactionNumber: 'valid-123' });
+  await db.doc(`payments/${result.paymentId}`).update({ transactionNumber: '' });
+  await assert.rejects(reviewPayment(db, 'adminA', { paymentId: result.paymentId, decision: 'verified' }), /reference/);
+  assert.equal((await invoice()).verifiedPaidPaise, 0);
 });
 
 test('insufficient and stale balances block Mark as Paid', async () => {
@@ -71,12 +83,37 @@ test('only Account Admin marks paid; ownership and review permissions hold', asy
   await assert.rejects(reviewPayment(db, 'userA', { paymentId: a.paymentId, decision: 'verified' }), /access is required/);
 });
 
-test('competing verification cannot over-credit invoice', async () => {
-  const a = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 7000, mode: 'cash' });
-  const b = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 7000, mode: 'cash' });
-  const results = await Promise.allSettled([reviewPayment(db, 'adminA', { paymentId: a.paymentId, decision: 'verified' }), reviewPayment(db, 'accountA', { paymentId: b.paymentId, decision: 'verified' })]);
+test('competing submissions allow one pending payment and cannot over-credit invoice', async () => {
+  const results = await Promise.allSettled([
+    submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 7000, mode: 'cash', operationId: 'competing-a' }),
+    submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 7000, mode: 'cash', operationId: 'competing-b' }),
+  ]);
   assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal((await invoice()).paymentStatus, 'in_process');
+  const paymentId = results.find((result) => result.status === 'fulfilled').value.paymentId;
+  await reviewPayment(db, 'adminA', { paymentId, decision: 'verified' });
   assert.equal((await invoice()).verifiedPaidPaise, 7000);
+  assert.equal((await invoice()).paymentStatus, 'partial');
+});
+
+test('rejecting a pending payment restores the invoice status without recording funds', async () => {
+  const pending = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 4000, mode: 'cash' });
+  await reviewPayment(db, 'adminA', { paymentId: pending.paymentId, decision: 'rejected', reason: 'Incorrect amount' });
+  assert.equal((await invoice()).paymentStatus, 'unpaid');
+  assert.equal((await invoice()).verifiedPaidPaise, 0);
+  const replacement = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 4000, mode: 'cash' });
+  await reviewPayment(db, 'adminA', { paymentId: replacement.paymentId, decision: 'verified' });
+  const next = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 6000, mode: 'cash' });
+  await reviewPayment(db, 'adminA', { paymentId: next.paymentId, decision: 'rejected', reason: 'Not received' });
+  assert.equal((await invoice()).paymentStatus, 'partial');
+  assert.equal((await invoice()).verifiedPaidPaise, 4000);
+});
+
+test('an older pending payment blocks another submission even if the invoice still says unpaid', async () => {
+  await db.doc('payments/legacyPending').set({ invoiceId: 'orderA', orderId: 'orderA', ownerUid: 'userA', verificationStatus: 'unverified', amountPaise: 1000, mode: 'cash', transactionNumber: '-' });
+  await assert.rejects(submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'cash' }), /already in process/);
+  assert.equal((await invoice()).paymentStatus, 'unpaid');
+  assert.equal((await db.collection('payments').get()).size, 1);
 });
 
 test('explicit reversal preserves payment history and updates balance once', async () => {
@@ -88,4 +125,72 @@ test('explicit reversal preserves payment history and updates balance once', asy
   assert.equal((await invoice()).verifiedPaidPaise, 0);
   assert.equal((await db.doc(`paymentReversals/${a.paymentId}`).get()).data().reason, 'Bank discrepancy');
   await assert.rejects(reversePayment(db, 'adminA', { paymentId: a.paymentId, reason: 'Again' }), /unreversed/);
+});
+
+test('payment names come from trusted profiles and snapshots; users see only owned payments', async () => {
+  await db.doc('users/userA').update({ fullName: 'Submitting User' });
+  await db.doc('users/adminA').update({ fullName: 'Verifying Admin' });
+  const result = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'cash' });
+  await reviewPayment(db, 'adminA', { paymentId: result.paymentId, decision: 'verified' });
+  const saved = (await db.doc(`payments/${result.paymentId}`).get()).data();
+  assert.equal(saved.submittedBy, 'userA');
+  assert.equal(saved.submittedByName, 'Submitting User');
+  assert.equal(saved.verifiedBy, 'adminA');
+  assert.equal(saved.verifiedByName, 'Verifying Admin');
+  const names = await getPaymentNames(db, 'userA', { paymentIds: [result.paymentId] });
+  assert.equal(names.payments[0].customerName, 'Asha');
+  assert.equal(names.payments[0].submittedByName, 'Submitting User');
+  assert.equal(names.payments[0].verifiedByName, 'Verifying Admin');
+  await assert.rejects(getPaymentNames(db, 'userB', { paymentIds: [result.paymentId] }), /access is denied/);
+  const activity = await listOrderActivity(db, 'userA', { filters: { type: 'order.payment_submitted' } });
+  assert.equal(activity.rows.length, 1);
+  assert.equal(activity.rows[0].actorName, 'Submitting User');
+  assert.equal((await listOrderActivity(db, 'userA', { filters: { payment: result.paymentId } })).rows.length, 1);
+  assert.equal((await listOrderActivity(db, 'userA', { filters: { invoice: 'INV-SS-2026-000001' } })).rows.length, 1);
+  await db.doc(`payments/${result.paymentId}`).update({ submittedByName: null, verifiedByName: null, customerSnapshot: null });
+  const older = await getPaymentNames(db, 'userA', { paymentIds: [result.paymentId] });
+  assert.equal(older.payments[0].submittedByName, 'Submitting User');
+  assert.equal(older.payments[0].customerName, 'Asha');
+  await db.doc('users/adminA').delete();
+  assert.equal((await getPaymentNames(db, 'userA', { paymentIds: [result.paymentId] })).payments[0].verifiedByName, 'Unknown user');
+});
+
+test('stable request ID makes cash retries idempotent without duplicate payment or audit', async () => {
+  const input = { invoiceId: 'orderA', amountPaise: 1200, mode: 'cash', operationId: 'cash-request-1' };
+  const first = await submitPayment(db, 'userA', input);
+  const retry = await submitPayment(db, 'userA', input);
+  assert.equal(retry.paymentId, first.paymentId);
+  assert.equal(retry.alreadySubmitted, true);
+  assert.equal((await db.collection('payments').get()).size, 1);
+  assert.equal((await listPaymentActivity(db, 'userA', { filters: { type: 'payment.submitted' } })).rows.length, 1);
+  await assert.rejects(submitPayment(db, 'userA', { ...input, amountPaise: 1300 }), /already used for different details/);
+});
+
+test('staff corrects only unverified payment mode with reason and immutable audit snapshot', async () => {
+  const result = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 2000, mode: 'cash', operationId: 'mode-request' });
+  await assert.rejects(changePaymentMode(db, 'userA', { paymentId: result.paymentId, mode: 'upi', transactionNumber: 'upi-789', reason: 'Customer correction' }), /access is required/);
+  await assert.rejects(changePaymentMode(db, 'adminA', { paymentId: result.paymentId, mode: 'upi', transactionNumber: '', reason: 'Correction' }), /reference/);
+  await changePaymentMode(db, 'adminA', { paymentId: result.paymentId, mode: 'upi', transactionNumber: 'upi-789', reason: 'Customer correction' });
+  const changed = (await db.doc(`payments/${result.paymentId}`).get()).data();
+  assert.equal(changed.mode, 'upi'); assert.equal(changed.transactionNumber, 'UPI-789');
+  const activity = await listPaymentActivity(db, 'userA', { filters: { type: 'payment.mode_changed', payment: result.paymentId } });
+  assert.equal(activity.rows.length, 1);
+  assert.deepEqual(activity.rows[0].changedFields.mode, { before: 'cash', after: 'upi' });
+  assert.equal(activity.rows[0].reason, 'Customer correction');
+  await changePaymentMode(db, 'adminA', { paymentId: result.paymentId, mode: 'cash', reason: 'Cash instead' });
+  await changePaymentMode(db, 'adminA', { paymentId: result.paymentId, mode: 'upi', transactionNumber: 'upi-789', reason: 'Original reference confirmed' });
+  await reviewPayment(db, 'adminA', { paymentId: result.paymentId, decision: 'verified' });
+  await assert.rejects(changePaymentMode(db, 'adminA', { paymentId: result.paymentId, mode: 'cash', reason: 'Too late' }), /Only an unverified payment/);
+});
+
+test('payment activity is restricted to owner and shows review, rejection and snapshots', async () => {
+  const result = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'cash' });
+  await reviewPayment(db, 'accountA', { paymentId: result.paymentId, decision: 'rejected', reason: 'Reference mismatch' });
+  const owned = await listPaymentActivity(db, 'userA', { filters: { invoice: 'INV-SS', customer: 'Asha' } });
+  assert.equal(owned.rows.length, 2);
+  assert.equal(owned.rows[0].type, 'payment.rejected');
+  assert.equal(owned.rows[0].customerName, 'Asha');
+  assert.equal(owned.rows[0].reason, 'Reference mismatch');
+  assert.equal((await listPaymentActivity(db, 'userB')).rows.length, 0);
+  await assert.rejects(listPaymentActivity(db, 'userB', { cursor: owned.rows[0].id }), /cursor is unavailable/);
 });

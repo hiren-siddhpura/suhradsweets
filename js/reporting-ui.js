@@ -91,7 +91,7 @@ export function initReportingUi({ db, functions }) {
     try {
       const results = await Promise.allSettled([
         dashboardOrderKg(db, profile.role, user.uid), dashboardTargetKg(db),
-        staff() ? dashboardStockKg(db) : Promise.resolve(null), recentActivity(db, profile.role, user.uid), activeAnnouncements(db, profile.role, day),
+        dashboardStockKg(db, profile.role), recentActivity(db, profile.role, user.uid), activeAnnouncements(db, profile.role, day),
       ]);
       if (version !== revision || run !== dashboardRun) return;
       const errors = [];
@@ -103,10 +103,10 @@ export function initReportingUi({ db, functions }) {
       const content = [
         orders ? `<strong>${esc(orders.orderCount)} <span class="metric-unit">Orders</span></strong><strong>${esc(kg(orders.totalKg))} <span class="metric-unit">KG</span></strong>` : '<strong>Unavailable</strong>',
         `<strong>${orders === null || targetFailed ? 'Unavailable' : percent === null ? 'N/A' : `${esc(percent.toFixed(1))} %`}</strong>`,
-        stock ? `<strong>Total ${esc(kg(stock.totalKg))} <span class="metric-unit">KG</span></strong>${itemList(stock.items)}` : `<strong>${staff() ? 'Unavailable' : 'N/A'}</strong>`,
+        stock ? `<strong>Total ${esc(kg(stock.totalKg))} <span class="metric-unit">KG</span></strong>${itemList(stock.items)}` : '<strong>Unavailable</strong>',
         orders ? `<strong>Total ${esc(kg(orders.totalKg))} <span class="metric-unit">KG</span></strong>${itemList(orders.items)}` : '<strong>Unavailable</strong>',
       ];
-      const hints = [range, targetFailed ? 'Could not read the configured sales target.' : targetKg === null ? 'Set Sales target (KG) in Master Data.' : `Target: ${kg(targetKg)} KG · ${range}`, staff() ? 'Current stock available for selling' : 'Stock totals are available to administrators.', range];
+      const hints = [range, targetFailed ? 'Could not read the configured sales target.' : targetKg === null ? 'Set Sales target (KG) in Master Data.' : `Target: ${kg(targetKg)} KG · ${range}`, 'Current stock available for selling', range];
       if (orders?.excludedQuantities) hints[3] += ' · Non-weight or invalid units excluded from KG totals.';
       if (stock?.excludedQuantities) hints[2] += ' · Non-weight or invalid records excluded from KG totals.';
       $('dashboard-cards').innerHTML = labels.map((label, index) => dashboardCard(label, content[index], index, hints[index])).join('');

@@ -1,0 +1,26 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import vm from 'node:vm';
+import {isStaff, validateProfile} from '../js/permissions.js';
+for (const role of ['admin','account_admin','user']) test(`Orders assignee controls for ${role}`, async () => {
+ const nodes=new Map(); const el=id=>{if(!nodes.has(id))nodes.set(id,{value:'',innerHTML:'',listeners:{},addEventListener(e,f){this.listeners[e]=f},querySelectorAll(){return []},showModal(){},close(){}});return nodes.get(id)};
+ let userReads=0; const exports=[];
+ const profiles=[{id:'adminUID',fullName:'Admin Name',role:'admin',active:true},{id:'accountsUID',displayName:'Accounts',role:'account_admin',active:true},{id:'userUID',fullName:'User Name',role:'user',active:true},{id:'inactive',role:'admin',active:false},{id:'invalid',role:'invalid',active:true},{id:'userUID',fullName:'User Name',role:'user',active:true}];
+ const ctx={document:{getElementById:el,addEventListener(){},querySelector(){return null}},isStaff,validateProfile,showToast(){},listOrders:async()=>[{id:'order1',orderNumber:'SO-1',assignedUserId:'userUID',ownerUid:'userUID',customerSnapshot:{fullName:'Customer'},orderDate:'2026-10-12',status:'confirmed',grandTotal:10000}],listCustomers:async()=>[],listOrderProducts:async()=>[],listInvoices:async()=>[],callOperation:async()=>({items:[],rows:[]}),getOrderTaking:async()=>true,listMasterRecords:async()=>{userReads++;return profiles},downloadXlsx:async(_name,sheets)=>{exports.push(sheets)}};
+ const source=readFileSync(new URL('../js/order-ui.js',import.meta.url),'utf8').replace(/^import .*;\r?\n/gm,'').replace('export function initOrderUi','function initOrderUi');
+ vm.runInNewContext(source+'\nthis.init=initOrderUi;',ctx);
+ ctx.init({db:{},functions:{},auth:{},mode:'emulator'}).setSession({uid:role==='user'?'userUID':'actor'},{role,active:true,fullName:role==='user'?'User Name':'Staff Name'});
+ await el('order-refresh').listeners.click(); el('order-new').listeners.click();
+ assert.equal(el('order-user').hidden,role!=='admin'); assert.equal(userReads,role==='user'?0:1);
+ assert.match(el('order-body').innerHTML,/User Name/);
+ assert.doesNotMatch(el('order-body').innerHTML,/userUID/);
+ el('order-export').listeners.click();
+ assert.equal(exports[0][0][1][0].AssignedUser,'User Name');
+ if(role==='admin') {
+  for(const id of ['adminUID','accountsUID','userUID']) assert.match(el('order-fields').innerHTML,new RegExp(`value="${id}"`));
+  assert.doesNotMatch(el('order-fields').innerHTML,/value="inactive"|value="invalid"/);
+  assert.equal((el('order-user').innerHTML.match(/value="userUID"/g)||[]).length,1);
+  assert.match(el('order-user').innerHTML,/Admin Name/);
+ } else assert.doesNotMatch(el('order-fields').innerHTML,/name="assignedUserId"/);
+});

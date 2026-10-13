@@ -24,22 +24,27 @@ export function validateDraft(input) {
   if (typeof input.notes !== 'string' || input.notes.length > 1000) fail('Notes must be 1000 characters or fewer.');
   if (!money(input.totalPaise) || !money(input.paidAmountPaise ?? 0) || (input.paidAmountPaise ?? 0) > input.totalPaise) fail('Enter a nonnegative total and a payment amount no greater than the total.');
   if (Object.hasOwn(input, 'lines')) fail('Purchase item lines are no longer supported. Reload the updated form.');
+  const quantity = typeof input.quantity === 'number' && Number.isFinite(input.quantity) ? String(input.quantity) : input.quantity;
+  if (!text(quantity, 120)) fail('Enter a quantity of 120 characters or fewer.');
+  if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(quantity.trim()) && Number(quantity.trim()) <= 0) fail('Quantity must be greater than zero.');
+  if (input.unit !== undefined && (typeof input.unit !== 'string' || input.unit.length > 80)) fail('Unit must be 80 characters or fewer.');
   const paidAmountPaise = input.paidAmountPaise ?? 0;
   const paymentMode = paidAmountPaise ? input.paymentMode : null;
   if (paidAmountPaise && !['cash', 'upi', 'bank_transfer'].includes(paymentMode)) fail('Choose a valid payment mode.');
   const paymentReference = paidAmountPaise && paymentMode !== 'cash' ? input.paymentReference : '-';
   if (!text(paymentReference, 100)) fail('Online payments require a transaction reference.');
-  return { supplierName: input.supplierName.trim(), purchaseDate: input.purchaseDate, purchaseTypeId: input.purchaseTypeId, totalPaise: input.totalPaise, paidAmountPaise, paymentMode, paymentReference: paymentReference.trim(), paymentStatus: paidAmountPaise === 0 ? 'unpaid' : paidAmountPaise === input.totalPaise ? 'paid' : 'partial', notes: input.notes.trim(), documentUrl: validateDriveUrl(input.documentUrl || ''), schemaVersion: 2 };
+  return { quantity: quantity.trim(), unit: (input.unit || '').trim(), supplierName: input.supplierName.trim(), purchaseDate: input.purchaseDate, purchaseTypeId: input.purchaseTypeId, totalPaise: input.totalPaise, paidAmountPaise, paymentMode, paymentReference: paymentReference.trim(), paymentStatus: paidAmountPaise === 0 ? 'unpaid' : paidAmountPaise === input.totalPaise ? 'paid' : 'partial', notes: input.notes.trim(), documentUrl: validateDriveUrl(input.documentUrl || ''), schemaVersion: 3 };
 }
 
 async function staff(db, uid, tx) {
   if (!validId(uid)) fail('Sign in is required.');
   const snap = await tx.get(db.doc(`users/${uid}`));
   if (!snap.exists || snap.data().active !== true || !STAFF.has(snap.data().role)) fail('Active Admin or Account Admin access is required.');
+  return { uid, name: snap.data().fullName || snap.data().displayName || 'Unknown user' };
 }
 
-export function audit(tx, db, type, uid, refType, refId, detail = {}) {
-  tx.create(db.collection('auditLogs').doc(), { type, actorUid: uid, referenceType: refType, referenceId: refId, detail, at: FieldValue.serverTimestamp() });
+export function audit(tx, db, type, uid, refType, refId, detail = {}, actorName = null) {
+  tx.create(db.collection('auditLogs').doc(), { type, actorUid: uid, ...(actorName ? { actorName } : {}), referenceType: refType, referenceId: refId, detail, at: FieldValue.serverTimestamp() });
 }
 
 export function stockState(snap) {
@@ -58,11 +63,11 @@ export function setStock(tx, ref, state, newQty, uid, extra = {}) {
   tx.set(ref, { itemId: ref.id, ...state, ...extra, onHandQty: newQty, reservedQty: 0, updatedBy: uid, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
 }
 
-export function movement(tx, db, id, itemId, item, type, changeQty, previousQty, referenceType, referenceId, reason, uid, ownerUid = null) {
+export function movement(tx, db, id, itemId, item, type, changeQty, previousQty, referenceType, referenceId, reason, uid, ownerUid = null, actorName = 'Unknown user') {
   tx.create(db.doc(`inventoryMovements/${id}`), {
     itemId, itemSnapshot: { itemCode: item.itemCode, name: item.name, unitId: item.defaultUnitId, unitSymbol: item.unitSymbol },
     movementType: type, changeQty, previousQty, newQty: previousQty + changeQty,
-    referenceType, referenceId, reason, actorUid: uid, ownerUid, at: FieldValue.serverTimestamp(),
+    referenceType, referenceId, reason, actorUid: uid, actorName, ownerUid, at: FieldValue.serverTimestamp(),
   });
 }
 
@@ -113,14 +118,14 @@ export async function cancelPurchase(db, uid, purchaseId, reason) {
 }
 
 export async function adjustStock(db, uid, input) {
-  const { itemId, countedQty, reason, operationId } = input || {};
-  if (!validId(itemId) || !qty(countedQty) || !text(reason, 500) || !validId(operationId)) fail('Item, counted quantity, reason and operation ID are required.');
+  const { itemId, countedQty, reason, operationId, expectedOnHandQty } = input || {};
+  if (!validId(itemId) || !qty(countedQty) || !text(reason, 500) || !validId(operationId) || expectedOnHandQty !== undefined && !qty(expectedOnHandQty)) fail('Item, counted quantity, reason and operation ID are required.');
   const op = db.doc(`stockOperations/${operationId}`);
   return db.runTransaction(async (tx) => {
-    await staff(db, uid, tx);
+    const user = await staff(db, uid, tx);
     const priorOp = await tx.get(op);
     if (priorOp.exists) {
-      if (priorOp.data().actorUid !== uid || priorOp.data().itemId !== itemId || priorOp.data().countedQty !== countedQty || priorOp.data().reason !== reason.trim()) fail('Operation ID was already used.');
+      if (priorOp.data().actorUid !== uid || priorOp.data().itemId !== itemId || priorOp.data().countedQty !== countedQty || priorOp.data().reason !== reason.trim() || priorOp.data().expectedOnHandQty !== expectedOnHandQty) fail('Operation ID was already used.');
       return { itemId, newQty: countedQty, repeated: true };
     }
     const item = await tx.get(db.doc(`items/${itemId}`));
@@ -129,28 +134,31 @@ export async function adjustStock(db, uid, input) {
     const unit = await tx.get(db.doc(`units/${item.data().defaultUnitId}`));
     if (!unit.exists) fail('Item unit no longer exists.');
     const state = stockState(stock);
+    if (expectedOnHandQty !== undefined && state.onHandQty !== expectedOnHandQty) fail('Stock changed since this count was opened. Refresh and count again.');
     const change = countedQty - state.onHandQty;
     if (!change) fail('Counted quantity matches current stock.');
     setStock(tx, stock.ref, state, countedQty, uid);
-    movement(tx, db, `adjustment_${operationId}`, itemId, { ...item.data(), unitSymbol: unit.data().symbol }, 'physical_adjustment', change, state.onHandQty, 'stockOperation', operationId, reason.trim(), uid);
-    tx.create(op, { actorUid: uid, itemId, countedQty, reason: reason.trim(), at: FieldValue.serverTimestamp() });
-    audit(tx, db, 'inventory.adjusted', uid, 'stockOperation', operationId, { itemId, changeQty: change, reason: reason.trim() });
+    movement(tx, db, `adjustment_${operationId}`, itemId, { ...item.data(), unitSymbol: unit.data().symbol }, 'physical_adjustment', change, state.onHandQty, 'stockOperation', operationId, reason.trim(), uid, null, user.name);
+    tx.create(op, { actorUid: uid, itemId, countedQty, ...(expectedOnHandQty !== undefined ? { expectedOnHandQty } : {}), reason: reason.trim(), at: FieldValue.serverTimestamp() });
+    audit(tx, db, 'inventory.adjusted', uid, 'stockOperation', operationId, { itemId, previousQty: state.onHandQty, newQty: countedQty, changeQty: change, reason: reason.trim() }, user.name);
     return { itemId, newQty: countedQty, repeated: false };
   });
 }
 
 export async function setInventoryControl(db, uid, input) {
-  const { itemId, sellingBlocked, lowStockThresholdQty, reason } = input || {};
-  if (!validId(itemId) || typeof sellingBlocked !== 'boolean' || !qty(lowStockThresholdQty) || !text(reason, 500)) fail('Item, selling status, threshold and reason are required.');
+  const { itemId, sellingBlocked, lowStockThresholdQty, reason, expectedSellingBlocked, expectedLowStockThresholdQty } = input || {};
+  if (!validId(itemId) || typeof sellingBlocked !== 'boolean' || !qty(lowStockThresholdQty) || !text(reason, 500) || expectedSellingBlocked !== undefined && typeof expectedSellingBlocked !== 'boolean' || expectedLowStockThresholdQty !== undefined && !qty(expectedLowStockThresholdQty)) fail('Item, selling status, threshold and reason are required.');
   const ref = db.doc(`inventory/${itemId}`);
   return db.runTransaction(async (tx) => {
-    await staff(db, uid, tx);
+    const user = await staff(db, uid, tx);
     const item = await tx.get(db.doc(`items/${itemId}`));
     const stock = await tx.get(ref);
     if (!item.exists) fail('Item no longer exists.');
     const state = stockState(stock);
+    if (expectedSellingBlocked !== undefined && state.sellingBlocked !== expectedSellingBlocked || expectedLowStockThresholdQty !== undefined && state.lowStockThresholdQty !== expectedLowStockThresholdQty) fail('Stock controls changed since this dialog was opened. Refresh and try again.');
+    if (state.sellingBlocked === sellingBlocked && state.lowStockThresholdQty === lowStockThresholdQty) fail('No stock control change was made.');
     setStock(tx, ref, state, state.onHandQty, uid, { sellingBlocked, lowStockThresholdQty });
-    audit(tx, db, 'inventory.control_changed', uid, 'item', itemId, { sellingBlocked, lowStockThresholdQty, reason: reason.trim() });
+    audit(tx, db, 'inventory.control_changed', uid, 'item', itemId, { previousSellingBlocked: state.sellingBlocked, sellingBlocked, previousLowStockThresholdQty: state.lowStockThresholdQty, lowStockThresholdQty, reason: reason.trim() }, user.name);
     return { itemId, sellingBlocked, lowStockThresholdQty };
   });
 }

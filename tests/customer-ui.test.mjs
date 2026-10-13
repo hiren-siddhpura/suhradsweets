@@ -1,3 +1,4 @@
+import { validateProfile } from '../js/permissions.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -11,7 +12,7 @@ test('customer form shows Firestore denial, keeps the dialog open and reuses the
     return elements.get(id);
   };
   const fields = new Map(Object.entries({ fullName: 'Local customer', contact: '9876543210', address: 'Street', area: 'Area', dateOfBirth: '', sabha: 'false' }));
-  const context = {
+  const context = { validateProfile, validateCustomerInput,
     document: { getElementById: getElement, addEventListener() {}, querySelector: () => null },
     isStaff: (profile) => profile?.role === 'admin', showToast() {}, customerSaveError,
     crypto: { randomUUID: () => 'stable-customer-submission' }, FormData: class { get(name) { return fields.get(name); } },
@@ -46,7 +47,7 @@ test('Delete confirms the escaped name and preserves the exact dependency error 
     return elements.get(id);
   };
   const linkedMessage = 'Cannot delete this customer because transaction records are linked to them.';
-  const context = {
+  const context = { validateProfile,
     document: { getElementById: element, addEventListener() {}, querySelector: () => null },
     isStaff: profile => ['admin', 'account_admin'].includes(profile?.role), showToast() {},
     FormData: class {}, listCustomers: async () => [{ id: 'customer', fullName: 'Name <private>', contact: '9876543210' }],

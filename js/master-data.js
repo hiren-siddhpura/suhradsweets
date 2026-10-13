@@ -2,6 +2,7 @@ import { addDoc, collection, doc, getDoc, getDocs, runTransaction, serverTimesta
 import { DASHBOARD_TARGET_ID, DASHBOARD_TARGET_KEY, validateTargetKg } from './dashboard-metrics.js';
 import { MASTER_TYPES, validateMasterInput } from './master-validation.js';
 import { callOperation } from './operations-data.js';
+import { BUSINESS_DETAILS_ID, validateBusinessDetails } from './business-settings.js';
 
 function assertType(type) {
   if (!MASTER_TYPES.includes(type)) throw new Error('Unknown master-data collection.');
@@ -22,6 +23,23 @@ export async function saveDashboardTarget(db, input, actor) {
     if (snapshot.exists()) transaction.update(ref, values);
     else transaction.set(ref, { ...values, createdAt: serverTimestamp() });
   });
+}
+
+export async function readBusinessDetails(db) {
+  const snapshot = await getDoc(doc(db, 'settings', BUSINESS_DETAILS_ID));
+  return snapshot.exists() ? validateBusinessDetails(snapshot.data()) : validateBusinessDetails();
+}
+
+export async function saveBusinessDetails(db, input, actor) {
+  if (!actor?.uid || actor.role !== 'admin') throw new Error('Only Admin may change business details.');
+  const values = validateBusinessDetails(input);
+  const ref = doc(db, 'settings', BUSINESS_DETAILS_ID);
+  await runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(ref);
+    if (snapshot.exists()) transaction.update(ref, { ...values, updatedAt: serverTimestamp() });
+    else transaction.set(ref, { key: 'businessDetails', ...values, active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  });
+  return values;
 }
 
 export async function listMasterRecords(db, type) {

@@ -1,0 +1,127 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+import { isStaff, validateProfile } from '../js/permissions.js';
+import { validateCustomerInput } from '../js/customer-validation.js';
+
+test('new-customer choice is first; order form survives customer dialog cancel and creation', async () => {
+  const nodes = new Map(), saved = [], orderSaves = []; let stockReads = 0;
+  const el = (id) => {
+    if (!nodes.has(id)) nodes.set(id, { value: '', innerHTML: '', textContent: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, querySelectorAll() { return []; }, showModal() { this.open = true; }, close() { this.open = false; } });
+    return nodes.get(id);
+  };
+  const fields = el('order-fields');
+  let markup = '', formNodes = [];
+  Object.defineProperties(fields, {
+    innerHTML: { get() { return markup; }, set(value) { markup = value; formNodes = value.includes('id="order-lines"') ? [{ note: 'keep my order note', parent: fields }] : value ? [{ customer: true, parent: fields }] : []; } },
+    firstChild: { get() { return formNodes[0] || null; } },
+    children: { get() { return formNodes; } },
+  });
+  fields.appendChild = (node) => { if (node.children) { for (const child of node.children.splice(0)) { child.parent = fields; formNodes.push(child); } } else { node.parent = fields; formNodes.push(node); } };
+  const current = () => formNodes[0];
+  const values = { fullName: 'New Customer', contact: '9876543210', address: 'Road', area: 'West', dateOfBirth: '', sabha: 'false' };
+  const context = {
+    document: { getElementById: el, addEventListener() {}, querySelector() { return null; }, createDocumentFragment() { return { children: [], appendChild(child) { child.parent.children.splice(child.parent.children.indexOf(child), 1); child.parent = this; this.children.push(child); } }; } },
+    crypto: { randomUUID: () => 'customer-request-1' }, FormData: class { get(name) { return values[name]; } },
+    isStaff, validateProfile, validateCustomerInput, showToast() {}, customerSaveError: (error) => error.message,
+    listOrders: async () => [], listCustomers: async () => [{ id: 'z', fullName: 'Zara', contact: '123' }, { id: 'a', fullName: 'Asha', contact: '456' }],
+    listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'sweet', name: 'Kaju Katli', active: true, defaultSellingPrice: 1200 }] : [],
+    listInvoices: async () => [], getOrderTaking: async () => true, listMasterRecords: async () => [],
+    callOperation: async (_fn, name, payload) => name === 'getOrderStock' ? (stockReads++, { items: [{ itemId: 'sweet', availableQty: 988000, unit: 'kg', status: 'available' }] }) : name === 'saveOrderDraft' ? (orderSaves.push(payload), { orderId: payload.orderId }) : { rows: [], hasMore: false },
+    saveCustomerDirect: async (_db, _auth, input, options) => { saved.push({ input, options }); return { customerId: options.customerId }; },
+  };
+  const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
+  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, context);
+  context.init({ db: {}, functions: {}, auth: { currentUser: { uid: 'admin' } } }).setSession({ uid: 'admin' }, { role: 'admin', active: true });
+  await el('order-refresh').listeners.click();
+  el('order-new').listeners.click();
+  const html = fields.innerHTML;
+  assert.ok(html.indexOf('value="__new__"') < html.indexOf('value="a"'));
+  assert.ok(html.indexOf('value="a"') < html.indexOf('value="z"'));
+  assert.match(html, /Kaju Katli — ₹1,200\.00/);
+  assert.match(html, /Available: 988 kg/);
+  assert.doesNotMatch(html, /On hand:|Reserved:|Available: 988 kg<\/option>/);
+  const readsBeforeChange = stockReads;
+  fields.listeners.change({ target: { name: 'productId', id: '' } });
+  await Promise.resolve();
+  assert.ok(stockReads > readsBeforeChange);
+  const preserved = current();
+  el('order-customer').value = '__new__';
+  fields.listeners.click({ target: { id: 'order-add-customer', matches: () => false } });
+  assert.equal(el('order-dialog-title').textContent, 'Add customer');
+  el('order-dialog-cancel').listeners.click();
+  assert.equal(current(), preserved);
+  assert.equal(current().note, 'keep my order note');
+  fields.listeners.click({ target: { id: 'order-add-customer', matches: () => false } });
+  await el('order-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].options.customerId, 'customer-request-1');
+  assert.equal(el('order-customer').value, 'customer-request-1');
+  assert.equal(current(), preserved);
+  assert.equal(el('order-dialog').open, true);
+  const added = [];
+  el('order-lines').insertAdjacentHTML = (_position, html) => added.push(html);
+  fields.listeners.click({ target: { id: 'order-add-line', matches: () => false } });
+  assert.equal(added.length, 1);
+  assert.match(added[0], /Kaju Katli — ₹1,200\.00/);
+
+  // A normal User's modal stores details locally; the trusted order save creates
+  // customer and order together, without a standalone customer write.
+  el('order-dialog').close();
+  context.init({ db: {}, functions: {}, auth: { currentUser: { uid: 'user-1' } } }).setSession({ uid: 'user-1' }, { role: 'user', active: true });
+  await el('order-refresh').listeners.click();
+  el('order-new').listeners.click();
+  el('order-customer').value = '__new__';
+  fields.listeners.click({ target: { id: 'order-add-customer', matches: () => false } });
+  await el('order-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
+  assert.equal(saved.length, 1);
+  assert.match(el('order-add-customer').textContent, /New Customer/);
+  Object.assign(values, { customerId: '__new__', orderDate: '2026-10-10', deliveryDate: '', notes: 'Keep this note' });
+  el('order-lines').children = [{ querySelector(selector) { return { value: selector === '[name=kind]' ? 'item' : selector === '[name=productId]' ? 'sweet' : '2' }; } }];
+  await el('order-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
+  assert.equal(orderSaves.length, 1);
+  assert.equal(orderSaves[0].newCustomer.fullName, 'New Customer');
+  assert.equal(orderSaves[0].lines[0].quantityQty, 2000);
+  assert.equal(orderSaves[0].notes, 'Keep this note');
+});
+
+test('Admin may edit special lines; assigned User can view the saved special order', async () => {
+  const nodes = new Map();
+  const el = (id) => { if (!nodes.has(id)) nodes.set(id, { value: '', innerHTML: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, querySelectorAll() { return []; }, showModal() {}, close() {} }); return nodes.get(id); };
+  const order = { id: 'order-1', orderNumber: 'SS-1', ownerUid: 'user-1', assignedUserId: 'user-1', customerId: 'customer-1', customerSnapshot: { fullName: 'Asha' }, status: 'draft', orderDate: '2026-10-10', lines: [{ kind: 'item', productId: 'sweet', quantityQty: 1000 }, { kind: 'special', productId: 'combo', quantityQty: 1000, specialSnapshot: { name: 'Gift Box' } }] };
+  const context = {
+    document: { getElementById: el, addEventListener() {}, querySelector() { return null; } }, isStaff, validateProfile, showToast() {},
+    listOrders: async () => [order], listCustomers: async () => [{ id: 'customer-1', fullName: 'Asha', contact: '123' }],
+    listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'sweet', name: 'Kaju Katli', active: true, defaultSellingPrice: 1200 }] : [{ id: 'combo', name: 'Gift Box', active: true, finalPricePaise: 160000, components: [{ itemId: 'sweet', quantityQty: 1000 }] }],
+    listInvoices: async () => [], getOrderTaking: async () => true, listMasterRecords: async () => [],
+    callOperation: async (_fn, name) => { if (name === 'getOrderStock') throw new Error('Network unavailable'); return { rows: [], hasMore: false }; },
+  };
+  const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
+  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, context);
+  const ui = context.init({ db: {}, functions: {}, auth: {} });
+  ui.setSession({ uid: 'admin-1' }, { role: 'admin', active: true });
+  await el('order-refresh').listeners.click();
+  el('order-body').listeners.click({ target: { closest: () => ({ dataset: { action: 'editOrder', id: 'order-1' } }) } });
+  const html = el('order-fields').innerHTML;
+  assert.equal((html.match(/class="ops-line order-entry-line"/g) || []).length, 2);
+  assert.match(html, /Kaju Katli — ₹1,200\.00/);
+  assert.match(html, /Gift Box — ₹1,600\.00/);
+  assert.equal((html.match(/Available: Unavailable/g) || []).length, 2);
+  assert.doesNotMatch(html, /On hand:|Reserved:|Low stock|Out of stock/);
+  ui.setSession({ uid: 'user-1' }, { role: 'user', active: true });
+  await el('order-refresh').listeners.click();
+  assert.match(el('order-body').innerHTML, /data-action="viewOrder"/);
+  assert.doesNotMatch(el('order-body').innerHTML, /data-action="editOrder"|data-action="confirmOrder"|data-action="archiveOrder"|data-action="cancelOrder"/);
+  el('order-body').listeners.click({ target: { closest: () => ({ dataset: { action: 'viewOrder', id: 'order-1' } }) } });
+  assert.match(el('order-fields').innerHTML, /Gift Box/);
+  assert.equal(el('order-dialog-save').hidden, true);
+  el('order-new').listeners.click();
+  assert.doesNotMatch(el('order-fields').innerHTML, /Special product/);
+});
+
+test('order entry CSS keeps product wider and stacks fields on mobile', () => {
+  const css = readFileSync(new URL('../css/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.order-dialog \.order-entry-line\{[^}]*grid-template-columns:minmax\(135px,170px\) minmax\(250px,1fr\)/);
+  assert.match(css, /@media\(max-width:680px\)\{\.order-dialog \.order-entry-line\{[^}]*grid-template-areas:"type quantity" "product product"/);
+});

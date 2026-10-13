@@ -164,7 +164,9 @@ service cloud.firestore {
     }
 
     match /units/{unitId} {
-      allow get, list: if isStaff() || (activeProfile() && resource.data.active == true);
+      // Active items may still reference a unit that was later deactivated.
+      allow get: if activeProfile();
+      allow list: if isStaff() || (activeProfile() && resource.data.active == true);
       allow create: if isStaff()
         && request.resource.data.keys().hasOnly(['name', 'symbol', 'active', 'createdAt', 'updatedAt'])
         && request.resource.data.keys().hasAll(['name', 'symbol', 'active', 'createdAt', 'updatedAt'])
@@ -218,20 +220,39 @@ service cloud.firestore {
     }
 
     match /settings/{settingId} {
+      function validBusinessDetails() {
+        let data = request.resource.data;
+        return data.key == 'businessDetails'
+          && data.active == true
+          && validOptionalText(data.address, 300)
+          && validOptionalText(data.contactNumber, 80)
+          && validOptionalText(data.fssaiLicenseNo, 40)
+          && data.fssaiLicenseNo.matches('^[A-Za-z0-9 /-]*$');
+      }
       function validDashboardTarget() {
         return settingId == 'dashboard_sales_target'
           ? request.resource.data.key == 'dashboardSalesTargetKg'
             && request.resource.data.value.matches('^([0-9]{1,9}|1000000000)([.][0-9]{1,3})?$')
-          : request.resource.data.key != 'dashboardSalesTargetKg';
+          : request.resource.data.key != 'dashboardSalesTargetKg'
+            && request.resource.data.key != 'businessDetails';
       }
-      allow get: if isStaff() || (activeProfile() && settingId == 'dashboard_sales_target');
+      allow get: if isStaff() || (activeProfile() && settingId in ['dashboard_sales_target', 'business_details']);
       allow list: if isStaff();
-      allow create: if isStaff()
-        && request.resource.data.keys().hasOnly(['key', 'value', 'description', 'active', 'createdAt', 'updatedAt'])
-        && request.resource.data.keys().hasAll(['key', 'value', 'description', 'active', 'createdAt', 'updatedAt'])
-        && validSettingFields() && validDashboardTarget() && validMasterTimestampsOnCreate();
-      allow update: if isStaff() && validSettingFields() && validDashboardTarget()
-        && validMasterUpdate(['value', 'description', 'active', 'updatedAt']);
+      allow create: if settingId == 'business_details'
+        ? isStaff() && get(profilePath()).data.role == 'admin'
+          && request.resource.data.keys().hasOnly(['key', 'address', 'contactNumber', 'fssaiLicenseNo', 'active', 'createdAt', 'updatedAt'])
+          && request.resource.data.keys().hasAll(['key', 'address', 'contactNumber', 'fssaiLicenseNo', 'active', 'createdAt', 'updatedAt'])
+          && validBusinessDetails() && validMasterTimestampsOnCreate()
+        : isStaff()
+          && request.resource.data.keys().hasOnly(['key', 'value', 'description', 'active', 'createdAt', 'updatedAt'])
+          && request.resource.data.keys().hasAll(['key', 'value', 'description', 'active', 'createdAt', 'updatedAt'])
+          && validSettingFields() && validDashboardTarget() && validMasterTimestampsOnCreate();
+      allow update: if settingId == 'business_details'
+        ? isStaff() && get(profilePath()).data.role == 'admin'
+          && validBusinessDetails()
+          && validMasterUpdate(['address', 'contactNumber', 'fssaiLicenseNo', 'updatedAt'])
+        : isStaff() && validSettingFields() && validDashboardTarget()
+          && validMasterUpdate(['value', 'description', 'active', 'updatedAt']);
       allow delete: if false;
     }
 
@@ -294,7 +315,10 @@ service cloud.firestore {
     }
 
     match /inventory/{itemId} {
-      allow get, list: if isStaff();
+      allow get: if isStaff() || (activeProfile()
+        && exists(/databases/$(database)/documents/items/$(itemId))
+        && get(/databases/$(database)/documents/items/$(itemId)).data.active == true);
+      allow list: if isStaff();
       allow create, update, delete: if false;
     }
 

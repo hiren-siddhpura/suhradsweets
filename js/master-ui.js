@@ -1,8 +1,9 @@
-import { listMasterRecords, saveMasterRecord, deactivateMasterRecord, readDashboardTarget, saveDashboardTarget } from './master-data.js';
+import { listMasterRecords, saveMasterRecord, deactivateMasterRecord, readDashboardTarget, saveDashboardTarget, readBusinessDetails, saveBusinessDetails } from './master-data.js';
 import { MASTER_LABELS } from './master-validation.js';
 import { isStaff } from './permissions.js';
 import { showToast } from './ui.js';
 import { sendUserSetupEmail } from './auth.js';
+import { BUSINESS_DETAILS_ID } from './business-settings.js';
 
 const $ = (id) => document.getElementById(id);
 const PAGE_SIZE = 10;
@@ -170,10 +171,17 @@ export function initMasterData({ db, functions, auth, mode }) {
     message(`Loading ${titles[type].toLowerCase()}…`);
     $('master-add').disabled = true;
     readDashboardTarget(db).then((value) => { if (revision === loadRevision) $('master-target-kg').value = value; }).catch((error) => { if (revision === loadRevision) $('master-target-message').textContent = friendlyError(error); });
+    if (type === 'settings') readBusinessDetails(db).then((details) => {
+      if (revision !== loadRevision) return;
+      $('master-business-address').value = details.address;
+      $('master-business-contact').value = details.contactNumber;
+      $('master-business-fssai').value = details.fssaiLicenseNo;
+      $('master-business-message').textContent = '';
+    }).catch((error) => { if (revision === loadRevision) $('master-business-message').textContent = friendlyError(error); });
     try {
       const [result, units] = await Promise.all([listMasterRecords(db, type), type === 'items' ? listMasterRecords(db, 'units') : Promise.resolve([])]);
       if (revision !== loadRevision) return;
-      records = result;
+      records = type === 'settings' ? result.filter((entry) => entry.id !== BUSINESS_DETAILS_ID) : result;
       unitNames = new Map(units.map((unit) => [unit.id, `${unit.name} (${unit.symbol})`]));
       message(''); render();
     } catch (error) {
@@ -244,6 +252,9 @@ export function initMasterData({ db, functions, auth, mode }) {
 
   document.querySelectorAll('[data-master-tab]').forEach((button) => button.addEventListener('click', () => {
     type = button.dataset.masterTab; page = 1; $('master-search').value = ''; $('master-status').value = 'all';
+    $('master-business-form').hidden = type !== 'settings';
+    const canSaveBusiness = session?.role === 'admin';
+    for (const id of ['master-business-address', 'master-business-contact', 'master-business-fssai', 'master-business-save']) $(id).disabled = !canSaveBusiness;
     document.querySelectorAll('[data-master-tab]').forEach((tab) => {
       const selected = tab === button;
       tab.classList.toggle('is-active', selected); tab.setAttribute('aria-selected', String(selected));
@@ -266,6 +277,18 @@ export function initMasterData({ db, functions, auth, mode }) {
       document.dispatchEvent(new CustomEvent('oms:dashboard-targetchange'));
     } catch (error) { $('master-target-message').textContent = friendlyError(error); }
     finally { $('master-target-save').disabled = false; }
+  });
+  $('master-business-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    $('master-business-save').disabled = true;
+    $('master-business-message').textContent = 'Saving…';
+    try {
+      await saveBusinessDetails(db, { address: $('master-business-address').value, contactNumber: $('master-business-contact').value, fssaiLicenseNo: $('master-business-fssai').value }, session);
+      $('master-business-message').textContent = 'Business details saved.';
+      showToast('Business details saved.');
+      await load();
+    } catch (error) { $('master-business-message').textContent = friendlyError(error); }
+    finally { $('master-business-save').disabled = session?.role !== 'admin'; }
   });
   $('master-add').addEventListener('click', () => openEditor());
   $('master-dialog-close').addEventListener('click', () => dialog.close());

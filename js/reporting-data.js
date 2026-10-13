@@ -25,13 +25,20 @@ export async function dashboardTargetKg(db) {
   return Number(validateTargetKg(snapshot.data().value));
 }
 
-export async function dashboardStockKg(db) {
+export async function dashboardStockKg(db, role = 'admin') {
   const items = [], unitCache = new Map(); let cursor = null, totalKg = 0, excludedQuantities = 0;
+  const ownableStock = role === 'user';
   do {
-    const result = await getDocs(query(collection(db, 'inventory'), orderBy(documentId()), ...(cursor ? [startAfter(cursor)] : []), limit(100)));
+    // Users may list active items, then read only those items' inventory documents.
+    // They cannot list the inventory collection or read stock for inactive items.
+    const result = await getDocs(query(collection(db, ownableStock ? 'items' : 'inventory'),
+      ...(ownableStock ? [where('active', '==', true)] : []), orderBy(documentId()),
+      ...(cursor ? [startAfter(cursor)] : []), limit(100)));
     const page = await Promise.all(result.docs.map(async (entry) => {
-      const stock = entry.data(), item = await getDoc(doc(db, 'items', entry.id));
+      const item = ownableStock ? entry : await getDoc(doc(db, 'items', entry.id));
       if (!item.exists()) return null;
+      const stockDoc = ownableStock ? await getDoc(doc(db, 'inventory', entry.id)) : entry;
+      const stock = stockDoc.exists() ? stockDoc.data() : { onHandQty: 0, reservedQty: 0, sellingBlocked: false };
       const data = item.data();
       if (!data.defaultUnitId) return null;
       if (!unitCache.has(data.defaultUnitId)) unitCache.set(data.defaultUnitId, getDoc(doc(db, 'units', data.defaultUnitId)));

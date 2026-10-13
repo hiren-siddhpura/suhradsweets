@@ -156,7 +156,9 @@ test('Users read only owned orders, invoices, payments and linked customers', as
 test('Users can query active catalog and global order status but cannot edit them', async () => {
   const db = dbFor('userA');
   for (const path of ['items/itemActive', 'units/unitA', 'specialProducts/specialActive', 'orderControls/global']) await assertSucceeds(getDoc(record(db, path)));
-  for (const path of ['items/itemInactive', 'units/unitInactive', 'specialProducts/specialA']) await assertFails(getDoc(record(db, path)));
+  for (const path of ['items/itemInactive', 'specialProducts/specialA']) await assertFails(getDoc(record(db, path)));
+  await assertSucceeds(getDoc(record(db, 'units/unitInactive'))); // An active item may still use a deactivated unit.
+  await assertFails(getDocs(collection(db, 'units')));
   await assertSucceeds(getDocs(query(collection(db, 'items'), where('active', '==', true))));
   await assertSucceeds(getDocs(query(collection(db, 'specialProducts'), where('active', '==', true))));
   await assertFails(getDocs(collection(db, 'items')));
@@ -239,7 +241,9 @@ test('direct invoice paid and payment verification writes fail for every role', 
   for (const uid of ['adminA', 'accountA', 'userA']) {
     const db = dbFor(uid);
     await assertFails(updateDoc(record(db, 'invoices/invoiceA'), { paymentStatus: 'paid', paidBy: uid, paidAt: serverTimestamp() }));
+    await assertFails(updateDoc(record(db, 'invoices/invoiceA'), { paymentStatus: 'in_process' }));
     await assertFails(updateDoc(record(db, 'payments/paymentA'), { verificationStatus: 'verified' }));
+    await assertFails(updateDoc(record(db, 'payments/paymentA'), { mode: 'cash', transactionNumber: '-' }));
     await assertFails(updateDoc(record(db, 'payments/paymentA'), { ownerUid: uid }));
   }
 });
@@ -279,6 +283,23 @@ test('dashboard KG target is staff-managed and only that setting is readable by 
   await assertSucceeds(updateDoc(record(dbFor('accountA'), 'settings/dashboard_sales_target'), { value: '0', updatedAt: serverTimestamp() }));
 });
 
+test('business details preserve FSSAI text and only Admin may write the fixed document', async () => {
+  const admin = dbFor('adminA'), account = dbFor('accountA'), user = dbFor('userA');
+  const path = 'settings/business_details';
+  const details = { key: 'businessDetails', address: '', contactNumber: '', fssaiLicenseNo: '00123456789012', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
+  await assertFails(setDoc(record(account, path), details));
+  await assertFails(setDoc(record(user, path), details));
+  await assertSucceeds(setDoc(record(admin, path), details));
+  assert.equal((await getDoc(record(user, path))).data().fssaiLicenseNo, '00123456789012');
+  await assertSucceeds(updateDoc(record(admin, path), { fssaiLicenseNo: '00012345678901', updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(record(account, path), { fssaiLicenseNo: '999', updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(record(user, path), { address: 'Other', updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(record(admin, path), { key: 'other', updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(record(admin, path), { fssaiLicenseNo: '<script>', updatedAt: serverTimestamp() }));
+  await assertFails(deleteDoc(record(admin, path)));
+  await assertFails(getDocs(collection(user, 'settings')));
+});
+
 test('dashboard KG data layer returns authorized sales and item-wise sellable stock', async () => {
   await environment.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
@@ -306,7 +327,27 @@ test('dashboard KG data layer returns authorized sales and item-wise sellable st
   const blockedStock = await dashboardStockKg(admin);
   assert.equal(blockedStock.totalKg, 0.5);
   assert.equal(blockedStock.items.find((item) => item.itemId === 'kgItem').kg, 0);
-  await assertFails(dashboardStockKg(user));
+  const userStock = await assertSucceeds(dashboardStockKg(user, 'user'));
+  assert.equal(userStock.totalKg, 0.5);
+  assert.equal(userStock.items.length, 3); // Active items without inventory display zero stock.
+  assert.equal(userStock.items.find((item) => item.itemId === 'itemActive').kg, 0);
+  assert.equal((await assertSucceeds(dashboardStockKg(dbFor('accountA'), 'account_admin'))).totalKg, 0.5);
+  await assertSucceeds(getDoc(record(user, 'inventory/kgItem')));
+  await assertFails(getDocs(collection(user, 'inventory')));
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(record(context.firestore(), 'items/inactiveStockItem'), { name: 'Hidden sweet', defaultUnitId: 'kgUnit', active: false });
+    await setDoc(record(context.firestore(), 'inventory/inactiveStockItem'), { onHandQty: 1000, reservedQty: 0, sellingBlocked: false });
+  });
+  await assertFails(getDoc(record(user, 'inventory/inactiveStockItem')));
+  await assertFails(getDoc(record(dbFor('inactiveA'), 'inventory/kgItem')));
+  await assertFails(getDoc(record(dbFor(null), 'inventory/kgItem')));
+  await environment.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(record(db, 'units/legacyKg'), { name: 'Legacy kilogram', symbol: 'kg', active: false });
+    await setDoc(record(db, 'items/legacyStockItem'), { name: 'Legacy sweet', defaultUnitId: 'legacyKg', active: true });
+    await setDoc(record(db, 'inventory/legacyStockItem'), { onHandQty: 1000, reservedQty: 0, sellingBlocked: false });
+  });
+  assert.equal((await assertSucceeds(dashboardStockKg(user, 'user'))).totalKg, 1.5);
 });
 
 test('item code reservation is atomic, and User cannot write master data', async () => {

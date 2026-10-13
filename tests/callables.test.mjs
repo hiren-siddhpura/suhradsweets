@@ -22,7 +22,7 @@ connectFunctionsEmulator(functions, '127.0.0.1', 5001);
 test.after(async () => { await signOut(auth).catch(() => {}); await deleteClientApp(client); await deleteAdminApp(admin); });
 
 test('callables reject anonymous and User, then accept Admin and Account Admin', async () => {
-  const draft = { supplierName: 'Emulator supplier', purchaseDate: '2026-10-10', purchaseTypeId: 'local', notes: '', documentUrl: '', totalPaise: 5000, paidAmountPaise: 0 };
+  const draft = { quantity: 2.5, supplierName: 'Emulator supplier', purchaseDate: '2026-10-10', purchaseTypeId: 'local', notes: '', documentUrl: '', totalPaise: 5000, paidAmountPaise: 0 };
   await assert.rejects(httpsCallable(functions, 'savePurchaseDraftCall')(draft), /Sign in is required/);
   await getAdminAuth(admin).createUser({ uid: 'callableUser', email: 'callable-user@example.test', password: 'LocalOnly123!' });
   await getAdminAuth(admin).createUser({ uid: 'callableAdmin', email: 'callable-admin@example.test', password: 'LocalOnly123!' });

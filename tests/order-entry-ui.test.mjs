@@ -6,6 +6,13 @@ import { availableOrderUnits, itemUnitPrice, orderLineUnitLabel } from '../js/or
 import { isStaff, validateProfile } from '../js/permissions.js';
 import { validateCustomerInput } from '../js/customer-validation.js';
 
+test('Orders page contains the controls required by order initialization', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  for (const id of ['orders-view', 'order-new', 'order-refresh', 'order-intake', 'order-search', 'order-status', 'order-archive', 'order-user', 'order-from', 'order-to', 'order-export', 'order-cards', 'order-message', 'order-body', 'order-activity-actor', 'order-activity-customer', 'order-activity-order', 'order-activity-type', 'order-activity-from', 'order-activity-to', 'order-activity-apply', 'order-activity-export', 'order-activity-message', 'order-activity-body', 'order-activity-prev', 'order-activity-page', 'order-activity-next']) {
+    assert.match(html, new RegExp(`id="${id}"`), `Missing ${id}`);
+  }
+});
+
 test('new-customer choice is first; order form survives customer dialog cancel and creation', async () => {
   const nodes = new Map(), saved = [], orderSaves = []; let stockReads = 0;
   const el = (id) => {

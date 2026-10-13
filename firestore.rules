@@ -29,17 +29,12 @@ service cloud.firestore {
       return activeProfile() && resource.data.ownerUid == request.auth.uid;
     }
 
-    function linkedCustomer(customerId) {
-      let links = resource.data.get('orderLinks', {});
-      let orderId = links.get(request.auth.uid, '');
-      let orderPath = /databases/$(database)/documents/orders/$(orderId);
-      return activeProfile()
-        && links is map
-        && orderId is string
-        && orderId.size() > 0
-        && exists(orderPath)
-        && get(orderPath).data.ownerUid == request.auth.uid
-        && get(orderPath).data.customerId == customerId;
+    function validCustomerAssignment(data) {
+      let uid = data.get('assignedUserId', null);
+      return uid == null || (uid is string && uid.size() > 0 && uid.size() <= 128
+        && exists(/databases/$(database)/documents/users/$(uid))
+        && get(/databases/$(database)/documents/users/$(uid)).data.active == true
+        && get(/databases/$(database)/documents/users/$(uid)).data.role == 'user');
     }
 
     function validText(value, maxLength) {
@@ -55,7 +50,8 @@ service cloud.firestore {
     }
     function customerAuditFields(data) {
       return { 'fullName': data.fullName, 'contact': data.contact, 'address': data.address,
-        'area': data.area, 'dateOfBirth': data.get('dateOfBirth', null), 'sabha': data.sabha };
+        'area': data.area, 'dateOfBirth': data.get('dateOfBirth', null), 'sabha': data.sabha,
+        'assignedUserId': data.get('assignedUserId', null) };
     }
     function customerCalendarDate(value) {
       let parts = value.split('-');
@@ -289,17 +285,20 @@ service cloud.firestore {
     }
 
     match /customers/{customerId} {
-      allow get: if isStaff() || linkedCustomer(customerId);
-      // Users look up customer IDs from their own orders; rules cannot filter a collection query.
-      allow list: if isStaff();
+      allow get, list: if isStaff() || (activeProfile() && resource.data.get('assignedUserId', null) == request.auth.uid);
+      // User queries must constrain assignedUserId to their authenticated UID.
       allow create: if isStaff()
-        && request.resource.data.keys().hasOnly(['fullName', 'contact', 'address', 'area', 'dateOfBirth', 'sabha', 'contactKey', 'ownerUserIds', 'orderLinks', 'createdBy', 'createdAt', 'updatedBy', 'updatedAt', 'lastAuditId'])
+        && request.resource.data.keys().hasOnly(['fullName', 'contact', 'address', 'area', 'dateOfBirth', 'sabha', 'contactKey', 'assignedUserId', 'ownerUserIds', 'orderLinks', 'createdBy', 'createdAt', 'updatedBy', 'updatedAt', 'lastAuditId'])
         && validCustomerFields(request.resource.data)
+        && validCustomerAssignment(request.resource.data)
+        && (request.resource.data.get('assignedUserId', null) == null || get(profilePath()).data.role == 'admin')
         && request.resource.data.ownerUserIds == [] && request.resource.data.orderLinks == {}
         && request.resource.data.createdBy == request.auth.uid && request.resource.data.createdAt == request.time
         && validCustomerDependencies(customerId, request.resource.data);
       allow update: if isStaff() && validCustomerFields(request.resource.data)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'contact', 'address', 'area', 'dateOfBirth', 'sabha', 'contactKey', 'updatedBy', 'updatedAt', 'lastAuditId'])
+        && validCustomerAssignment(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['fullName', 'contact', 'address', 'area', 'dateOfBirth', 'sabha', 'contactKey', 'assignedUserId', 'updatedBy', 'updatedAt', 'lastAuditId'])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['assignedUserId']) || get(profilePath()).data.role == 'admin')
         && validCustomerDependencies(customerId, request.resource.data)
         && (resource.data.get('contactKey', customerContactKey(resource.data.contact)) == request.resource.data.contactKey
           || !existsAfter(/databases/$(database)/documents/customerContacts/$(resource.data.get('contactKey', customerContactKey(resource.data.contact)))));

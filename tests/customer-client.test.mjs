@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { collection, deleteDoc, doc, getDoc, getDocs, serverTimestamp, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { customerContactHash, customerSaveError } from '../js/customer-validation.js';
 
 const source = readFileSync(new URL('../js/customer-data.js', import.meta.url), 'utf8')
@@ -58,10 +58,39 @@ test('duplicate submission retries reuse the same customer and audit; parallel c
   assert.equal(parallel.filter((entry) => entry.status === 'fulfilled').length, 1);
 });
 
+test('Admin assignment and reassignment change User visibility without changing customer ID or contact reservation', async () => {
+  await save('admin', 'assigned', { ...input, assignedUserId: 'userA' });
+  const key = await customerContactHash(input.contact);
+  assert.equal((await getDocs(query(collection(dbFor('userA'), 'customers'), where('assignedUserId', '==', 'userA')))).size, 1);
+  await assertSucceeds(getDoc(doc(dbFor('userA'), 'customers', 'assigned')));
+  await assertFails(getDoc(doc(dbFor('userB'), 'customers', 'assigned')));
+  await assertFails(getDocs(collection(dbFor('userA'), 'customers')));
+  await assertFails(updateDoc(doc(dbFor('userA'), 'customers', 'assigned'), { assignedUserId: 'userB' }));
+  await assertFails(save('account', 'account-assigned', { ...input, contact: '9999999999', assignedUserId: 'userB' }));
+  await save('admin', 'assigned', { ...input, assignedUserId: 'userB' }, false);
+  await assertFails(getDoc(doc(dbFor('userA'), 'customers', 'assigned')));
+  await assertSucceeds(getDoc(doc(dbFor('userB'), 'customers', 'assigned')));
+  assert.equal((await getDocs(query(collection(dbFor('userB'), 'customers'), where('assignedUserId', '==', 'userB')))).size, 1);
+  assert.equal((await getDoc(doc(dbFor('admin'), 'customerContacts', key))).data().customerId, 'assigned');
+  const customer = (await getDoc(doc(dbFor('admin'), 'customers', 'assigned'))).data();
+  const audit = (await getDoc(doc(dbFor('admin'), 'auditLogs', customer.lastAuditId))).data();
+  assert.equal(audit.detail.before.assignedUserId, 'userA');
+  assert.equal(audit.detail.after.assignedUserId, 'userB');
+});
+
+test('legacy unassigned customer stays staff-only until Admin assigns an active User', async () => {
+  await save('account', 'legacy');
+  await assertFails(getDoc(doc(dbFor('userA'), 'customers', 'legacy')));
+  await assertSucceeds(getDoc(doc(dbFor('admin'), 'customers', 'legacy')));
+  await assertFails(save('admin', 'legacy', { ...input, assignedUserId: 'inactive' }, false));
+  await save('admin', 'legacy', { ...input, assignedUserId: 'userA' }, false);
+  await assertSucceeds(getDoc(doc(dbFor('userA'), 'customers', 'legacy')));
+});
+
 async function rawCreate(id, change = {}, auditChange = {}, options = {}) {
   const db = dbFor('admin'), key = await customerContactHash(input.contact), auditId = `audit-${id}`;
-  const data = { ...input, contactKey: key, ownerUserIds: [], orderLinks: {}, createdBy: 'admin', updatedBy: 'admin', createdAt: serverTimestamp(), updatedAt: serverTimestamp(), lastAuditId: auditId, ...change };
-  const after = Object.fromEntries(['fullName', 'contact', 'address', 'area', 'dateOfBirth', 'sabha'].map((field) => [field, data[field]]));
+  const data = { ...input, assignedUserId: null, contactKey: key, ownerUserIds: [], orderLinks: {}, createdBy: 'admin', updatedBy: 'admin', createdAt: serverTimestamp(), updatedAt: serverTimestamp(), lastAuditId: auditId, ...change };
+  const after = Object.fromEntries(['fullName', 'contact', 'address', 'area', 'dateOfBirth', 'sabha', 'assignedUserId'].map((field) => [field, data[field]]));
   const batch = writeBatch(db);
   batch.set(doc(db, 'customers', id), data);
   if (!options.omitReservation) batch.set(doc(db, 'customerContacts', data.contactKey), { customerId: id, createdAt: serverTimestamp(), ...options.reservationChange });
@@ -121,7 +150,7 @@ test('reservations cannot be stolen, deleted alone or left behind by a contact c
   const batch = writeBatch(db);
   batch.update(doc(db, 'customers', 'reserved'), { ...next, contactKey: nextKey, updatedBy: 'admin', updatedAt: serverTimestamp(), lastAuditId: 'changed-contact' });
   batch.set(doc(db, 'customerContacts', nextKey), { customerId: 'reserved', createdAt: serverTimestamp() });
-  batch.set(doc(db, 'auditLogs', 'changed-contact'), { type: 'customer.updated', actorUid: 'admin', referenceType: 'customer', referenceId: 'reserved', detail: { before: input, after: next }, at: serverTimestamp() });
+  batch.set(doc(db, 'auditLogs', 'changed-contact'), { type: 'customer.updated', actorUid: 'admin', referenceType: 'customer', referenceId: 'reserved', detail: { before: { ...input, assignedUserId: null }, after: { ...next, assignedUserId: null } }, at: serverTimestamp() });
   await assertFails(batch.commit());
   assert.equal((await getDoc(doc(db, 'customers', 'reserved'))).data().contactKey, old.contactKey);
   assert.equal((await getDoc(doc(db, 'customerContacts', nextKey))).exists(), false);
@@ -134,7 +163,7 @@ test('both staff roles can edit; edits cannot change creator, ownership or exist
   for (const change of [{ createdBy: 'account' }, { createdAt: serverTimestamp() }, { ownerUserIds: ['userA'] }, { orderLinks: { userA: 'forged' } }]) {
     const batch = writeBatch(db), auditId = 'tampered-edit';
     batch.update(doc(db, 'customers', 'editable-staff'), { ...change, updatedBy: 'admin', updatedAt: serverTimestamp(), lastAuditId: auditId });
-    const before = { ...input, fullName: current.fullName };
+    const before = { ...input, fullName: current.fullName, assignedUserId: null };
     batch.set(doc(db, 'auditLogs', auditId), { type: 'customer.updated', actorUid: 'admin', referenceType: 'customer', referenceId: 'editable-staff', detail: { before, after: before }, at: serverTimestamp() });
     await assertFails(batch.commit());
   }
@@ -168,7 +197,7 @@ test('direct requests reject ownership, author, contact-hash, date, field and au
 });
 
 test('staff edit personal fields, release old reservations and preserve ownership and history', async () => {
-  await save('admin', 'editable');
+  await save('admin', 'editable', { ...input, assignedUserId: 'userA' });
   await environment.withSecurityRulesDisabled(async (context) => {
     await setDoc(doc(context.firestore(), 'orders', 'own-order'), { ownerUid: 'userA', customerId: 'editable' });
     await updateDoc(doc(context.firestore(), 'customers', 'editable'), { ownerUserIds: ['userA'], orderLinks: { userA: 'own-order' } });

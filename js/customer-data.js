@@ -1,7 +1,7 @@
 import { collection, doc, runTransaction, serverTimestamp } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 import { customerContactHash, validateCustomerInput } from './customer-validation.js';
 
-const snapshotFields = (data) => Object.fromEntries(['fullName', 'contact', 'address', 'area', 'dateOfBirth', 'sabha'].map((key) => [key, data[key] ?? null]));
+const snapshotFields = (data) => Object.fromEntries(['fullName', 'contact', 'address', 'area', 'dateOfBirth', 'sabha', 'assignedUserId'].map((key) => [key, data[key] ?? null]));
 const validId = (id) => typeof id === 'string' && id.length > 0 && id.length <= 128 && !id.includes('/') && !['.', '..'].includes(id);
 
 export async function saveCustomerDirect(db, auth, input, { customerId, create = true }) {
@@ -9,6 +9,10 @@ export async function saveCustomerDirect(db, auth, input, { customerId, create =
   if (!uid) throw Object.assign(new Error('Sign in before saving a customer.'), { code: 'unauthenticated' });
   if (!validId(customerId)) throw new Error('Invalid customer submission ID. Reopen the form.');
   const values = validateCustomerInput(input);
+  if (Object.hasOwn(input, 'assignedUserId')) {
+    if (input.assignedUserId !== null && !validId(input.assignedUserId)) throw new Error('Choose an active assigned user.');
+    values.assignedUserId = input.assignedUserId;
+  }
   const contactKey = await customerContactHash(values.contact);
   const customerRef = doc(db, 'customers', customerId);
   const reservationRef = doc(db, 'customerContacts', contactKey);
@@ -35,7 +39,7 @@ export async function saveCustomerDirect(db, auth, input, { customerId, create =
     else transaction.set(customerRef, { ...changes, ownerUserIds: [], orderLinks: {}, createdBy: uid, createdAt: serverTimestamp() });
     transaction.set(auditRef, {
       type: old ? 'customer.updated' : 'customer.created', actorUid: uid, referenceType: 'customer', referenceId: customerId,
-      detail: { before: old ? snapshotFields(old) : null, after: snapshotFields(values) }, at: serverTimestamp(),
+      detail: { before: old ? snapshotFields(old) : null, after: snapshotFields({ ...old, ...values }) }, at: serverTimestamp(),
     });
     return { customerId, alreadySaved: false };
   });

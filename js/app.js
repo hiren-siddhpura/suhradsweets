@@ -136,6 +136,6 @@ try {
   }
 } catch (error) {
   authDiagnostic('firebase-initialization-error', null, error);
-  showError('The app could not load Firebase modules. Check your internet connection and reload.');
+  showError('The app could not start. Reload the page and check your connection.');
   setStatus('Unavailable', 'status-error');
 }

@@ -37,8 +37,9 @@ async function seed() {
     await setDoc(record(db, 'orderControls/global'), { acceptingOrders: true });
     await setDoc(record(db, 'orders/orderA'), { ownerUid: 'userA', customerId: 'customerA', status: 'confirmed', totalPaise: 5000, lines: [{ itemName: 'Sweet', quantity: 1 }] });
     await setDoc(record(db, 'orders/orderB'), { ownerUid: 'userB', customerId: 'customerB', status: 'draft' });
-    await setDoc(record(db, 'customers/customerA'), { name: 'Customer A', orderLinks: { userA: 'orderA' } });
-    await setDoc(record(db, 'customers/customerB'), { name: 'Customer B', orderLinks: { userB: 'orderB' } });
+    await setDoc(record(db, 'customers/customerA'), { name: 'Customer A', assignedUserId: 'userA', orderLinks: { userA: 'orderA' } });
+    await setDoc(record(db, 'customers/customerB'), { name: 'Customer B', assignedUserId: 'userB', orderLinks: { userB: 'orderB' } });
+    await setDoc(record(db, 'customers/legacy'), { name: 'Legacy Customer' });
     await setDoc(record(db, 'invoices/invoiceA'), { ownerUid: 'userA', orderId: 'orderA', paymentStatus: 'unpaid', paidAt: null, paidBy: null, totalPaise: 5000 });
     await setDoc(record(db, 'invoices/invoiceB'), { ownerUid: 'userB', orderId: 'orderB', paymentStatus: 'unpaid', paidAt: null, paidBy: null, totalPaise: 2000 });
     await setDoc(record(db, 'payments/paymentA'), { ownerUid: 'userA', invoiceId: 'invoiceA', method: 'upi', amountPaise: 2500, verificationStatus: 'unverified' });
@@ -140,7 +141,7 @@ test('reporting date and prefix queries remain permitted for their roles', async
   await assertSucceeds(getDocs(query(collection(dbFor('adminA'), 'announcements'), where('titleKey', '>=', 'wel'), where('titleKey', '<=', 'wel\uf8ff'), where('startsOn', '>=', '2026-10-01'), orderBy('titleKey'))));
 });
 
-test('Users read only owned orders, invoices, payments and linked customers', async () => {
+test('Users read only owned orders, invoices, payments and assigned customers', async () => {
   const db = dbFor('userA');
   for (const path of ['users/userA', 'orders/orderA', 'invoices/invoiceA', 'payments/paymentA', 'customers/customerA']) {
     await assertSucceeds(getDoc(record(db, path)));
@@ -151,6 +152,12 @@ test('Users read only owned orders, invoices, payments and linked customers', as
   await assertSucceeds(getDocs(query(collection(db, 'orders'), where('ownerUid', '==', 'userA'))));
   await assertFails(getDocs(collection(db, 'orders')));
   await assertFails(getDocs(collection(db, 'customers')));
+  const assigned = await assertSucceeds(getDocs(query(collection(db, 'customers'), where('assignedUserId', '==', 'userA'))));
+  assert.deepEqual(assigned.docs.map((item) => item.id), ['customerA']);
+  await assertFails(getDocs(query(collection(db, 'customers'), where('assignedUserId', '==', 'userB'))));
+  await assertFails(getDoc(record(db, 'customers/legacy')));
+  await assertSucceeds(getDoc(record(dbFor('adminA'), 'customers/legacy')));
+  await assertSucceeds(getDoc(record(dbFor('accountA'), 'customers/legacy')));
 });
 
 test('Users can query active catalog and global order status but cannot edit them', async () => {

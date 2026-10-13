@@ -39,6 +39,8 @@ export function initOrderUi({ db, functions, auth, mode }) {
   const staff = () => isStaff(profile);
   const admin = () => !validateProfile(profile) && profile.role === 'admin';
   const eligibleUsers = () => [...new Map(users.filter(row => row.id && !validateProfile(row)).map(row => [row.id, row])).values()];
+  const customerAssignees = () => eligibleUsers().filter((row) => row.role === 'user');
+  const customerAssigneeName = (customer) => customer.assignedUserId ? users.find((row) => row.id === customer.assignedUserId)?.displayName || users.find((row) => row.id === customer.assignedUserId)?.fullName || (customer.assignedUserId === user?.uid ? 'You' : 'Assigned user') : 'Unassigned';
   const assignedUserName = (order) => {
     const uid = order.assignedUserId || order.ownerUid;
     const record = users.find((entry) => entry.id === uid);
@@ -56,10 +58,9 @@ export function initOrderUi({ db, functions, auth, mode }) {
       const privileged = staff();
       const scopedUid = privileged ? null : user.uid;
       if (page === 'customers') {
-        const scopedOrders = scopedUid ? await listOrders(db, scopedUid) : [];
-        const rows = await listCustomers(db, scopedUid, scopedOrders);
+        const [rows, userRows] = await Promise.all([listCustomers(db, scopedUid), admin() ? listMasterRecords(db, 'users') : Promise.resolve([])]);
         if (version !== sessionVersion) return;
-        orders = scopedOrders; customers = rows;
+        customers = rows; if (admin()) users = userRows;
         renderCustomers();
       } else if (page === 'orders') {
         const scopedOrders = await listOrders(db, scopedUid);
@@ -82,7 +83,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     } catch (error) { if (version === sessionVersion) { console.error('Could not load orders:', error); message.textContent = `Could not load records: ${cleanError(error)}`; } }
   }
 
-  const filteredCustomers = () => customers.filter((customer) => `${customer.fullName} ${customer.contact}`.toLowerCase().includes($('customer-search').value.toLowerCase())).sort((a, b) => a.fullName.localeCompare(b.fullName));
+  const filteredCustomers = () => customers.filter((customer) => `${customer.fullName} ${customer.contact} ${customer.area}`.toLowerCase().includes($('customer-search').value.toLowerCase())).sort((a, b) => a.fullName.localeCompare(b.fullName));
   const filteredOrders = () => orders.filter((order) => {
     const search = $('order-search').value.toLowerCase();
     return (!search || `${order.orderNumber} ${order.customerSnapshot?.fullName} ${order.customerSnapshot?.contact}`.toLowerCase().includes(search))
@@ -102,7 +103,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     $('customer-new').hidden = !staff();
     const rows = filteredCustomers();
     $('customer-summary').innerHTML = `<div class="card ops-stat"><span>Visible customers</span><strong>${rows.length}</strong></div>${staff() ? `<div class="card ops-stat"><span>Sabha customers</span><strong>${rows.filter((c) => c.sabha).length}</strong></div><div class="card ops-stat"><span>Areas</span><strong>${new Set(rows.map((c) => c.area)).size}</strong></div>` : ''}`;
-    $('customer-body').innerHTML = rows.length ? rows.map((c) => `<tr><td>${esc(c.fullName)}</td><td>${esc(c.contact)}</td><td>${esc(c.area)}</td><td>${esc(c.address)}</td><td>${staff() ? c.sabha ? 'Yes' : 'No' : '—'}</td><td>${staff() ? esc(c.ownerUserIds?.length || 0) : '—'}</td><td>${staff() ? `<button class="ops-link" type="button" data-id="${esc(c.id)}" data-action="editCustomer">Edit</button> ${mode === 'emulator' ? `<button class="ops-link" type="button" data-id="${esc(c.id)}" data-action="deleteCustomer">Delete</button>` : ''}` : ''}</td></tr>`).join('') : empty(7, 'No customers match your search or order access.');
+    $('customer-body').innerHTML = rows.length ? rows.map((c) => `<tr><td>${esc(c.fullName)}</td><td>${esc(c.contact)}</td><td>${esc(c.area)}</td><td>${esc(c.address)}</td><td>${esc(customerAssigneeName(c))}</td><td>${staff() ? c.sabha ? 'Yes' : 'No' : '—'}</td><td>${staff() ? esc(c.ownerUserIds?.length || 0) : '—'}</td><td>${staff() ? `<button class="ops-link" type="button" data-id="${esc(c.id)}" data-action="editCustomer">Edit</button> ${mode === 'emulator' ? `<button class="ops-link" type="button" data-id="${esc(c.id)}" data-action="deleteCustomer">Delete</button>` : ''}` : ''}</td></tr>`).join('') : empty(8, 'No customers match your search or order access.');
   }
   function renderOrders() {
     $('order-intake').hidden = !staff();
@@ -146,7 +147,8 @@ export function initOrderUi({ db, functions, auth, mode }) {
   }
 
   function customerFields(c = {}, prefix = '') {
-    return `${field('Full name', `${prefix}fullName`, 'text', c.fullName, 'required maxlength="120"')}${field('Contact', `${prefix}contact`, 'text', c.contact, 'required maxlength="80"')}${field('Address', `${prefix}address`, 'text', c.address, 'required maxlength="300"')}${field('Area', `${prefix}area`, 'text', c.area, 'required maxlength="100"')}${field('Date of birth (optional)', `${prefix}dateOfBirth`, 'date', c.dateOfBirth || '')}<label class="ops-field">Sabha<select name="${prefix}sabha"><option value="false" ${!c.sabha ? 'selected' : ''}>No</option><option value="true" ${c.sabha ? 'selected' : ''}>Yes</option></select></label>`;
+    const assignment = admin() && !parkedOrder ? `<label class="ops-field">Assigned User<select name="assignedUserId"><option value="" ${!c.assignedUserId ? 'selected' : ''}>Unassigned</option>${customerAssignees().map((row) => `<option value="${esc(row.id)}" ${row.id === c.assignedUserId ? 'selected' : ''}>${esc(row.displayName || row.fullName || row.id)}</option>`).join('')}</select></label>` : '';
+    return `${field('Full name', `${prefix}fullName`, 'text', c.fullName, 'required maxlength="120"')}${field('Contact', `${prefix}contact`, 'text', c.contact, 'required maxlength="80"')}${field('Address', `${prefix}address`, 'text', c.address, 'required maxlength="300"')}${field('Area', `${prefix}area`, 'text', c.area, 'required maxlength="100"')}${field('Date of birth (optional)', `${prefix}dateOfBirth`, 'date', c.dateOfBirth || '')}<label class="ops-field">Sabha<select name="${prefix}sabha"><option value="false" ${!c.sabha ? 'selected' : ''}>No</option><option value="true" ${c.sabha ? 'selected' : ''}>Yes</option></select></label>${assignment}`;
   }
   const readCustomerFields = (data, prefix = '') => ({ fullName: data.get(`${prefix}fullName`), contact: data.get(`${prefix}contact`), address: data.get(`${prefix}address`), area: data.get(`${prefix}area`), dateOfBirth: data.get(`${prefix}dateOfBirth`) || null, sabha: data.get(`${prefix}sabha`) === 'true' });
   const stockIds = () => [...new Set([...items.filter((item) => item.active).map((item) => item.id), ...specials.filter((special) => special.active).flatMap((special) => special.components?.map((part) => part.itemId) || [])])];
@@ -249,7 +251,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     }
     if (nextAction === 'order') {
       const selectedCustomer = o?.customerId || '__new__';
-      $('order-fields').innerHTML = `<div class="order-customer-choice"><label class="ops-field">Customer<select name="customerId" id="order-customer" ${o ? 'disabled' : ''}><option value="__new__" ${selectedCustomer === '__new__' ? 'selected' : ''}>+ Add New Customer</option>${customers.slice().sort((a, b) => a.fullName.localeCompare(b.fullName)).map((row) => `<option value="${esc(row.id)}" ${row.id === selectedCustomer ? 'selected' : ''}>${esc(row.fullName)} · ${esc(row.contact)}</option>`).join('')}</select></label><button id="order-add-customer" class="ops-link" type="button" ${o ? 'hidden' : ''}>${pendingCustomerDetails ? 'Edit new customer details' : 'Enter new customer details'}</button></div>${o ? `<input type="hidden" name="customerId" value="${esc(o.customerId)}">` : ''}${admin() ? `<label class="ops-field">Assigned User<select name="assignedUserId" required ${o ? 'disabled' : ''}>${eligibleUsers().map((row) => `<option value="${esc(row.id)}" ${o?.assignedUserId === row.id ? 'selected' : ''}>${esc(row.displayName || row.fullName || row.id)}</option>`).join('')}</select></label>` : ''}${field('Order date', 'orderDate', 'date', o?.orderDate || new Date().toISOString().slice(0, 10), 'required')}${field('Delivery date (optional)', 'deliveryDate', 'date', o?.deliveryDate || '')}<div class="ops-lines order-entry-lines"><h3>Order Lines</h3><p id="order-stock-message" class="muted"></p><div id="order-lines">${(o?.lines || [{}]).map(orderLine).join('')}</div><button id="order-add-line" class="button button-outline" type="button">+ Add Line</button><p class="muted">Prices and stock are checked when the invoice is created.${admin() ? ' Special products use whole combos.' : ''}</p></div><label class="ops-field">Notes<textarea name="notes" maxlength="1000">${esc(o?.notes || '')}</textarea></label>`;
+      $('order-fields').innerHTML = `<div class="order-customer-choice"><label class="ops-field">Customer<select name="customerId" id="order-customer" ${o ? 'disabled' : ''}><option value="__new__" ${selectedCustomer === '__new__' ? 'selected' : ''}>+ Add New Customer</option>${customers.slice().sort((a, b) => a.fullName.localeCompare(b.fullName)).map((row) => `<option value="${esc(row.id)}" ${row.id === selectedCustomer ? 'selected' : ''}>${esc(row.fullName)} · ${esc(row.contact)}</option>`).join('')}</select><small id="order-customer-details"></small></label><button id="order-add-customer" class="ops-link" type="button" ${o ? 'hidden' : ''}>${pendingCustomerDetails ? 'Edit new customer details' : 'Enter new customer details'}</button></div>${o ? `<input type="hidden" name="customerId" value="${esc(o.customerId)}">` : ''}${admin() ? `<label class="ops-field">Assigned User<select name="assignedUserId" required ${o ? 'disabled' : ''}>${eligibleUsers().map((row) => `<option value="${esc(row.id)}" ${o?.assignedUserId === row.id ? 'selected' : ''}>${esc(row.displayName || row.fullName || row.id)}</option>`).join('')}</select></label>` : ''}${field('Order date', 'orderDate', 'date', o?.orderDate || new Date().toISOString().slice(0, 10), 'required')}${field('Delivery date (optional)', 'deliveryDate', 'date', o?.deliveryDate || '')}<div class="ops-lines order-entry-lines"><h3>Order Lines</h3><p id="order-stock-message" class="muted"></p><div id="order-lines">${(o?.lines || [{}]).map(orderLine).join('')}</div><button id="order-add-line" class="button button-outline" type="button">+ Add Line</button><p class="muted">Prices and stock are checked when the invoice is created.${admin() ? ' Special products use whole combos.' : ''}</p></div><label class="ops-field">Notes<textarea name="notes" maxlength="1000">${esc(o?.notes || '')}</textarea></label>`;
       toggleNewCustomer();
       refreshStock();
     }
@@ -269,12 +271,15 @@ export function initOrderUi({ db, functions, auth, mode }) {
     const button = $('order-add-customer'), select = $('order-customer'); if (!button || !select) return;
     button.hidden = select.disabled || select.value !== '__new__';
     button.textContent = pendingCustomerDetails ? `Edit new customer details: ${pendingCustomerDetails.fullName}` : 'Enter new customer details';
+    const details = $('order-customer-details');
+    const selected = customers.find((row) => row.id === select.value);
+    if (details) details.textContent = selected ? [selected.contact, selected.area, selected.address].filter(Boolean).join(' · ') : pendingCustomerDetails ? `${pendingCustomerDetails.contact} · ${pendingCustomerDetails.area}` : '';
   }
   function openCustomerFromOrder() {
     if (saving || action !== 'order' || parkedOrder || !$('order-customer') || $('order-customer').disabled) return;
-    const fields = $('order-fields'), fragment = document.createDocumentFragment();
+    const fields = $('order-fields'), assignedUserId = admin() ? fields.querySelector?.('[name=assignedUserId]')?.value || null : null, fragment = document.createDocumentFragment();
     while (fields.firstChild) fragment.appendChild(fields.firstChild);
-    parkedOrder = { fragment, targetId, title: $('order-dialog-title').textContent };
+    parkedOrder = { fragment, targetId, title: $('order-dialog-title').textContent, assignedUserId };
     openDialog('customer');
   }
   function restoreOrderForm(customerId = null) {
@@ -307,7 +312,11 @@ export function initOrderUi({ db, functions, auth, mode }) {
       if (action === 'deleteCustomer') { if (!staff()) throw new Error('Staff access is required.'); name = 'deleteCustomer'; payload = { customerId: targetId }; } else if (action === 'customer') {
         if (!staff() && !parkedOrder) throw new Error('Staff access is required.');
         payload = validateCustomerInput(readCustomerFields(data));
+        if (admin()) payload.assignedUserId = parkedOrder ? parkedOrder.assignedUserId : data.get('assignedUserId') || null;
         const duplicate = customers.find((c) => c.id !== targetId && normalize(c.contact) === normalize(payload.contact));
+        if (duplicate && parkedOrder && (!admin() || duplicate.assignedUserId === payload.assignedUserId)) {
+          pendingCustomerDetails = null; restoreOrderForm(duplicate.id); showToast('Existing customer selected.'); return;
+        }
         if (duplicate) throw new Error(`A customer with this contact already exists: ${duplicate.fullName}.`);
         if (parkedOrder) {
           if (staff()) {

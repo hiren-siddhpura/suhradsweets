@@ -66,8 +66,16 @@ export async function saveCustomer(db, uid, input) {
   if (!validId(customerId)) fail('Invalid customer ID.');
   const ref = db.doc(`customers/${customerId}`);
   return db.runTransaction(async (tx) => {
-    requireStaff(await actor(db, uid, tx));
+    const staff = await actor(db, uid, tx); requireStaff(staff);
     const existing = await tx.get(ref);
+    const assignmentSupplied = Object.hasOwn(input, 'assignedUserId');
+    const assignedUserId = assignmentSupplied ? input.assignedUserId : existing.exists ? existing.data().assignedUserId ?? null : null;
+    if (assignmentSupplied && staff.role !== 'admin' && assignedUserId !== (existing.exists ? existing.data().assignedUserId ?? null : null)) fail('Only Admin may assign customers.');
+    if (assignedUserId !== null) {
+      if (!validId(assignedUserId)) fail('Choose an active User.');
+      const assignee = await tx.get(db.doc(`users/${assignedUserId}`));
+      if (!assignee.exists || assignee.data().active !== true || assignee.data().role !== 'user') fail('Choose an active User.');
+    }
     const reservation = db.doc(`customerContacts/${values.contactKey}`);
     const reserved = await tx.get(reservation);
     const oldReservation = existing.exists && existing.data().contactKey !== values.contactKey ? db.doc(`customerContacts/${existing.data().contactKey}`) : null;
@@ -76,11 +84,11 @@ export async function saveCustomer(db, uid, input) {
     if (oldReservation && oldReserved.exists && oldReserved.data().customerId === customerId) tx.delete(oldReservation);
     if (!reserved.exists) tx.create(reservation, { customerId, createdAt: FieldValue.serverTimestamp() });
     if (existing.exists) {
-      tx.update(ref, { ...values, updatedAt: FieldValue.serverTimestamp(), updatedBy: uid });
+      tx.update(ref, { ...values, ...(assignmentSupplied ? { assignedUserId } : {}), updatedAt: FieldValue.serverTimestamp(), updatedBy: uid });
     } else {
-      tx.create(ref, { ...values, ownerUserIds: [], orderLinks: {}, createdBy: uid, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+      tx.create(ref, { ...values, assignedUserId, ownerUserIds: [], orderLinks: {}, createdBy: uid, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
     }
-    audit(tx, db, existing.exists ? 'customer.updated' : 'customer.created', uid, 'customer', customerId, { contactChanged: existing.exists && existing.data().contactKey !== values.contactKey });
+    audit(tx, db, existing.exists ? 'customer.updated' : 'customer.created', uid, 'customer', customerId, { contactChanged: existing.exists && existing.data().contactKey !== values.contactKey, assignment: { before: existing.exists ? existing.data().assignedUserId ?? null : null, after: assignedUserId } });
     return { customerId };
   });
 }
@@ -197,12 +205,7 @@ export async function saveOrderDraft(db, uid, input) {
     if (newCustomer && (customer.exists || duplicate.exists)) fail('A customer with this contact may already exist. Search before adding a duplicate.');
     if (!newCustomer && !customer.exists) fail('Customer no longer exists.');
     if (old.exists && old.data().customerId !== customerId) fail('Customer cannot be changed after the draft is created.');
-    if (!newCustomer && !staffRole(user.role) && !old.exists) {
-      const linkedId = customer.data().orderLinks?.[uid];
-      if (!validId(linkedId)) fail('You may use only customers linked to your orders.');
-      const linked = await tx.get(db.doc(`orders/${linkedId}`));
-      if (!linked.exists || linked.data().ownerUid !== uid || linked.data().customerId !== customerId) fail('Customer link is invalid.');
-    }
+    if (!newCustomer && !old.exists && !staffRole(user.role) && customer.data().assignedUserId !== uid) fail('Choose a customer assigned to your account.');
     const lines = await buildLines(db, tx, input.lines, user);
     const subtotal = lines.reduce((sum, line) => sum + line.lineTotalPaise, 0);
     if (!Number.isSafeInteger(subtotal) || subtotal > 1_000_000_000_000) fail('Order total is too large.');
@@ -236,13 +239,13 @@ export async function saveOrderDraft(db, uid, input) {
     const sequence = old.exists ? null : (counter.exists ? counter.data().nextNumber : 1);
     if (!old.exists && (!Number.isSafeInteger(sequence) || sequence < 1 || sequence > 999999)) fail('Order number range is exhausted.');
     const orderNumber = old.exists ? old.data().orderNumber : `SS-${input.orderDate.slice(0, 4)}-${String(sequence).padStart(6, '0')}`;
-    const customerData = newCustomer || customer.data();
+    const customerData = newCustomer || (old.exists && !staffRole(user.role) && customer.data().assignedUserId !== uid ? old.data().customerSnapshot : customer.data());
     if (newCustomer) {
-      tx.create(customerRef, { ...newCustomer, ownerUserIds: [ownerUid], orderLinks: { [ownerUid]: orderId }, createdBy: uid, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
+      tx.create(customerRef, { ...newCustomer, assignedUserId: owner.data().role === 'user' ? ownerUid : null, ownerUserIds: [ownerUid], orderLinks: { [ownerUid]: orderId }, createdBy: uid, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
       tx.create(reservation, { customerId, createdAt: FieldValue.serverTimestamp() });
       audit(tx, db, 'customer.created', uid, 'customer', customerId);
     } else {
-      tx.update(customerRef, { ownerUserIds: [...new Set([...(customerData.ownerUserIds || []), ownerUid])], orderLinks: { ...(customerData.orderLinks || {}), [ownerUid]: orderId }, updatedAt: FieldValue.serverTimestamp() });
+      tx.update(customerRef, { ownerUserIds: [...new Set([...(customer.data().ownerUserIds || []), ownerUid])], orderLinks: { ...(customer.data().orderLinks || {}), [ownerUid]: orderId }, updatedAt: FieldValue.serverTimestamp() });
     }
     if (!old.exists) tx.set(counterRef, { nextNumber: sequence + 1, updatedAt: FieldValue.serverTimestamp() });
     const revision = old.exists ? (old.data().editRevision || 0) + 1 : 0;

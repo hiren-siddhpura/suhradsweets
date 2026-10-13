@@ -36,7 +36,7 @@ test.after(async () => { await deleteApp(app); });
 
 test('fixed unit prices are selected on the server and 250 GM is Admin only', async () => {
   await db.doc('items/itemA').update({ sellingPrice500Gm: 60, sellingPrice250Gm: 35 });
-  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { customerId } = await saveCustomer(db, 'adminA', { ...customer, assignedUserId: 'userA' });
   await saveOrderDraft(db, 'adminA', regularOrder(customerId));
   const line = (unitId) => [{ kind: 'item', productId: 'itemA', quantityQty: 1000, unitId }];
   await assert.rejects(saveOrderDraft(db, 'userA', regularOrder(customerId, { assignedUserId: undefined, lines: line('250gm') })), /Only Admin may select 250 GM/);
@@ -59,7 +59,7 @@ test('order unit selection keeps catalog price, totals, stock and invoice snapsh
     db.doc('units/orderQuarter').set({ name: '250 GM', symbol: 'gm', active: true }),
     db.doc('units/orderInactive').set({ name: '500 GM', symbol: 'gm', active: false }),
   ]);
-  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { customerId } = await saveCustomer(db, 'adminA', { ...customer, assignedUserId: 'userA' });
   const makeOrder = (unitId, extra = {}) => regularOrder(customerId, { lines: [{ kind: 'item', productId: 'itemA', quantityQty: 2000, unitId }], ...extra });
   await saveOrderDraft(db, 'adminA', regularOrder(customerId)); // link the customer to userA
   for (const role of ['accountA', 'userA']) {
@@ -251,11 +251,26 @@ test('cancellation restores once; delivered and invoiced orders cannot use ordin
 
 test('User can create own customer within draft but not another User order', async () => {
   const { orderId, customerId } = await saveOrderDraft(db, 'userA', { ...regularOrder(null), customerId: undefined, newCustomer: customer });
+  assert.equal((await db.doc(`customers/${customerId}`).get()).data().assignedUserId, 'userA');
   assert.equal((await db.doc(`customers/${customerId}`).get()).data().orderLinks.userA, orderId);
-  await assert.rejects(saveOrderDraft(db, 'userB', regularOrder(customerId, { assignedUserId: 'userB' })), /linked to your orders/);
+  await assert.rejects(saveOrderDraft(db, 'userB', regularOrder(customerId, { assignedUserId: 'userB' })), /assigned to your account/);
   await assert.rejects(cancelOrder(db, 'userB', orderId, 'No'), /Only staff/);
   await cancelOrder(db, 'userA', orderId, 'Draft no longer needed');
   assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 5000);
+});
+
+test('assigned customer is reused in orders and keeps historical invoice reference after reassignment', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', { ...customer, assignedUserId: 'userA' });
+  const { orderId } = await saveOrderDraft(db, 'userA', regularOrder(customerId, { assignedUserId: undefined }));
+  assert.equal((await db.collection('customers').get()).size, 1);
+  await createInvoiceFromOrder(db, 'userA', orderId);
+  await saveCustomer(db, 'adminA', { ...customer, customerId, assignedUserId: 'userB' });
+  await assert.rejects(saveOrderDraft(db, 'userA', regularOrder(customerId, { assignedUserId: undefined })), /assigned to your account/);
+  const reassigned = await saveOrderDraft(db, 'userB', regularOrder(customerId, { assignedUserId: undefined }));
+  assert.equal((await db.doc(`orders/${reassigned.orderId}`).get()).data().customerId, customerId);
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().customerId, customerId);
+  assert.equal((await db.doc(`invoices/${orderId}`).get()).data().customerId, customerId);
+  assert.equal((await db.collection('customers').get()).size, 1);
 });
 
 test('only Admin assigns new orders; active staff are eligible; draft owners remain immutable', async () => {

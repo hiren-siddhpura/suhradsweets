@@ -17,7 +17,7 @@ const client = initializeClientApp({ apiKey: 'demo-key', authDomain: 'demo-suh-o
 const auth = getClientAuth(client);
 connectAuthEmulator(auth, `http://${process.env.FIREBASE_AUTH_EMULATOR_HOST}`, { disableWarnings: true });
 const functions = getFunctions(client, 'us-central1');
-connectFunctionsEmulator(functions, '127.0.0.1', 5001);
+connectFunctionsEmulator(functions, '127.0.0.1', Number(process.env.OMS_FUNCTIONS_TEST_PORT || 5001));
 
 test.after(async () => { await signOut(auth).catch(() => {}); await deleteClientApp(client); await deleteAdminApp(admin); });
 
@@ -53,7 +53,8 @@ test('callables reject anonymous and User, then accept Admin and Account Admin',
   await signInWithEmailAndPassword(auth, 'callable-user@example.test', 'LocalOnly123!');
   const order = (await httpsCallable(functions, 'saveOrderDraftCall')({ newCustomer: { fullName: 'Own Customer', contact: '8887776666', address: 'Own street', area: 'Local', dateOfBirth: null, sabha: false }, assignedUserId: 'callableUser', orderDate: '2026-10-10', deliveryDate: null, notes: '', lines: [{ kind: 'item', productId: 'sweetA', quantityQty: 1000 }] })).data;
   assert.equal((await db.doc('inventory/sweetA').get()).data().onHandQty, 1500);
-  await httpsCallable(functions, 'confirmOrderCall')({ orderId: order.orderId });
+  await httpsCallable(functions, 'createInvoiceFromOrderCall')({ orderId: order.orderId });
   assert.equal((await db.doc('inventory/sweetA').get()).data().onHandQty, 500);
-  await assert.rejects(httpsCallable(functions, 'confirmOrderCall')({ orderId: order.orderId }), /Only a draft/);
+  assert.equal((await db.doc(`orders/${order.orderId}`).get()).data().status, 'in_preparation');
+  await assert.rejects(httpsCallable(functions, 'createInvoiceFromOrderCall')({ orderId: order.orderId }), /already exists/);
 });

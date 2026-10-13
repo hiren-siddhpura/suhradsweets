@@ -17,6 +17,7 @@ const empty = (count, label) => `<tr><td colspan="${count}" class="empty-cell">$
 const cleanError = (error) => error?.message?.replace(/^.*?: /, '') || 'Operation failed. Try again.';
 const field = (label, name, type = 'text', value = '', attrs = '') => `<label class="ops-field">${label}<input name="${name}" type="${type}" value="${esc(value)}" ${attrs}></label>`;
 const normalize = (value) => String(value || '').trim().toLowerCase().replace(/[\s()-]/g, '');
+const displayOrderStatus = (status) => status === 'confirmed' ? 'in_preparation' : status;
 const toMilli = (value) => { const n = Number(value); if (!Number.isFinite(n) || n < 0 || Math.abs(Math.round(n * 1000) - n * 1000) > 1e-7) throw new Error('Use up to three decimal places for quantity.'); return Math.round(n * 1000); };
 const toPaise = (value) => { const n = Number(value); if (!Number.isFinite(n) || n < 0 || Math.abs(Math.round(n * 100) - n * 100) > 1e-7) throw new Error('Use up to two decimal places for price.'); return Math.round(n * 100); };
 
@@ -28,6 +29,7 @@ async function exportBook(name, sheets) {
 
 export function initOrderUi({ db, functions, auth, mode }) {
   $('order-activity-type').insertAdjacentHTML?.('beforeend', '<option value="order.locked">Editing locked</option>');
+  $('order-activity-type').insertAdjacentHTML?.('beforeend', '<option value="order.stock_deducted">Stock deducted</option>');
   $('order-activity-order').insertAdjacentHTML?.('afterend', '<input id="order-activity-invoice" type="search" placeholder="Invoice ID" aria-label="Activity invoice"><input id="order-activity-payment" type="search" placeholder="Payment ID" aria-label="Activity payment">');
   let user = null, profile = null, orders = [], customers = [], items = [], specials = [], users = [], acceptingOrders = true;
   let invoiceIds = new Set(), stockAvailability = new Map(), stockMessage = '';
@@ -84,7 +86,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
   const filteredOrders = () => orders.filter((order) => {
     const search = $('order-search').value.toLowerCase();
     return (!search || `${order.orderNumber} ${order.customerSnapshot?.fullName} ${order.customerSnapshot?.contact}`.toLowerCase().includes(search))
-      && (!$('order-status').value || order.status === $('order-status').value)
+      && (!$('order-status').value || order.status === $('order-status').value || order.status === 'confirmed' && $('order-status').value === 'in_preparation')
       && (!$('order-archive').value || (order.archivedAt ? 'archived' : 'active') === $('order-archive').value)
       && (!admin() || !$('order-user').value || order.assignedUserId === $('order-user').value)
       && (!$('order-from').value || order.orderDate >= $('order-from').value)
@@ -111,24 +113,24 @@ export function initOrderUi({ db, functions, auth, mode }) {
     $('order-user').innerHTML = '<option value="">All users</option>' + eligibleUsers().map((u) => `<option value="${esc(u.id)}">${esc(u.displayName || u.fullName || u.id)}</option>`).join('');
     $('order-user').value = selectedUser;
     const rows = filteredOrders();
-    $('order-cards').innerHTML = `<div class="card ops-stat"><span>Visible orders</span><strong>${rows.length}</strong></div><div class="card ops-stat"><span>Open orders</span><strong>${rows.filter((o) => !['cancelled', 'delivered'].includes(o.status)).length}</strong></div><div class="card ops-stat"><span>Confirmed value</span><strong>${rupees(rows.filter((o) => !['draft', 'cancelled'].includes(o.status)).reduce((sum, o) => sum + (o.grandTotal || 0), 0))}</strong></div>`;
+    $('order-cards').innerHTML = `<div class="card ops-stat"><span>Visible orders</span><strong>${rows.length}</strong></div><div class="card ops-stat"><span>Open orders</span><strong>${rows.filter((o) => !['cancelled', 'delivered'].includes(o.status)).length}</strong></div><div class="card ops-stat"><span>Processed value</span><strong>${rupees(rows.filter((o) => !['draft', 'cancelled'].includes(o.status)).reduce((sum, o) => sum + (o.grandTotal || 0), 0))}</strong></div>`;
     $('order-body').innerHTML = rows.length ? rows.map((o) => {
       const manageable = staff() || o.ownerUid === user?.uid;
       const specialOrder = o.lines?.some((line) => line.kind === 'special');
       const mayEdit = manageable && (!specialOrder || admin());
-      const editableStatus = ['draft', 'confirmed', 'in_preparation', 'ready'].includes(o.status);
-      const financialReason = invoiceIds.has(o.id) ? 'An invoice exists for this order.' : o.paymentRequestedAt ? 'Payment was requested for this order.' : '';
-      const lockReason = financialReason || (o.archivedAt ? 'Restore this order to edit it.' : !acceptingOrders ? 'Order-taking is paused.' : '');
+      const editableStatus = ['draft', 'confirmed', 'in_preparation', 'ready', 'delivered'].includes(o.status);
+      const financialReason = invoiceIds.has(o.id) ? 'An invoice exists for this order.' : '';
+      const lockReason = financialReason || (o.archivedAt ? 'Restore this order to edit it.' : '');
       const button = (kind, label, reason = '') => `<button type="button" data-action="${kind}" data-id="${esc(o.id)}" ${reason ? `disabled title="${esc(reason)}"` : ''}>${label}</button>`;
       const actions = [button('viewOrder', 'View'), mayEdit && editableStatus ? button('editOrder', 'Edit', lockReason) : '',
-        o.status === 'draft' && mayEdit ? button('confirmOrder', 'Confirm', o.archivedAt ? 'Restore this order first.' : !acceptingOrders ? 'Order-taking is paused.' : '') : '',
         manageable && editableStatus && (!specialOrder || staff()) ? o.archivedAt ? button('restoreOrder', 'Restore', financialReason) : button('archiveOrder', 'Archive', financialReason) : '',
         editableStatus && (staff() || o.status === 'draft' && !specialOrder) ? button('cancelOrder', 'Cancel', o.archivedAt || invoiceIds.has(o.id) || o.paymentRequestedAt ? 'Financial or archive lock prevents cancellation.' : '') : '',
         staff() && ['confirmed', 'in_preparation', 'ready'].includes(o.status) ? button('advanceOrder', 'Next status', o.archivedAt ? 'Restore this order first.' : '') : '',
-        staff() && ['confirmed', 'in_preparation', 'ready', 'delivered'].includes(o.status) && !invoiceIds.has(o.id) ? button('invoiceOrder', 'Create invoice', o.archivedAt ? 'Restore this order first.' : '') : '',
+        manageable && (!specialOrder || admin()) && editableStatus && !invoiceIds.has(o.id) ? button('invoiceOrder', 'Create invoice', o.archivedAt ? 'Restore this order first.' : '') : '',
         invoiceIds.has(o.id) ? button('viewInvoice', 'View invoice') : '',
-        !staff() && ['confirmed', 'in_preparation', 'ready', 'delivered'].includes(o.status) && !invoiceIds.has(o.id) ? '<span class="muted">Awaiting staff invoice</span>' : ''].filter(Boolean).join('');
-      return `<tr><td>${esc(o.orderNumber)}</td><td>${esc(o.customerSnapshot?.fullName)}</td><td>${esc(o.orderDate)}</td><td>${esc(assignedUserName(o))}</td><td>${esc(o.archivedAt ? `${o.status} · Archived` : o.status)}</td><td>${rupees(o.grandTotal)}</td><td class="ops-actions">${actions}</td></tr>`;
+        ].filter(Boolean).join('');
+      const statusLabel = displayOrderStatus(o.status);
+      return `<tr><td>${esc(o.orderNumber)}</td><td>${esc(o.customerSnapshot?.fullName)}</td><td>${esc(o.orderDate)}</td><td>${esc(assignedUserName(o))}</td><td>${esc(o.archivedAt ? `${statusLabel} · Archived` : statusLabel)}</td><td>${rupees(o.grandTotal)}</td><td class="ops-actions">${actions}</td></tr>`;
     }).join('') : empty(7, 'No orders match these filters.');
   }
   function renderSpecials() {
@@ -176,7 +178,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
   function stockNotice(kind, id) {
     if (!id) return '';
     const stock = productStock(kind, id);
-    if (!stock || stock.availableQty == null) return 'Stock information is unavailable. Confirmation will check current stock.';
+    if (!stock || stock.availableQty == null) return 'Stock information is unavailable. Invoice creation will check current stock.';
     if (stock?.status === 'blocked') return 'This product is blocked from new confirmations.';
     if (stock?.status === 'unavailable') return 'This product is unavailable for new confirmations.';
     return '';
@@ -209,7 +211,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     for (const [id, quantity] of needed) {
       const stock = stockAvailability.get(id);
       const additional = Math.max(0, quantity - (existing?.stockDeductions?.find((part) => part.itemId === id)?.quantityQty || 0));
-      if (stock?.availableQty != null && (stock.status === 'blocked' && additional > 0 || additional > stock.availableQty)) return 'Requested quantity exceeds available stock or an item is blocked. Confirmation will be rejected until stock is available.';
+      if (stock?.availableQty != null && (stock.status === 'blocked' && additional > 0 || additional > stock.availableQty)) return 'Requested quantity exceeds available stock or an item is blocked. Invoice creation will be rejected until stock is available.';
     }
     return '';
   }
@@ -238,7 +240,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     $('order-dialog-save').textContent = nextAction === 'deleteCustomer' ? 'Delete customer' : 'Save';
     const c = customers.find((row) => row.id === id), o = orders.find((row) => row.id === id), s = specials.find((row) => row.id === id);
     $('order-dialog-title').textContent = ({ customer: c ? 'Edit customer' : 'Add customer', order: o ? `Edit ${o.orderNumber}` : 'New order', viewOrder: `Order ${o?.orderNumber || ''}`, special: s ? 'Edit combination' : 'Add combination', cancel: 'Cancel order', archive: 'Archive order', restore: 'Restore order', request: 'Record payment request', intake: 'Order-taking', invoice: 'Create invoice' })[nextAction];
-    if (nextAction === 'viewOrder' && o) $('order-fields').innerHTML = `<div class="ops-lines"><p><strong>Customer:</strong> ${esc(o.customerSnapshot?.fullName)}</p><p><strong>Assigned to:</strong> ${esc(assignedUserName(o))}</p><p><strong>Status:</strong> ${esc(o.status)}</p><p><strong>Order date:</strong> ${esc(o.orderDate)}</p><p><strong>Order lines</strong></p>${(o.lines || []).map((line) => `<p>${esc(line.kind === 'special' ? line.specialSnapshot?.name : line.itemSnapshot?.name)} · ${esc(qtyText(line.quantityQty))} ${esc(line.kind === 'special' ? 'combo' : orderLineUnitLabel(line))} · ${rupees(line.lineTotalPaise)}</p>`).join('')}<p><strong>Total:</strong> ${rupees(o.grandTotal)}</p>${o.notes ? `<p><strong>Notes:</strong> ${esc(o.notes)}</p>` : ''}</div>`;
+    if (nextAction === 'viewOrder' && o) $('order-fields').innerHTML = `<div class="ops-lines"><p><strong>Customer:</strong> ${esc(o.customerSnapshot?.fullName)}</p><p><strong>Assigned to:</strong> ${esc(assignedUserName(o))}</p><p><strong>Status:</strong> ${esc(displayOrderStatus(o.status))}</p><p><strong>Order date:</strong> ${esc(o.orderDate)}</p><p><strong>Order lines</strong></p>${(o.lines || []).map((line) => `<p>${esc(line.kind === 'special' ? line.specialSnapshot?.name : line.itemSnapshot?.name)} · ${esc(qtyText(line.quantityQty))} ${esc(line.kind === 'special' ? 'combo' : orderLineUnitLabel(line))} · ${rupees(line.lineTotalPaise)}</p>`).join('')}<p><strong>Total:</strong> ${rupees(o.grandTotal)}</p>${o.notes ? `<p><strong>Notes:</strong> ${esc(o.notes)}</p>` : ''}</div>`;
     if (nextAction === 'customer') $('order-fields').innerHTML = customerFields(c || (parkedOrder ? pendingCustomerDetails || {} : {}));
     if (nextAction === 'deleteCustomer') {
       if (!staff() || !c) return;
@@ -247,7 +249,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     }
     if (nextAction === 'order') {
       const selectedCustomer = o?.customerId || '__new__';
-      $('order-fields').innerHTML = `<div class="order-customer-choice"><label class="ops-field">Customer<select name="customerId" id="order-customer" ${o ? 'disabled' : ''}><option value="__new__" ${selectedCustomer === '__new__' ? 'selected' : ''}>+ Add New Customer</option>${customers.slice().sort((a, b) => a.fullName.localeCompare(b.fullName)).map((row) => `<option value="${esc(row.id)}" ${row.id === selectedCustomer ? 'selected' : ''}>${esc(row.fullName)} · ${esc(row.contact)}</option>`).join('')}</select></label><button id="order-add-customer" class="ops-link" type="button" ${o ? 'hidden' : ''}>${pendingCustomerDetails ? 'Edit new customer details' : 'Enter new customer details'}</button></div>${o ? `<input type="hidden" name="customerId" value="${esc(o.customerId)}">` : ''}${admin() ? `<label class="ops-field">Assigned User<select name="assignedUserId" required ${o ? 'disabled' : ''}>${eligibleUsers().map((row) => `<option value="${esc(row.id)}" ${o?.assignedUserId === row.id ? 'selected' : ''}>${esc(row.displayName || row.fullName || row.id)}</option>`).join('')}</select></label>` : ''}${field('Order date', 'orderDate', 'date', o?.orderDate || new Date().toISOString().slice(0, 10), 'required')}${field('Delivery date (optional)', 'deliveryDate', 'date', o?.deliveryDate || '')}<div class="ops-lines order-entry-lines"><h3>Order Lines</h3><p id="order-stock-message" class="muted"></p><div id="order-lines">${(o?.lines || [{}]).map(orderLine).join('')}</div><button id="order-add-line" class="button button-outline" type="button">+ Add Line</button><p class="muted">Prices are checked again when the order is confirmed.${admin() ? ' Special products use whole combos.' : ''}</p></div><label class="ops-field">Notes<textarea name="notes" maxlength="1000">${esc(o?.notes || '')}</textarea></label>`;
+      $('order-fields').innerHTML = `<div class="order-customer-choice"><label class="ops-field">Customer<select name="customerId" id="order-customer" ${o ? 'disabled' : ''}><option value="__new__" ${selectedCustomer === '__new__' ? 'selected' : ''}>+ Add New Customer</option>${customers.slice().sort((a, b) => a.fullName.localeCompare(b.fullName)).map((row) => `<option value="${esc(row.id)}" ${row.id === selectedCustomer ? 'selected' : ''}>${esc(row.fullName)} · ${esc(row.contact)}</option>`).join('')}</select></label><button id="order-add-customer" class="ops-link" type="button" ${o ? 'hidden' : ''}>${pendingCustomerDetails ? 'Edit new customer details' : 'Enter new customer details'}</button></div>${o ? `<input type="hidden" name="customerId" value="${esc(o.customerId)}">` : ''}${admin() ? `<label class="ops-field">Assigned User<select name="assignedUserId" required ${o ? 'disabled' : ''}>${eligibleUsers().map((row) => `<option value="${esc(row.id)}" ${o?.assignedUserId === row.id ? 'selected' : ''}>${esc(row.displayName || row.fullName || row.id)}</option>`).join('')}</select></label>` : ''}${field('Order date', 'orderDate', 'date', o?.orderDate || new Date().toISOString().slice(0, 10), 'required')}${field('Delivery date (optional)', 'deliveryDate', 'date', o?.deliveryDate || '')}<div class="ops-lines order-entry-lines"><h3>Order Lines</h3><p id="order-stock-message" class="muted"></p><div id="order-lines">${(o?.lines || [{}]).map(orderLine).join('')}</div><button id="order-add-line" class="button button-outline" type="button">+ Add Line</button><p class="muted">Prices and stock are checked when the invoice is created.${admin() ? ' Special products use whole combos.' : ''}</p></div><label class="ops-field">Notes<textarea name="notes" maxlength="1000">${esc(o?.notes || '')}</textarea></label>`;
       toggleNewCustomer();
       refreshStock();
     }
@@ -255,9 +257,9 @@ export function initOrderUi({ db, functions, auth, mode }) {
     if (nextAction === 'archive') $('order-fields').innerHTML = `<p>Archive ${esc(o?.orderNumber)}? The order and its financial history remain available. Stock is not restored by archiving.</p>${field('Reason (optional)', 'reason', 'text', '', 'maxlength="500"')}`;
     if (nextAction === 'restore') $('order-fields').innerHTML = `<p>Restore ${esc(o?.orderNumber)} to active orders?</p>`;
     if (nextAction === 'request') $('order-fields').innerHTML = `<p>Record that payment was requested for ${esc(o?.orderNumber)}? This locks editing and archiving. It does not send a message or submit a payment.</p>`;
-    if (nextAction === 'cancel') $('order-fields').innerHTML = `<p>Cancel ${esc(o?.orderNumber)}? Stock will be restored for a confirmed, undelivered order. Invoiced orders need a separate return workflow.</p>${field('Reason', 'reason', 'text', '', 'required maxlength="500"')}`;
+    if (nextAction === 'cancel') $('order-fields').innerHTML = `<p>Cancel ${esc(o?.orderNumber)}? Draft orders have no stock to restore. Invoiced orders need a separate return workflow.</p>${field('Reason', 'reason', 'text', '', 'required maxlength="500"')}`;
     if (nextAction === 'intake') $('order-fields').innerHTML = `<p>Order-taking is currently ${acceptingOrders ? 'open' : 'paused'}.</p><label class="ops-field">New status<select name="acceptingOrders"><option value="false">Pause</option><option value="true">Resume</option></select></label>${field('Reason', 'reason', 'text', '', 'required maxlength="500"')}`;
-    if (nextAction === 'invoice') $('order-fields').innerHTML = `<p>Create one invoice from ${esc(o?.orderNumber)}? The invoice will contain the confirmed customer and price snapshots. Sabha is excluded.</p>`;
+    if (nextAction === 'invoice') $('order-fields').innerHTML = `<p>Create one invoice from ${esc(o?.orderNumber)}? The invoice checks stock, locks order edits, and uses the saved customer and price snapshots. Sabha is excluded.</p>`;
     if (!$('order-dialog').open) $('order-dialog').showModal();
   }
   function customerOptions(selected = '__new__') {
@@ -365,12 +367,11 @@ export function initOrderUi({ db, functions, auth, mode }) {
     if (nextAction === 'invoiceOrder') return openDialog('invoice', id);
     if (nextAction === 'viewInvoice') return viewInvoice(o.orderNumber);
     try {
-      if (nextAction === 'confirmOrder') await callOperation(functions, 'confirmOrder', { orderId: id });
       if (nextAction === 'advanceOrder') {
         const transitions = { confirmed: 'in_preparation', in_preparation: 'ready', ready: 'delivered' };
         await callOperation(functions, 'advanceOrder', { orderId: id, nextStatus: transitions[o.status] });
       }
-      showToast(nextAction === 'confirmOrder' ? staff() ? 'Order confirmed. Select Create invoice on this order to continue.' : 'Order confirmed. An Admin or Account Admin must create the invoice before payment can be recorded.' : 'Order updated.'); await refresh('orders');
+      showToast('Order updated.'); await refresh('orders');
     } catch (error) { showToast(cleanError(error), 'toast-error'); }
   }
 
@@ -451,7 +452,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
   $('order-dialog-cancel').addEventListener('click', closeOrderDialog);
   $('order-dialog').addEventListener('cancel', (event) => { if (parkedOrder) { event.preventDefault(); restoreOrderForm(); } });
   $('customer-export').addEventListener('click', () => exportBook('customers', [['Customers', filteredCustomers().map((c) => ({ Name: c.fullName, Contact: c.contact, Address: c.address, Area: c.area, ...(staff() ? { DateOfBirth: c.dateOfBirth, Sabha: c.sabha } : {}) }))]]));
-  $('order-export').addEventListener('click', () => { const rows = filteredOrders(); exportBook('orders', [['Orders', rows.map((o) => ({ OrderNumber: o.orderNumber, Customer: o.customerSnapshot?.fullName, Date: o.orderDate, DeliveryDate: o.deliveryDate, AssignedUser: assignedUserName(o), Status: o.status, TotalRupees: (o.grandTotal || 0) / 100 }))], ['Lines', rows.flatMap((o) => o.lines?.map((l) => ({ OrderNumber: o.orderNumber, Product: l.kind === 'item' ? l.itemSnapshot?.name : l.specialSnapshot?.name, Quantity: l.quantityQty / 1000, Unit: l.kind === 'item' ? orderLineUnitLabel(l) : 'combo', UnitPriceRupees: l.unitPricePaise / 100, LineTotalRupees: l.lineTotalPaise / 100 })) || [])]]); });
+  $('order-export').addEventListener('click', () => { const rows = filteredOrders(); exportBook('orders', [['Orders', rows.map((o) => ({ OrderNumber: o.orderNumber, Customer: o.customerSnapshot?.fullName, Date: o.orderDate, DeliveryDate: o.deliveryDate, AssignedUser: assignedUserName(o), Status: displayOrderStatus(o.status), TotalRupees: (o.grandTotal || 0) / 100 }))], ['Lines', rows.flatMap((o) => o.lines?.map((l) => ({ OrderNumber: o.orderNumber, Product: l.kind === 'item' ? l.itemSnapshot?.name : l.specialSnapshot?.name, Quantity: l.quantityQty / 1000, Unit: l.kind === 'item' ? orderLineUnitLabel(l) : 'combo', UnitPriceRupees: l.unitPricePaise / 100, LineTotalRupees: l.lineTotalPaise / 100 })) || [])]]); });
   $('special-export').addEventListener('click', () => exportBook('specials', [['Special Products', filteredSpecials().map((s) => ({ Name: s.name, FinalPriceRupees: s.finalPricePaise / 100, Active: s.active, Components: s.components?.map((p) => `${p.itemSnapshot?.name}: ${qtyText(p.quantityQty)} ${p.itemSnapshot?.unitSymbol}`).join('; ') }))]]));
 
   return { setSession(nextUser, nextProfile) { sessionVersion++; activityRevision++; user = nextUser; profile = nextProfile; orders = []; customers = []; items = []; specials = []; users = []; invoiceIds = new Set(); stockAvailability = new Map(); stockMessage = ''; activityRows = []; activityCursors = [null]; activityPage = 1; pendingOrderId = ''; pendingCustomerId = ''; pendingCustomerDetails = null; parkedOrder = null; ['customer-body', 'order-body', 'special-body', 'customer-summary', 'order-cards', 'order-activity-body'].forEach((id) => { $(id).innerHTML = ''; }); $('order-user').value = ''; $('order-user').hidden = !admin(); if (profile) { const page = document.querySelector('[data-page].is-active')?.dataset.page; if (['customers', 'orders', 'specials'].includes(page)) refresh(page); } } };

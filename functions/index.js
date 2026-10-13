@@ -2,7 +2,7 @@ import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { OperationError, savePurchaseDraft, confirmPurchase, cancelPurchase, adjustStock, setInventoryControl } from './operations.js';
-import { saveCustomer, saveSpecialProduct, saveOrderDraft, confirmOrder, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment } from './order-operations.js';
+import { saveCustomer, saveSpecialProduct, saveOrderDraft, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment } from './order-operations.js';
 import { submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid } from './finance-operations.js';
 import { saveTarget, saveAnnouncement, saveUserProfile } from './reporting-operations.js';
 import { deleteCustomer } from './customer-operations.js';
@@ -11,7 +11,7 @@ import { getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity 
 
 initializeApp();
 const db = getFirestore();
-const operations = { savePurchaseDraft, confirmPurchase, cancelPurchase, adjustStock, setInventoryControl, saveCustomer, saveSpecialProduct, saveOrderDraft, confirmOrder, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment, getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity, submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid, saveTarget, saveAnnouncement, saveUserProfile };
+const operations = { savePurchaseDraft, confirmPurchase, cancelPurchase, adjustStock, setInventoryControl, saveCustomer, saveSpecialProduct, saveOrderDraft, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment, getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity, submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid, saveTarget, saveAnnouncement, saveUserProfile };
 
 function callable(name) {
   return onCall({ region: 'us-central1', maxInstances: 3, cors: true }, async (request) => {
@@ -22,7 +22,7 @@ function callable(name) {
       if (name === 'deleteCustomer') return await deleteCustomer(db, request.auth.uid, data);
       if (['savePurchaseDraft', 'adjustStock', 'setInventoryControl', 'saveCustomer', 'saveSpecialProduct', 'saveOrderDraft', 'archiveOrder', 'restoreOrder', 'requestOrderPayment', 'getOrderStock', 'getPaymentNames', 'listOrderActivity', 'listPaymentActivity', 'submitPayment', 'reviewPayment', 'changePaymentMode', 'reversePayment', 'markInvoicePaid', 'saveTarget', 'saveAnnouncement', 'saveUserProfile'].includes(name)) return await operations[name](db, request.auth.uid, data);
       if (name === 'cancelPurchase') return await operations[name](db, request.auth.uid, data.purchaseId, data.reason);
-      if (name === 'confirmOrder' || name === 'createInvoiceFromOrder') return await operations[name](db, request.auth.uid, data.orderId);
+      if (name === 'createInvoiceFromOrder') return await operations[name](db, request.auth.uid, data.orderId);
       if (name === 'cancelOrder') return await operations[name](db, request.auth.uid, data.orderId, data.reason);
       if (name === 'advanceOrder') return await operations[name](db, request.auth.uid, data.orderId, data.nextStatus);
       if (name === 'setOrderTaking') return await operations[name](db, request.auth.uid, data.acceptingOrders, data.reason);
@@ -54,7 +54,6 @@ export const getOrderStockCall = callable('getOrderStock');
 export const getPaymentNamesCall = callable('getPaymentNames');
 export const listOrderActivityCall = callable('listOrderActivity');
 export const listPaymentActivityCall = callable('listPaymentActivity');
-export const confirmOrderCall = callable('confirmOrder');
 export const cancelOrderCall = callable('cancelOrder');
 export const advanceOrderCall = callable('advanceOrder');
 export const setOrderTakingCall = callable('setOrderTaking');

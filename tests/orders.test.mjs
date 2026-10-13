@@ -89,6 +89,24 @@ test('order unit selection keeps catalog price, totals, stock and invoice snapsh
   assert.equal((await db.collection('units').get()).size, 5);
 });
 
+test('User edits an order until creating its invoice, which deducts stock and locks edits', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  await saveOrderDraft(db, 'userA', regularOrder(customerId, { orderId, notes: 'Changed before invoice', lines: [{ kind: 'item', productId: 'itemA', quantityQty: 3000 }] }));
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 5000);
+  await assert.rejects(createInvoiceFromOrder(db, 'userB', orderId), /only your own order/);
+  await createInvoiceFromOrder(db, 'userA', orderId);
+  const order = (await db.doc(`orders/${orderId}`).get()).data();
+  const invoice = (await db.doc(`invoices/${orderId}`).get()).data();
+  assert.equal(order.status, 'in_preparation');
+  assert.equal(order.stockDeductions[0].quantityQty, 3000);
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 2000);
+  assert.equal(invoice.totalPaise, order.grandTotal);
+  assert.equal(invoice.createdBy, 'userA');
+  await assert.rejects(saveOrderDraft(db, 'userA', regularOrder(customerId, { orderId })), /invoice exists/);
+  await assert.rejects(createInvoiceFromOrder(db, 'userA', orderId), /already exists/);
+});
+
 test('customer contact is reserved; user cannot edit customers or ownership', async () => {
   const { customerId } = await saveCustomer(db, 'adminA', customer);
   await assert.rejects(saveCustomer(db, 'adminA', { ...customer, fullName: 'Another' }), /already exists/);
@@ -218,7 +236,7 @@ test('cancellation restores once; delivered and invoiced orders cannot use ordin
   await assert.rejects(cancelOrder(db, 'accountA', first.orderId, 'Again'), /cannot be cancelled/);
   const second = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
   await confirmOrder(db, 'adminA', second.orderId);
-  await assert.rejects(createInvoiceFromOrder(db, 'userA', second.orderId), /access is required/);
+  await assert.rejects(createInvoiceFromOrder(db, 'userB', second.orderId), /only your own order/);
   await createInvoiceFromOrder(db, 'accountA', second.orderId);
   const invoice = (await db.doc(`invoices/${second.orderId}`).get()).data();
   assert.equal(invoice.customerSnapshot.sabha, undefined);
@@ -299,7 +317,7 @@ test('invoice creation and confirmed edit serialize; invoices lock later edits a
   assert.equal((await db.doc(`invoices/${orderId}`).get()).data().totalPaise, (await db.doc(`orders/${orderId}`).get()).data().grandTotal);
 });
 
-test('archive retains stock and reporting status, restore works, payment request locks workflow', async () => {
+test('archive retains stock and reporting status; payment request keeps edits available', async () => {
   const { customerId } = await saveCustomer(db, 'adminA', customer);
   const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
   await confirmOrder(db, 'userA', orderId);
@@ -313,11 +331,11 @@ test('archive retains stock and reporting status, restore works, payment request
   await restoreOrder(db, 'accountA', { orderId });
   await requestOrderPayment(db, 'userA', { orderId });
   await assert.rejects(requestOrderPayment(db, 'userA', { orderId }), /already/);
-  await assert.rejects(saveOrderDraft(db, 'userA', regularOrder(customerId, { orderId })), /payment was requested/);
+  await saveOrderDraft(db, 'userA', regularOrder(customerId, { orderId }));
   await assert.rejects(archiveOrder(db, 'userA', { orderId }), /payment was requested/);
   assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 3000);
   const history = await listOrderActivity(db, 'userA', { filters: { order: orderId } });
-  assert.deepEqual(history.rows.slice(0, 2).map((row) => row.type).sort(), ['order.locked', 'order.payment_requested']);
+  assert.deepEqual(history.rows.slice(0, 2).map((row) => row.type), ['order.edited', 'order.payment_requested']);
   assert.deepEqual(history.rows.slice(2).map((row) => row.type), ['order.restored', 'order.archived', 'order.confirmed', 'order.created']);
   assert.equal(history.rows[3].reason, 'Hold for review');
   assert.equal(history.rows[3].customerName, customer.fullName);

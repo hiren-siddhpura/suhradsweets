@@ -30,8 +30,10 @@ test('order form shows trusted availability; financial locks disable edit and ar
   assert.equal(exports[0][0][1][0].Customer, 'Asha');
   assert.ok(calls.includes('getOrderStock'));
   invoicePresent = false;
+  order.status = 'draft';
   await el('order-refresh').listeners.click();
-  assert.match(el('order-body').innerHTML, /Awaiting staff invoice/);
-  assert.doesNotMatch(el('order-body').innerHTML, /Create invoice/);
+  assert.match(el('order-body').innerHTML, /data-action="invoiceOrder"[^>]*>Create invoice/);
+  assert.match(el('order-body').innerHTML, /data-action="editOrder"[^>]*>Edit/);
+  assert.doesNotMatch(el('order-body').innerHTML, /data-action="confirmOrder"/);
   assert.doesNotMatch(el('order-body').innerHTML, /Record payment request/);
 });

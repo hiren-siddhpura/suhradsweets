@@ -32,9 +32,8 @@ async function actor(db, uid, tx) {
 function requireStaff(user) { if (!staffRole(user.role)) fail('Active Admin or Account Admin access is required.'); }
 function canManage(user, order) { return staffRole(user.role) || order.ownerUid === user.uid; }
 function editableOrder(order) {
-  if (!['draft', 'confirmed', 'in_preparation', 'ready'].includes(order.status)) fail('This order status cannot be edited or archived.');
+  if (!['draft', 'confirmed', 'in_preparation', 'ready', 'delivered'].includes(order.status)) fail('This order status cannot be edited or archived.');
   if (order.archivedAt) fail('Restore this archived order before editing it.');
-  if (order.paymentRequestedAt) fail('This order is locked because payment was requested.');
 }
 async function financialLock(db, tx, orderId) {
   if ((await tx.get(db.doc(`invoices/${orderId}`))).exists) fail('This order is locked because an invoice exists.');
@@ -181,8 +180,8 @@ export async function saveOrderDraft(db, uid, input) {
   const customerRef = db.doc(`customers/${customerId}`);
   return db.runTransaction(async (tx) => {
     const user = await actor(db, uid, tx);
-    await takingOrders(db, tx);
     const old = await tx.get(ref);
+    if (!old.exists) await takingOrders(db, tx);
     if (user.role !== 'admin' && (input.lines.some((line) => line.kind === 'special') || old.exists && old.data().lines?.some((line) => line.kind === 'special'))) fail('Only Admin may create or edit a special order.');
     if (old.exists && !canManage(user, old.data())) fail('You may edit only your own order.');
     if (old.exists) { editableOrder(old.data()); await financialLock(db, tx, orderId); }
@@ -259,22 +258,18 @@ export async function saveOrderDraft(db, uid, input) {
   });
 }
 
-export async function confirmOrder(db, uid, orderId) {
-  if (!validId(orderId)) fail('Invalid order ID.');
-  const ref = db.doc(`orders/${orderId}`);
-  return db.runTransaction(async (tx) => {
-    const user = await actor(db, uid, tx);
-    await takingOrders(db, tx);
-    const order = await tx.get(ref);
-    if (!order.exists || order.data().status !== 'draft') fail('Only a draft order can be confirmed.');
-    if (user.role !== 'admin' && order.data().lines?.some((line) => line.kind === 'special')) fail('Only Admin may confirm a special order.');
-    if (order.data().archivedAt) fail('Restore this archived order before confirmation.');
-    if (!staffRole(user.role) && order.data().ownerUid !== uid) fail('You may confirm only your own order.');
+async function confirmDraftInTransaction(db, tx, uid, user, orderId, order, nextStatus = 'confirmed') {
+    const ref = db.doc(`orders/${orderId}`);
+    const action = nextStatus === 'confirmed' ? 'confirmation' : 'invoice creation';
+    if (!order.exists || order.data().status !== 'draft') fail(`Only a draft order can proceed to ${action}.`);
+    if (user.role !== 'admin' && order.data().lines?.some((line) => line.kind === 'special')) fail(`Only Admin may proceed to ${action} for a special order.`);
+    if (order.data().archivedAt) fail(`Restore this archived order before ${action}.`);
+    if (!staffRole(user.role) && order.data().ownerUid !== uid) fail(`You may proceed to ${action} only for your own order.`);
     const original = order.data().lines;
     if (!Array.isArray(original) || original.length < 1 || original.length > 20) fail('Order lines are invalid.');
     const fresh = await buildLines(db, tx, original.map((line) => ({ kind: line.kind, productId: line.productId, quantityQty: line.quantityQty, ...(line.orderUnitId ? { unitId: line.orderUnitId } : {}) })), user);
     const currentSubtotal = fresh.reduce((sum, line) => sum + line.lineTotalPaise, 0);
-    if (currentSubtotal !== order.data().subtotal || fresh.some((line, index) => line.unitPricePaise !== original[index].unitPricePaise || line.kind === 'special' && JSON.stringify(line.specialSnapshot.components) !== JSON.stringify(original[index].specialSnapshot.components))) fail('Product price or recipe changed. Reopen and save the draft before confirmation.');
+    if (currentSubtotal !== order.data().subtotal || fresh.some((line, index) => line.unitPricePaise !== original[index].unitPricePaise || line.kind === 'special' && JSON.stringify(line.specialSnapshot.components) !== JSON.stringify(original[index].specialSnapshot.components))) fail(`Product price or recipe changed. Reopen and save the draft before ${action}.`);
     const needed = new Map();
     for (const line of original) {
       if (line.kind === 'item') needed.set(line.productId, (needed.get(line.productId) || 0) + line.quantityQty);
@@ -295,11 +290,21 @@ export async function confirmOrder(db, uid, orderId) {
     });
     for (const part of deductions) {
       setStock(tx, part.stockRef, part.state, part.state.onHandQty - part.quantityQty, uid);
-      movement(tx, db, `order_${orderId}_${part.itemId}`, part.itemId, { ...part.itemSnapshot, defaultUnitId: part.itemSnapshot.unitId }, 'order_confirm', -part.quantityQty, part.state.onHandQty, 'order', orderId, 'Order confirmed', uid, order.data().ownerUid, user.name);
+      movement(tx, db, `order_${orderId}_${part.itemId}`, part.itemId, { ...part.itemSnapshot, defaultUnitId: part.itemSnapshot.unitId }, 'order_confirm', -part.quantityQty, part.state.onHandQty, 'order', orderId, nextStatus === 'confirmed' ? 'Order confirmed' : 'Invoice created', uid, order.data().ownerUid, user.name);
     }
-    tx.update(ref, { status: 'confirmed', stockDeductions: deductions.map(({ itemId, quantityQty, itemSnapshot }) => ({ itemId, quantityQty, itemSnapshot })), confirmedAt: FieldValue.serverTimestamp(), confirmedBy: uid, updatedAt: FieldValue.serverTimestamp() });
-    orderEvent(tx, db, 'order.confirmed', user, orderId, order.data(), { status: { before: 'draft', after: 'confirmed' }, stockDeductions: deductions.map(({ itemId, quantityQty }) => ({ itemId, quantityQty })) });
-    return { orderId, status: 'confirmed' };
+    tx.update(ref, { status: nextStatus, stockDeductions: deductions.map(({ itemId, quantityQty, itemSnapshot }) => ({ itemId, quantityQty, itemSnapshot })), confirmedAt: FieldValue.serverTimestamp(), confirmedBy: uid, updatedAt: FieldValue.serverTimestamp() });
+    orderEvent(tx, db, nextStatus === 'confirmed' ? 'order.confirmed' : 'order.stock_deducted', user, orderId, order.data(), { status: { before: 'draft', after: nextStatus }, stockDeductions: deductions.map(({ itemId, quantityQty }) => ({ itemId, quantityQty })) });
+    return { orderId, status: nextStatus };
+}
+
+export async function confirmOrder(db, uid, orderId) {
+  if (!validId(orderId)) fail('Invalid order ID.');
+  const ref = db.doc(`orders/${orderId}`);
+  return db.runTransaction(async (tx) => {
+    const user = await actor(db, uid, tx);
+    await takingOrders(db, tx);
+    const order = await tx.get(ref);
+    return confirmDraftInTransaction(db, tx, uid, user, orderId, order);
   });
 }
 
@@ -384,7 +389,6 @@ export async function requestOrderPayment(db, uid, input) {
     if ((await tx.get(db.doc(`invoices/${input.orderId}`))).exists) fail('An invoice already exists for this order. Use the invoice payment workflow.');
     tx.update(ref, { paymentRequestedAt: FieldValue.serverTimestamp(), paymentRequestedBy: uid, updatedAt: FieldValue.serverTimestamp() });
     orderEvent(tx, db, 'order.payment_requested', user, input.orderId, order, { paymentRequested: { before: false, after: true } });
-    orderEvent(tx, db, 'order.locked', user, input.orderId, order, { editLocked: { before: false, after: true } }, 'Pre-invoice payment request');
     return { orderId: input.orderId, paymentRequested: true };
   });
 }
@@ -405,19 +409,22 @@ export async function createInvoiceFromOrder(db, uid, orderId) {
   if (!validId(orderId)) fail('Invalid order ID.');
   const invoiceRef = db.doc(`invoices/${orderId}`);
   return db.runTransaction(async (tx) => {
-    const user = await actor(db, uid, tx); requireStaff(user);
+    const user = await actor(db, uid, tx);
     const order = await tx.get(db.doc(`orders/${orderId}`));
     const invoice = await tx.get(invoiceRef);
-    if (!order.exists || !['confirmed', 'in_preparation', 'ready', 'delivered'].includes(order.data().status)) fail('Only a confirmed order can be invoiced.');
+    if (!order.exists || !['draft', 'confirmed', 'in_preparation', 'ready', 'delivered'].includes(order.data().status)) fail('Only an active order can be invoiced.');
+    if (!staffRole(user.role) && order.data().ownerUid !== uid) fail('You may invoice only your own order.');
+    if (user.role === 'user' && order.data().lines?.some((line) => line.kind === 'special')) fail('Only staff may invoice a special order.');
     if (order.data().archivedAt) fail('Restore this archived order before invoicing.');
     if (invoice.exists) fail('An invoice already exists for this order.');
+    if (order.data().status === 'draft') await confirmDraftInTransaction(db, tx, uid, user, orderId, order, 'in_preparation');
     const data = order.data();
     // Sabha, birth date and customer ownership are deliberately absent.
     const lines = data.lines.map((line) => ({ kind: line.kind, description: line.kind === 'item' ? line.itemSnapshot.name : line.specialSnapshot.name, quantityQty: line.quantityQty, unit: line.kind === 'item' ? line.orderUnitName || line.itemSnapshot.unitSymbol : 'combo', unitPricePaise: line.unitPricePaise, lineTotalPaise: line.lineTotalPaise }));
     tx.create(invoiceRef, { invoiceNumber: `INV-${data.orderNumber}`, orderId, orderNumber: data.orderNumber, ownerUid: data.ownerUid, customerId: data.customerId, customerSnapshot: customerSnapshot(data.customerSnapshot), lines, subtotal: data.subtotal, totalPaise: data.grandTotal, verifiedPaidPaise: 0, paymentStatus: 'unpaid', issuedAt: FieldValue.serverTimestamp(), createdBy: uid, paidAt: null, paidBy: null });
     audit(tx, db, 'invoice.created', uid, 'invoice', orderId, { orderId, totalPaise: data.grandTotal }, user.name);
     orderEvent(tx, db, 'order.invoice_created', user, orderId, data, { invoiceId: { before: null, after: orderId } });
-    if (!data.paymentRequestedAt) orderEvent(tx, db, 'order.locked', user, orderId, data, { editLocked: { before: false, after: true } }, 'Invoice created');
+    orderEvent(tx, db, 'order.locked', user, orderId, data, { editLocked: { before: false, after: true } }, 'Invoice created');
     return { invoiceId: orderId };
   });
 }

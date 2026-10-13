@@ -1,6 +1,6 @@
-import { addDoc, collection, doc, getDoc, getDocs, runTransaction, serverTimestamp, updateDoc } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
+import { addDoc, collection, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, updateDoc, where } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 import { DASHBOARD_TARGET_ID, DASHBOARD_TARGET_KEY, validateTargetKg } from './dashboard-metrics.js';
-import { MASTER_TYPES, validateMasterInput } from './master-validation.js';
+import { hasDuplicateItemName, MASTER_TYPES, validateMasterInput } from './master-validation.js';
 import { callOperation } from './operations-data.js';
 import { BUSINESS_DETAILS_ID, validateBusinessDetails } from './business-settings.js';
 
@@ -66,6 +66,12 @@ export async function saveMasterRecord(db, type, id, input, actor, functions = n
   if (reference && !existingSnapshot.exists()) throw new Error('This record no longer exists. Refresh the list.');
   const existing = existingSnapshot?.data() || null;
   const values = validateMasterInput(type, input, { existing, actorRole: actor.role });
+
+  if (type === 'items') {
+    const sameUnit = await getDocs(query(collection(db, 'items'), where('defaultUnitId', '==', values.defaultUnitId)));
+    const items = sameUnit.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
+    if (hasDuplicateItemName(items, values, id)) throw new Error('An item with this name and stock unit already exists.');
+  }
 
   if (type === 'users') {
     if (!functions) throw new Error('Trusted user management is unavailable.');

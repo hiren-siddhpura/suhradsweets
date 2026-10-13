@@ -32,8 +32,7 @@
           <button class="nav-item" type="button" data-page="master"><span aria-hidden="true">▦</span> Master Data</button>
         </nav>
         <div class="sidebar-footer">
-          <div class="sidebar-note">Made for thoughtful service.</div>
-          <button id="about-button" class="text-button" type="button">About this foundation</button>
+          <div class="sidebar-note">Bas Ek Tu Raji Tha !</div>
         </div>
       </aside>
 
@@ -73,8 +72,8 @@
               </section>
               <div class="section-heading"><div><p class="eyebrow">AT A GLANCE</p><h2>Dashboard</h2></div><button id="dashboard-refresh" type="button" class="button button-outline">Refresh</button></div>
               <div id="dashboard-cards" class="stats-grid"></div>
-              <div class="card report-panel dashboard-announcements-panel"><h3>Active announcements</h3><div id="dashboard-announcements"></div></div>
-              <div class="card ops-panel"><h3 class="ops-subheading">Recent activity</h3><div class="table-scroll"><table><thead><tr><th>When</th><th>Action</th><th>Actor</th><th>Entity</th></tr></thead><tbody id="dashboard-activity"></tbody></table></div></div>
+              <div id="dashboard-announcements-panel" class="card report-panel dashboard-announcements-panel"><h3>Active announcements</h3><div id="dashboard-announcements"></div></div>
+              <div id="dashboard-activity-panel" class="card ops-panel"><h3 class="ops-subheading">Recent activity</h3><div class="table-scroll"><table><thead><tr><th>When</th><th>Action</th><th>Actor</th><th>Entity</th></tr></thead><tbody id="dashboard-activity"></tbody></table></div></div>
             </section>
             <section id="feature-view" class="page-view" hidden aria-label="Feature placeholder"><div class="card feature-card"><span class="feature-icon" aria-hidden="true">✦</span><h2 id="feature-heading">Coming next</h2><p id="feature-description">This section is part of the planned OMS workflow.</p><div class="placeholder-tools"><input type="search" aria-label="Search" placeholder="Search" disabled><select aria-label="Filter" disabled><option>All</option></select></div><p class="muted">Search, filters and records will be enabled with the data workflow.</p></div></section>
             <section id="customers-view" class="page-view" hidden aria-label="Customers"><div class="section-heading"><div><p class="eyebrow">PEOPLE</p><h2>Customers</h2></div><button id="customer-new" type="button" class="button button-primary">Add customer</button></div><div id="customer-summary" class="ops-cards"></div><div class="card ops-panel"><div class="ops-toolbar"><input id="customer-search" type="search" placeholder="Search name or contact" aria-label="Search customers"><button id="customer-refresh" type="button" class="button button-outline">Refresh</button><button id="customer-export" type="button" class="button button-outline">Export XLSX</button></div><p id="customer-message" class="ops-message" role="status"></p><div class="table-scroll"><table><thead><tr><th>Name</th><th>Contact</th><th>Area</th><th>Address</th><th>Sabha</th><th>Linked users</th><th>Actions</th></tr></thead><tbody id="customer-body"></tbody></table></div></div></section>
@@ -99,7 +98,6 @@
               <form id="master-target-form" class="master-target-form"><label>Sales target (KG)<input id="master-target-kg" type="number" min="0" max="1000000000" step="0.001" required placeholder="Enter target KG"></label><button id="master-target-save" type="submit" class="button button-primary">Save target</button><p id="master-target-message" role="status"></p><small>Target achievement = confirmed KG sold ÷ this target. A zero target shows N/A.</small></form>
               <div class="master-tabs" role="tablist" aria-label="Master data collections">
                 <button type="button" class="master-tab is-active" data-master-tab="items" role="tab" aria-selected="true">Items</button>
-                <button type="button" class="master-tab" data-master-tab="units" role="tab" aria-selected="false">Units</button>
                 <button type="button" class="master-tab" data-master-tab="purchaseTypes" role="tab" aria-selected="false">Purchase Types</button>
                 <button type="button" class="master-tab" data-master-tab="users" role="tab" aria-selected="false">Users</button>
                 <button type="button" class="master-tab" data-master-tab="settings" role="tab" aria-selected="false">Settings</button>
@@ -128,7 +126,6 @@
       </div>
     </div>
 
-    <dialog id="about-dialog" class="app-dialog" aria-labelledby="about-heading"><div class="dialog-header"><h2 id="about-heading">Suhrad Sweets OMS</h2><button id="close-dialog-button" class="icon-button" type="button" aria-label="Close dialog">×</button></div><p>Operational and financial changes use trusted Firebase operations. Invoices are created manually from confirmed orders. Payments count only after staff verification; Account Admin alone can mark an invoice paid.</p><div class="dialog-actions"><button id="dialog-done-button" class="button button-primary" type="button">Done</button></div></dialog>
     <dialog id="master-dialog" class="app-dialog master-dialog" aria-labelledby="master-dialog-title"><div class="dialog-header"><h2 id="master-dialog-title">Add record</h2><button id="master-dialog-close" class="icon-button" type="button" aria-label="Close dialog">×</button></div><p id="master-dialog-hint" class="muted"></p><form id="master-form"><div id="master-form-fields" class="master-form-fields"></div><p id="master-form-error" class="form-error" role="alert" hidden></p><div class="dialog-actions"><button id="master-cancel" class="button button-outline" type="button">Cancel</button><button id="master-save" class="button button-primary" type="submit">Save</button></div></form></dialog>
     <dialog id="ops-dialog" class="app-dialog ops-dialog" aria-labelledby="ops-dialog-title"><div class="dialog-header"><h2 id="ops-dialog-title">Operation</h2><button id="ops-dialog-close" class="icon-button" type="button" aria-label="Close dialog">×</button></div><form id="ops-form"><div id="ops-fields" class="ops-fields"></div><p id="ops-error" class="form-error" role="alert" hidden></p><div class="dialog-actions"><button id="ops-cancel" class="button button-outline" type="button">Cancel</button><button id="ops-save" class="button button-primary" type="submit">Save</button></div></form></dialog>
     <dialog id="order-dialog" class="app-dialog order-dialog" aria-labelledby="order-dialog-title"><div class="dialog-header"><h2 id="order-dialog-title">Order</h2><button id="order-dialog-close" class="icon-button" type="button" aria-label="Close dialog">×</button></div><form id="order-form"><div id="order-fields" class="ops-fields"></div><p id="order-form-error" class="form-error" role="alert" hidden></p><div class="dialog-actions"><button id="order-dialog-cancel" class="button button-outline" type="button">Cancel</button><button id="order-dialog-save" class="button button-primary" type="submit">Save</button></div></form></dialog>

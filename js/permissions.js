@@ -6,7 +6,7 @@ export const ROLES = Object.freeze({
 
 const validRoles = new Set(Object.values(ROLES));
 const staffRoles = new Set([ROLES.ADMIN, ROLES.ACCOUNT_ADMIN]);
-const userPages = new Set(['dashboard', 'orders', 'customers', 'invoices', 'payments', 'inventory', 'targets']);
+const userPages = new Set(['dashboard', 'orders', 'customers', 'invoices', 'payments']);
 
 export function validateProfile(profile) {
   if (!profile || typeof profile !== 'object') return 'missing';

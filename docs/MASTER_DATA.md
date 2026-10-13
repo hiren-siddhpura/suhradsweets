@@ -1,10 +1,10 @@
 # Master Data: schema, queries and checks
 
-The staff-only Master Data page manages `items`, `units`, `purchaseTypes`, `users` and `settings`. Staff means an active `admin` or `account_admin` profile. No master record is hard-coded. Permanent client deletes are denied; deactivation sets `active: false` and preserves references.
+The staff-only Master Data page manages `items`, `purchaseTypes`, `users` and `settings`. The Unit Master tab is removed. Existing `units` documents remain for stock-unit references and historical records. Order choices are fixed as `KG`, `500 GM` and `250 GM`; `250 GM` appears only for Admin. Staff means an active `admin` or `account_admin` profile. Permanent client deletes are denied; deactivation sets `active: false` and preserves references.
 
 ## Storage contract
 
-- `items/{autoId}`: `itemCode` (uppercase, unique, immutable), `name`, `description`, `defaultSellingPrice` (rupees, nonnegative), `defaultUnitId`, `active`, `createdAt`, `createdBy`, `updatedAt`.
+- `items/{autoId}`: `itemCode` (uppercase, unique, immutable), `name`, `description`, `defaultSellingPrice` (existing KG price, rupees, nonnegative), optional `sellingPrice500Gm` and `sellingPrice250Gm` (rupees, nonnegative), `defaultUnitId` (stock unit), `active`, `createdAt`, `createdBy`, `updatedAt`. Existing items without a 500 GM or 250 GM price cannot be ordered in that size until the price is entered.
 - `units/{autoId}`: `name`, `symbol`, `active`, `createdAt`, `updatedAt`.
 - `purchaseTypes/{autoId}`: `name`, `description`, `active`, `createdAt`, `updatedAt`.
 - `users/{Auth UID}`: `displayName`, `role`, `active`, `createdAt`, `updatedAt` for profiles created in this screen. Profiles created in Firebase Console may lack timestamps; subsequent edits add `updatedAt`.

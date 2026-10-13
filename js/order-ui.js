@@ -7,6 +7,7 @@ import { downloadXlsx } from './xlsx-export.js';
 import { saveCustomerDirect } from './customer-data.js';
 import { customerSaveError, validateCustomerInput } from './customer-validation.js';
 import { listInvoices } from './finance-data.js';
+import { availableOrderUnits, itemUnitPrice, orderLineUnitLabel } from './order-units.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -190,7 +191,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
         const product = kind === 'item' ? items.find((entry) => entry.id === option.value) : specials.find((entry) => entry.id === option.value);
         if (product) {
           let price = 'price unavailable';
-          try { price = kind === 'item' ? rupees(toPaise(product.defaultSellingPrice)) : rupees(product.finalPricePaise); } catch { /* Invalid catalog prices remain unavailable. */ }
+          try { price = kind === 'item' ? rupees(toPaise(itemUnitPrice(product, row.querySelector('[name=unitId]')?.value || 'kg'))) : rupees(product.finalPricePaise); } catch { /* Invalid catalog prices remain unavailable. */ }
           option.textContent = `${product.name} — ${price}`;
         }
       }
@@ -214,7 +215,18 @@ export function initOrderUi({ db, functions, auth, mode }) {
   }
   function itemOptions(selected = '') { return items.filter((i) => i.active).map((i) => { let price = 'price unavailable'; try { price = rupees(toPaise(i.defaultSellingPrice)); } catch { /* Backend rejects invalid catalog prices. */ } return `<option value="${esc(i.id)}" ${i.id === selected ? 'selected' : ''}>${esc(i.name)} — ${price}</option>`; }).join(''); }
   function productOptions(kind, selected = '') { return kind === 'item' ? itemOptions(selected) : specials.filter((s) => s.active).map((s) => `<option value="${esc(s.id)}" ${s.id === selected ? 'selected' : ''}>${esc(s.name)} — ${rupees(s.finalPricePaise)}</option>`).join(''); }
-  function orderLine(line = {}) { const kind = line.kind || 'item', productId = line.productId || (kind === 'item' ? items.find((item) => item.active)?.id : specials.find((special) => special.active)?.id); const notice = stockNotice(kind, productId); return `<div class="ops-line order-entry-line"><label class="order-line-type">Type<select name="kind"><option value="item" ${kind === 'item' ? 'selected' : ''}>Regular item</option>${admin() ? `<option value="special" ${kind === 'special' ? 'selected' : ''}>Special product</option>` : ''}</select></label><label class="order-line-product">Product<select name="productId">${productOptions(kind, line.productId)}</select><small class="order-stock-hint">${esc(stockLabel(kind, productId))}</small><small class="order-stock-warning" ${notice ? '' : 'hidden'}>${esc(notice)}</small></label>${field('Quantity', 'quantity', 'number', line.quantityQty ? line.quantityQty / 1000 : 1, 'min="0.001" step="0.001" required')}<button type="button" class="ops-link order-line-remove" data-remove-line aria-label="Remove order line">Remove</button></div>`; }
+  function orderLine(line = {}) {
+    const kind = line.kind || 'item';
+    const productId = line.productId || (kind === 'item' ? items.find((item) => item.active)?.id : specials.find((special) => special.active)?.id);
+    const notice = stockNotice(kind, productId);
+    const choices = availableOrderUnits(profile?.role);
+    const legacy = kind === 'item' && line.productId && !line.orderUnitId;
+    const selectedUnit = legacy ? '__legacy__' : line.orderUnitId || choices[0].id;
+    const legacyOption = legacy ? `<option value="__legacy__" selected>Current: ${esc(line.itemSnapshot?.unitSymbol || 'item unit')}</option>` : '';
+    const missingOption = line.orderUnitId && !choices.some((unit) => unit.id === line.orderUnitId) ? '<option value="" selected>Choose an active permitted unit</option>' : '';
+    const unitField = kind === 'item' ? `<label class="order-line-unit">Unit<select name="unitId" required>${legacyOption}${missingOption}${choices.map((unit) => `<option value="${esc(unit.id)}" ${unit.id === selectedUnit ? 'selected' : ''}>${esc(unit.label)}</option>`).join('')}</select></label>` : '';
+    return `<div class="ops-line order-entry-line"><label class="order-line-type">Type<select name="kind"><option value="item" ${kind === 'item' ? 'selected' : ''}>Regular item</option>${admin() ? `<option value="special" ${kind === 'special' ? 'selected' : ''}>Special product</option>` : ''}</select></label><label class="order-line-product">Product<select name="productId">${productOptions(kind, line.productId)}</select><small class="order-stock-hint">${esc(stockLabel(kind, productId))}</small><small class="order-stock-warning" ${notice ? '' : 'hidden'}>${esc(notice)}</small></label>${field('Quantity', 'quantity', 'number', line.quantityQty ? line.quantityQty / 1000 : 1, 'min="0.001" step="0.001" required')}${unitField}<button type="button" class="ops-link order-line-remove" data-remove-line aria-label="Remove order line">Remove</button></div>`;
+  }
   function componentLine(part = {}) { return `<div class="ops-line"><label>Item<select name="itemId">${itemOptions(part.itemId)}</select></label>${field('Quantity', 'quantity', 'number', part.quantityQty ? part.quantityQty / 1000 : 1, 'min="0.001" step="0.001" required')}<button type="button" class="button button-outline" data-remove-line>Remove</button></div>`; }
 
   function openDialog(nextAction, id = '') {
@@ -226,7 +238,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     $('order-dialog-save').textContent = nextAction === 'deleteCustomer' ? 'Delete customer' : 'Save';
     const c = customers.find((row) => row.id === id), o = orders.find((row) => row.id === id), s = specials.find((row) => row.id === id);
     $('order-dialog-title').textContent = ({ customer: c ? 'Edit customer' : 'Add customer', order: o ? `Edit ${o.orderNumber}` : 'New order', viewOrder: `Order ${o?.orderNumber || ''}`, special: s ? 'Edit combination' : 'Add combination', cancel: 'Cancel order', archive: 'Archive order', restore: 'Restore order', request: 'Record payment request', intake: 'Order-taking', invoice: 'Create invoice' })[nextAction];
-    if (nextAction === 'viewOrder' && o) $('order-fields').innerHTML = `<div class="ops-lines"><p><strong>Customer:</strong> ${esc(o.customerSnapshot?.fullName)}</p><p><strong>Assigned to:</strong> ${esc(assignedUserName(o))}</p><p><strong>Status:</strong> ${esc(o.status)}</p><p><strong>Order date:</strong> ${esc(o.orderDate)}</p><p><strong>Order lines</strong></p>${(o.lines || []).map((line) => `<p>${esc(line.kind === 'special' ? line.specialSnapshot?.name : line.itemSnapshot?.name)} · ${esc(qtyText(line.quantityQty))} ${esc(line.kind === 'special' ? 'combo' : line.itemSnapshot?.unitSymbol)} · ${rupees(line.lineTotalPaise)}</p>`).join('')}<p><strong>Total:</strong> ${rupees(o.grandTotal)}</p>${o.notes ? `<p><strong>Notes:</strong> ${esc(o.notes)}</p>` : ''}</div>`;
+    if (nextAction === 'viewOrder' && o) $('order-fields').innerHTML = `<div class="ops-lines"><p><strong>Customer:</strong> ${esc(o.customerSnapshot?.fullName)}</p><p><strong>Assigned to:</strong> ${esc(assignedUserName(o))}</p><p><strong>Status:</strong> ${esc(o.status)}</p><p><strong>Order date:</strong> ${esc(o.orderDate)}</p><p><strong>Order lines</strong></p>${(o.lines || []).map((line) => `<p>${esc(line.kind === 'special' ? line.specialSnapshot?.name : line.itemSnapshot?.name)} · ${esc(qtyText(line.quantityQty))} ${esc(line.kind === 'special' ? 'combo' : orderLineUnitLabel(line))} · ${rupees(line.lineTotalPaise)}</p>`).join('')}<p><strong>Total:</strong> ${rupees(o.grandTotal)}</p>${o.notes ? `<p><strong>Notes:</strong> ${esc(o.notes)}</p>` : ''}</div>`;
     if (nextAction === 'customer') $('order-fields').innerHTML = customerFields(c || (parkedOrder ? pendingCustomerDetails || {} : {}));
     if (nextAction === 'deleteCustomer') {
       if (!staff() || !c) return;
@@ -316,7 +328,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
       } else if (action === 'order') {
         const selected = data.get('customerId');
         if (selected === '__new__' && !pendingCustomerDetails) throw new Error('Enter new customer details before saving the order.');
-        payload = { orderId: targetId || pendingOrderId || crypto.randomUUID(), customerId: selected === '__new__' ? undefined : selected, newCustomer: selected === '__new__' ? pendingCustomerDetails : undefined, ...(admin() && !targetId ? { assignedUserId: data.get('assignedUserId') } : {}), orderDate: data.get('orderDate'), deliveryDate: data.get('deliveryDate') || null, notes: data.get('notes'), lines: [...$('order-lines').children].map((row) => ({ kind: row.querySelector('[name=kind]').value, productId: row.querySelector('[name=productId]').value, quantityQty: toMilli(row.querySelector('[name=quantity]').value) })) };
+        payload = { orderId: targetId || pendingOrderId || crypto.randomUUID(), customerId: selected === '__new__' ? undefined : selected, newCustomer: selected === '__new__' ? pendingCustomerDetails : undefined, ...(admin() && !targetId ? { assignedUserId: data.get('assignedUserId') } : {}), orderDate: data.get('orderDate'), deliveryDate: data.get('deliveryDate') || null, notes: data.get('notes'), lines: [...$('order-lines').children].map((row) => { const kind = row.querySelector('[name=kind]').value, unitId = row.querySelector('[name=unitId]')?.value; return { kind, productId: row.querySelector('[name=productId]').value, quantityQty: toMilli(row.querySelector('[name=quantity]').value), ...(kind === 'item' && unitId && unitId !== '__legacy__' ? { unitId } : {}) }; }) };
         if (!admin() && payload.lines.some((line) => line.kind === 'special')) throw new Error('Only Admin may create or edit a special order.');
         if (selected === '__new__') {
           const duplicate = customers.find((c) => normalize(c.contact) === normalize(payload.newCustomer.contact));
@@ -425,7 +437,8 @@ export function initOrderUi({ db, functions, auth, mode }) {
   $('order-fields').addEventListener('change', (event) => {
     if (event.target.id === 'order-customer') { toggleNewCustomer(); if (event.target.value === '__new__') openCustomerFromOrder(); }
     if (event.target.name === 'productId') refreshStock();
-    if (event.target.name === 'kind') { event.target.closest('.ops-line').querySelector('[name=productId]').innerHTML = productOptions(event.target.value); refreshStock(); }
+    if (event.target.name === 'unitId') updateStockLabels();
+    if (event.target.name === 'kind') { const row = event.target.closest('.ops-line'); row.querySelector('[name=productId]').innerHTML = productOptions(event.target.value); const unit = row.querySelector('.order-line-unit'); if (unit) { unit.hidden = event.target.value !== 'item'; unit.querySelector('select').disabled = event.target.value !== 'item'; } refreshStock(); }
   });
   $('order-fields').addEventListener('click', (event) => {
     if (event.target.id === 'order-add-customer') openCustomerFromOrder();
@@ -438,7 +451,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
   $('order-dialog-cancel').addEventListener('click', closeOrderDialog);
   $('order-dialog').addEventListener('cancel', (event) => { if (parkedOrder) { event.preventDefault(); restoreOrderForm(); } });
   $('customer-export').addEventListener('click', () => exportBook('customers', [['Customers', filteredCustomers().map((c) => ({ Name: c.fullName, Contact: c.contact, Address: c.address, Area: c.area, ...(staff() ? { DateOfBirth: c.dateOfBirth, Sabha: c.sabha } : {}) }))]]));
-  $('order-export').addEventListener('click', () => { const rows = filteredOrders(); exportBook('orders', [['Orders', rows.map((o) => ({ OrderNumber: o.orderNumber, Customer: o.customerSnapshot?.fullName, Date: o.orderDate, DeliveryDate: o.deliveryDate, AssignedUser: assignedUserName(o), Status: o.status, TotalRupees: (o.grandTotal || 0) / 100 }))], ['Lines', rows.flatMap((o) => o.lines?.map((l) => ({ OrderNumber: o.orderNumber, Product: l.kind === 'item' ? l.itemSnapshot?.name : l.specialSnapshot?.name, Quantity: l.quantityQty / 1000, UnitPriceRupees: l.unitPricePaise / 100, LineTotalRupees: l.lineTotalPaise / 100 })) || [])]]); });
+  $('order-export').addEventListener('click', () => { const rows = filteredOrders(); exportBook('orders', [['Orders', rows.map((o) => ({ OrderNumber: o.orderNumber, Customer: o.customerSnapshot?.fullName, Date: o.orderDate, DeliveryDate: o.deliveryDate, AssignedUser: assignedUserName(o), Status: o.status, TotalRupees: (o.grandTotal || 0) / 100 }))], ['Lines', rows.flatMap((o) => o.lines?.map((l) => ({ OrderNumber: o.orderNumber, Product: l.kind === 'item' ? l.itemSnapshot?.name : l.specialSnapshot?.name, Quantity: l.quantityQty / 1000, Unit: l.kind === 'item' ? orderLineUnitLabel(l) : 'combo', UnitPriceRupees: l.unitPricePaise / 100, LineTotalRupees: l.lineTotalPaise / 100 })) || [])]]); });
   $('special-export').addEventListener('click', () => exportBook('specials', [['Special Products', filteredSpecials().map((s) => ({ Name: s.name, FinalPriceRupees: s.finalPricePaise / 100, Active: s.active, Components: s.components?.map((p) => `${p.itemSnapshot?.name}: ${qtyText(p.quantityQty)} ${p.itemSnapshot?.unitSymbol}`).join('; ') }))]]));
 
   return { setSession(nextUser, nextProfile) { sessionVersion++; activityRevision++; user = nextUser; profile = nextProfile; orders = []; customers = []; items = []; specials = []; users = []; invoiceIds = new Set(); stockAvailability = new Map(); stockMessage = ''; activityRows = []; activityCursors = [null]; activityPage = 1; pendingOrderId = ''; pendingCustomerId = ''; pendingCustomerDetails = null; parkedOrder = null; ['customer-body', 'order-body', 'special-body', 'customer-summary', 'order-cards', 'order-activity-body'].forEach((id) => { $(id).innerHTML = ''; }); $('order-user').value = ''; $('order-user').hidden = !admin(); if (profile) { const page = document.querySelector('[data-page].is-active')?.dataset.page; if (['customers', 'orders', 'specials'].includes(page)) refresh(page); } } };

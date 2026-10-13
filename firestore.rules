@@ -134,6 +134,12 @@ service cloud.firestore {
         && (data.defaultSellingPrice is int || data.defaultSellingPrice is float)
         && data.defaultSellingPrice >= 0
         && data.defaultSellingPrice <= 100000000
+        && (!data.keys().hasAny(['sellingPrice500Gm'])
+          || ((data.sellingPrice500Gm is int || data.sellingPrice500Gm is float)
+            && data.sellingPrice500Gm >= 0 && data.sellingPrice500Gm <= 100000000))
+        && (!data.keys().hasAny(['sellingPrice250Gm'])
+          || ((data.sellingPrice250Gm is int || data.sellingPrice250Gm is float)
+            && data.sellingPrice250Gm >= 0 && data.sellingPrice250Gm <= 100000000))
         && data.defaultUnitId is string
         && data.active is bool;
     }
@@ -190,7 +196,7 @@ service cloud.firestore {
     match /items/{itemId} {
       allow get, list: if isStaff() || (activeProfile() && resource.data.active == true);
       allow create: if isStaff()
-        && request.resource.data.keys().hasOnly(['itemCode', 'name', 'description', 'defaultSellingPrice', 'defaultUnitId', 'active', 'createdAt', 'createdBy', 'updatedAt'])
+        && request.resource.data.keys().hasOnly(['itemCode', 'name', 'description', 'defaultSellingPrice', 'sellingPrice500Gm', 'sellingPrice250Gm', 'defaultUnitId', 'active', 'createdAt', 'createdBy', 'updatedAt'])
         && request.resource.data.keys().hasAll(['itemCode', 'name', 'description', 'defaultSellingPrice', 'defaultUnitId', 'active', 'createdAt', 'createdBy', 'updatedAt'])
         && validItemFields()
         && request.resource.data.createdBy == request.auth.uid
@@ -199,7 +205,7 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/itemCodes/$(request.resource.data.itemCode)).data.itemId == itemId
         && getAfter(/databases/$(database)/documents/itemCodes/$(request.resource.data.itemCode)).data.createdAt == request.time;
       allow update: if isStaff() && validItemFields()
-        && validMasterUpdate(['name', 'description', 'defaultSellingPrice', 'defaultUnitId', 'active', 'updatedAt'])
+        && validMasterUpdate(['name', 'description', 'defaultSellingPrice', 'sellingPrice500Gm', 'sellingPrice250Gm', 'defaultUnitId', 'active', 'updatedAt'])
         && (request.resource.data.defaultUnitId == resource.data.defaultUnitId
           || (!exists(/databases/$(database)/documents/inventory/$(itemId))
             && activeUnit(request.resource.data.defaultUnitId)));

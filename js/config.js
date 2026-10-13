@@ -13,7 +13,7 @@ export const PAGES = Object.freeze({
   announcements: { title: 'Announcements', description: 'Publish and expire team updates.' },
   loginLogs: { title: 'Login Logs', description: 'Review recorded sign-ins and application sign-outs.' },
   auditLogs: { title: 'Audit Logs', description: 'Review trusted operational and financial actions.' },
-  master: { title: 'Master Data', description: 'Manage items, units, purchase types, user profiles and settings.' },
+  master: { title: 'Master Data', description: 'Manage items, purchase types, user profiles and settings.' },
 });
 
 export const ROLE_LABELS = Object.freeze({

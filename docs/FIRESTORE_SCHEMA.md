@@ -30,7 +30,7 @@ This is the contract for the required 17 top-level collections. Purchase, invent
 
 ## Operation invariants for the trusted backend
 
-1. **Draft order:** no inventory movement. Compute totals from server-read item prices or configured special-product final prices. Preserve each item and unit snapshot on the line.
+1. **Draft order:** no inventory movement. Fixed order unit IDs are `kg`, `500gm` and `250gm`; only Admin sees and can select `250gm`. The backend reads the matching item price (`defaultSellingPrice`, `sellingPrice500Gm`, or `sellingPrice250Gm`) and snapshots it on the line. A missing size price rejects the order. Existing item default units still govern stock quantities; unit selection does not convert stock. Older lines and invoices retain their saved unit and price snapshots.
 2. **Confirm order:** verify Auth identity and active role, read the draft and current item/component inventory in a Firestore transaction, recompute required quantities and totals, reject insufficient stock, change status to `confirmed`, decrement each balance, append deterministic movement IDs and an audit event. Reject a second confirmation; transaction retries must not repeat the deduction.
 3. **Confirm purchase:** draft-to-confirmed changes the purchase status and audit only. Purchase creation, editing, confirmation and cancellation never mutate inventory. Historical lines/movements are retained.
 4. **Cancel confirmed order:** where policy allows, transition once to `cancelled`, restore exactly the original confirmed component quantities (from protected snapshots), append reverse movements and audit. A draft cancellation does not restore stock. Define restrictions for already invoiced/fulfilled orders before enabling cancellation.

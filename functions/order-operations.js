@@ -3,6 +3,14 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { audit, fail, money, movement, qty, setStock, stockState, text, validDate, validId } from './operations.js';
 
 const staffRole = (role) => role === 'admin' || role === 'account_admin';
+const orderUnitLabel = (unit) => {
+  if (typeof unit === 'string') return ({ kg: 'KG', '500gm': '500 GM', '250gm': '250 GM' })[unit] || null;
+  const name = String(unit?.name || '').trim().toUpperCase().replace(/\s+/g, ' ');
+  if (['KG', '1 KG', '1KG', 'KILOGRAM'].includes(name)) return 'KG';
+  if (['500 GM', '500 G', '500GM', '500G'].includes(name)) return '500 GM';
+  if (['250 GM', '250 G', '250GM', '250G'].includes(name)) return '250 GM';
+  return null;
+};
 const clean = (value) => typeof value === 'string' ? value.trim() : '';
 const pricePaise = (rupees) => {
   if (typeof rupees !== 'number' || !Number.isFinite(rupees) || rupees < 0 || rupees > 100_000_000 || Math.abs(rupees * 100 - Math.round(rupees * 100)) > 1e-7) fail('Item selling price must have at most two decimal places.');
@@ -110,23 +118,32 @@ function validateOrderInput(input) {
   const keys = new Set();
   for (const line of input.lines) {
     if (!['item', 'special'].includes(line.kind) || !validId(line.productId) || !qty(line.quantityQty, true) || line.kind === 'special' && line.quantityQty % 1000 !== 0) fail('Each line needs a valid product and quantity. Special products use whole combos.');
+    if (line.unitId !== undefined && (line.kind !== 'item' || !validId(line.unitId))) fail('Choose a valid order unit.');
     const key = `${line.kind}:${line.productId}`;
     if (keys.has(key)) fail('Combine duplicate order lines.');
     keys.add(key);
   }
 }
 
-async function buildLines(db, tx, inputs) {
+async function buildLines(db, tx, inputs, user) {
   const refs = inputs.map((line) => db.doc(`${line.kind === 'item' ? 'items' : 'specialProducts'}/${line.productId}`));
   const snaps = await Promise.all(refs.map((ref) => tx.get(ref)));
   const unitSnaps = await Promise.all(snaps.map((snap, index) => inputs[index].kind === 'item' && snap.exists ? tx.get(db.doc(`units/${snap.data().defaultUnitId}`)) : null));
+  const orderUnitSnaps = await Promise.all(inputs.map((line) => line.kind === 'item' && line.unitId && !orderUnitLabel(line.unitId) ? tx.get(db.doc(`units/${line.unitId}`)) : null));
   return inputs.map((line, index) => {
     const snap = snaps[index];
     if (!snap.exists || snap.data().active !== true) fail('An order product is missing or inactive.');
     if (line.kind === 'item') {
       if (!unitSnaps[index]?.exists) fail('Item unit is missing.');
-      const unitPricePaise = pricePaise(snap.data().defaultSellingPrice);
-      return { kind: 'item', productId: line.productId, quantityQty: line.quantityQty, unitPricePaise, lineTotalPaise: saleTotal(line.quantityQty, unitPricePaise), itemSnapshot: itemSnapshot(snap.data(), unitSnaps[index].data()) };
+      const selectedUnit = orderUnitSnaps[index];
+      const selectedLabel = line.unitId ? orderUnitLabel(line.unitId) || (selectedUnit?.exists && selectedUnit.data().active === true ? orderUnitLabel(selectedUnit.data()) : null) : null;
+      if (line.unitId && !selectedLabel) fail('Choose an active order unit.');
+      if (selectedLabel === '250 GM' && user.role !== 'admin') fail('Only Admin may select 250 GM.');
+      const item = snap.data();
+      const configuredPrice = line.unitId === '500gm' ? item.sellingPrice500Gm : line.unitId === '250gm' ? item.sellingPrice250Gm : item.defaultSellingPrice;
+      if (['500gm', '250gm'].includes(line.unitId) && configuredPrice === undefined) fail('This item has no price for the selected unit.');
+      const unitPricePaise = pricePaise(configuredPrice);
+      return { kind: 'item', productId: line.productId, quantityQty: line.quantityQty, ...(line.unitId ? { orderUnitId: line.unitId, orderUnitName: selectedLabel } : {}), unitPricePaise, lineTotalPaise: saleTotal(line.quantityQty, unitPricePaise), itemSnapshot: itemSnapshot(item, unitSnaps[index].data()) };
     }
     if (!Array.isArray(snap.data().components) || snap.data().components.length < 2 || snap.data().components.length > 4 || !money(snap.data().finalPricePaise)) fail('Special product recipe or price is invalid.');
     const unitPricePaise = snap.data().finalPricePaise;
@@ -147,7 +164,7 @@ function orderChanges(before, after) {
   for (const key of ['orderDate', 'deliveryDate', 'notes', 'grandTotal']) {
     if (before?.[key] !== after[key]) result[key] = { before: before?.[key] ?? null, after: after[key] ?? null };
   }
-  const lines = (value) => (value || []).map((line) => ({ kind: line.kind, productId: line.productId, quantityQty: line.quantityQty, unitPricePaise: line.unitPricePaise }));
+  const lines = (value) => (value || []).map((line) => ({ kind: line.kind, productId: line.productId, quantityQty: line.quantityQty, ...(line.orderUnitId ? { orderUnitId: line.orderUnitId } : {}), unitPricePaise: line.unitPricePaise }));
   if (JSON.stringify(lines(before?.lines)) !== JSON.stringify(lines(after.lines))) result.lines = { before: lines(before?.lines), after: lines(after.lines) };
   return result;
 }
@@ -187,7 +204,7 @@ export async function saveOrderDraft(db, uid, input) {
       const linked = await tx.get(db.doc(`orders/${linkedId}`));
       if (!linked.exists || linked.data().ownerUid !== uid || linked.data().customerId !== customerId) fail('Customer link is invalid.');
     }
-    const lines = await buildLines(db, tx, input.lines);
+    const lines = await buildLines(db, tx, input.lines, user);
     const subtotal = lines.reduce((sum, line) => sum + line.lineTotalPaise, 0);
     if (!Number.isSafeInteger(subtotal) || subtotal > 1_000_000_000_000) fail('Order total is too large.');
     let revisedDeductions = null;
@@ -255,7 +272,7 @@ export async function confirmOrder(db, uid, orderId) {
     if (!staffRole(user.role) && order.data().ownerUid !== uid) fail('You may confirm only your own order.');
     const original = order.data().lines;
     if (!Array.isArray(original) || original.length < 1 || original.length > 20) fail('Order lines are invalid.');
-    const fresh = await buildLines(db, tx, original.map((line) => ({ kind: line.kind, productId: line.productId, quantityQty: line.quantityQty })));
+    const fresh = await buildLines(db, tx, original.map((line) => ({ kind: line.kind, productId: line.productId, quantityQty: line.quantityQty, ...(line.orderUnitId ? { unitId: line.orderUnitId } : {}) })), user);
     const currentSubtotal = fresh.reduce((sum, line) => sum + line.lineTotalPaise, 0);
     if (currentSubtotal !== order.data().subtotal || fresh.some((line, index) => line.unitPricePaise !== original[index].unitPricePaise || line.kind === 'special' && JSON.stringify(line.specialSnapshot.components) !== JSON.stringify(original[index].specialSnapshot.components))) fail('Product price or recipe changed. Reopen and save the draft before confirmation.');
     const needed = new Map();
@@ -396,7 +413,7 @@ export async function createInvoiceFromOrder(db, uid, orderId) {
     if (invoice.exists) fail('An invoice already exists for this order.');
     const data = order.data();
     // Sabha, birth date and customer ownership are deliberately absent.
-    const lines = data.lines.map((line) => ({ kind: line.kind, description: line.kind === 'item' ? line.itemSnapshot.name : line.specialSnapshot.name, quantityQty: line.quantityQty, unit: line.kind === 'item' ? line.itemSnapshot.unitSymbol : 'combo', unitPricePaise: line.unitPricePaise, lineTotalPaise: line.lineTotalPaise }));
+    const lines = data.lines.map((line) => ({ kind: line.kind, description: line.kind === 'item' ? line.itemSnapshot.name : line.specialSnapshot.name, quantityQty: line.quantityQty, unit: line.kind === 'item' ? line.orderUnitName || line.itemSnapshot.unitSymbol : 'combo', unitPricePaise: line.unitPricePaise, lineTotalPaise: line.lineTotalPaise }));
     tx.create(invoiceRef, { invoiceNumber: `INV-${data.orderNumber}`, orderId, orderNumber: data.orderNumber, ownerUid: data.ownerUid, customerId: data.customerId, customerSnapshot: customerSnapshot(data.customerSnapshot), lines, subtotal: data.subtotal, totalPaise: data.grandTotal, verifiedPaidPaise: 0, paymentStatus: 'unpaid', issuedAt: FieldValue.serverTimestamp(), createdBy: uid, paidAt: null, paidBy: null });
     audit(tx, db, 'invoice.created', uid, 'invoice', orderId, { orderId, totalPaise: data.grandTotal }, user.name);
     orderEvent(tx, db, 'order.invoice_created', user, orderId, data, { invoiceId: { before: null, after: orderId } });

@@ -353,9 +353,11 @@ test('dashboard KG data layer returns authorized sales and item-wise sellable st
 test('item code reservation is atomic, and User cannot write master data', async () => {
   const db = dbFor('adminA');
   const batch = writeBatch(db);
-  batch.set(record(db, 'items/itemA'), { itemCode: 'SW-01', name: 'Sweet', description: '', defaultSellingPrice: 12.5, defaultUnitId: 'unitA', active: true, createdBy: 'adminA', createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  batch.set(record(db, 'items/itemA'), { itemCode: 'SW-01', name: 'Sweet', description: '', defaultSellingPrice: 12.5, sellingPrice500Gm: 7, sellingPrice250Gm: 4, defaultUnitId: 'unitA', active: true, createdBy: 'adminA', createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
   batch.set(record(db, 'itemCodes/SW-01'), { itemId: 'itemA', createdAt: serverTimestamp() });
   await assertSucceeds(batch.commit());
+  await assertSucceeds(updateDoc(record(db, 'items/itemA'), { sellingPrice500Gm: 8, updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(record(db, 'items/itemA'), { sellingPrice250Gm: -1, updatedAt: serverTimestamp() }));
   await assertFails(setDoc(record(db, 'items/itemB'), { itemCode: 'SW-01', name: 'Other', description: '', defaultSellingPrice: 1, defaultUnitId: 'unitA', active: true, createdBy: 'adminA', createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
   await assertFails(setDoc(record(db, 'items/itemC'), { itemCode: 'SW-02', name: 'Other', description: '', defaultSellingPrice: 1, defaultUnitId: 'unitA', active: true, createdBy: 'adminA', createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
   await assertFails(deleteDoc(record(db, 'units/unitA')));

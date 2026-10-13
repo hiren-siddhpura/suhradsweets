@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { availableOrderUnits, itemUnitPrice, orderLineUnitLabel } from '../js/order-units.js';
 import { isStaff, validateProfile } from '../js/permissions.js';
 
 test('order form shows trusted availability; financial locks disable edit and archive', async () => {
@@ -12,7 +13,7 @@ test('order form shows trusted availability; financial locks disable edit and ar
   const activity = [{ type: 'order.confirmed', orderNumber: 'SS-1', actorName: 'User A', customerName: 'Asha', changedFields: {}, outcome: 'success', at: 1791710000000 }];
   const context = { document: { getElementById: el, addEventListener() {}, querySelector() { return null; } }, isStaff, validateProfile, showToast() {}, listOrders: async () => [order], listCustomers: async () => [{ id: 'customerA', fullName: 'Asha', contact: '123' }], listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'itemA', name: 'Sweet', active: true, defaultUnitId: 'kg', defaultSellingPrice: 100 }] : [], listInvoices: async () => invoicePresent ? [{ orderId: 'orderA' }] : [], getOrderTaking: async () => true, callOperation: async (_fn, name, input) => { calls.push(name); if (name === 'getOrderStock') return { items: [{ itemId: 'itemA', availableQty: 2500, onHandQty: 2500, reservedQty: 0, unit: 'kg', status: 'low_stock' }] }; if (name === 'listOrderActivity') return { rows: activity, cursor: null, hasMore: false }; throw new Error('Mutation not expected.'); }, downloadXlsx: async (_name, sheets) => { exports.push(sheets); } };
   const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
-  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, context);
+  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, Object.assign(context, { availableOrderUnits, itemUnitPrice, orderLineUnitLabel }));
   context.init({ db: {}, functions: {}, auth: {} }).setSession({ uid: 'userA' }, { role: 'user', active: true, fullName: 'User A' });
   await el('order-refresh').listeners.click();
   el('order-new').listeners.click();

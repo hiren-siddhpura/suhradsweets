@@ -80,6 +80,22 @@ export function initReportingUi({ db, functions }) {
   async function dashboard() {
     if (!profile) return;
     const version = revision, run = ++dashboardRun, day = today();
+    const userOnly = profile.role === 'user';
+    $('dashboard-announcements-panel').hidden = userOnly;
+    $('dashboard-activity-panel').hidden = userOnly;
+    if (userOnly) {
+      $('dashboard-cards').innerHTML = '<div class="card stat-card dashboard-metric"><span class="stat-label">Total Orders</span><strong>Loading…</strong></div>';
+      try {
+        const orders = await dashboardOrderKg(db, profile.role, user.uid);
+        if (version !== revision || run !== dashboardRun) return;
+        $('dashboard-cards').innerHTML = `<div class="card stat-card dashboard-metric"><span class="stat-label">Total Orders</span><strong>${esc(orders.orderCount)} <span class="metric-unit">Orders</span></strong><small>Your orders</small></div>`;
+      } catch (error) {
+        if (version !== revision || run !== dashboardRun) return;
+        $('dashboard-cards').innerHTML = '<div class="card stat-card dashboard-metric"><span class="stat-label">Total Orders</span><strong>Unavailable</strong><small>Your orders</small></div>';
+        console.warn('[OMS dashboard]', { code: String(error?.code || 'unknown'), category: 'query-failed' });
+      }
+      return;
+    }
     const labels = ['Total Orders', 'Target Achievement', 'Available Stock', 'Total Selling'];
     const icons = ['◫', '%', '◇', '▤'];
     const kg = (amount) => Number(amount).toLocaleString('en-IN', { maximumFractionDigits: 3 });

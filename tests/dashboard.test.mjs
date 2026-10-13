@@ -6,6 +6,7 @@ import { quantityInKg, summarizeOrderKg, targetPercentage, validateTargetKg } fr
 
 test('a missing dashboard index preserves other cards without a visible warning or link', async () => {
   const elements = new Map();
+  let targetReads = 0, stockReads = 0, activityReads = 0, announcementReads = 0;
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', textContent: '', hidden: false, children: [], addEventListener() {}, replaceChildren() { this.children = []; }, append(child) { this.children.push(child); } });
     return elements.get(id);
@@ -16,11 +17,9 @@ test('a missing dashboard index preserves other cards without a visible warning 
     isStaff: (profile) => profile?.role === 'admin', showToast() {}, callOperation() {}, downloadXlsx() {},
     reportUsers: async () => [], targetPercentage,
     dashboardOrderKg: async () => ({ orderCount: 7, totalKg: 10, items: [{ name: 'Sweet', kg: 10 }], excludedQuantities: 0 }),
-    dashboardTargetKg: async () => 20,
-    dashboardStockKg: async (_db, role) => role === 'user'
-      ? { totalKg: 2.5, items: [{ name: 'Sweet', kg: 2.5 }], excludedQuantities: 0 }
-      : Promise.reject(missingIndex),
-    recentActivity: async () => [], activeAnnouncements: async () => { throw missingIndex; },
+    dashboardTargetKg: async () => { targetReads++; return 20; },
+    dashboardStockKg: async () => { stockReads++; throw missingIndex; },
+    recentActivity: async () => { activityReads++; return []; }, activeAnnouncements: async () => { announcementReads++; throw missingIndex; },
     currentTargets: async () => [], targetAchievement: async () => 0,
     console: { warn() {} }, Intl, Date, Set, Object, Promise, Number, String,
   };
@@ -42,9 +41,14 @@ test('a missing dashboard index preserves other cards without a visible warning 
   assert.equal(elements.has('dashboard-from'), false);
   assert.equal(elements.has('dashboard-to'), false);
   await ui.setSession({ uid: 'test-user' }, { role: 'user', active: true, fullName: 'Test User' });
+  const priorReads = [targetReads, stockReads, activityReads, announcementReads];
   await element('dashboard-refresh').onclick();
-  assert.match(element('dashboard-cards').innerHTML, /Available Stock[\s\S]*Total 2\.5/);
-  assert.doesNotMatch(element('dashboard-cards').innerHTML, /Stock totals are available to administrators/);
+  assert.match(element('dashboard-cards').innerHTML, /Total Orders[\s\S]*7/);
+  assert.doesNotMatch(element('dashboard-cards').innerHTML, /Target Achievement|Available Stock|Total Selling|KG/);
+  assert.equal((element('dashboard-cards').innerHTML.match(/class="card stat-card/g) || []).length, 1);
+  assert.equal(element('dashboard-activity-panel').hidden, true);
+  assert.equal(element('dashboard-announcements-panel').hidden, true);
+  assert.deepEqual([targetReads, stockReads, activityReads, announcementReads], priorReads);
 });
 
 test('KG conversion excludes count units and sales snapshots count combos once', () => {

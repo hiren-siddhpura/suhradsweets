@@ -7,15 +7,14 @@ import { BUSINESS_DETAILS_ID } from './business-settings.js';
 
 const $ = (id) => document.getElementById(id);
 const PAGE_SIZE = 10;
-const titles = { items: 'Items', units: 'Units', purchaseTypes: 'Purchase Types', users: 'Users', settings: 'Settings' };
+const titles = { items: 'Items', purchaseTypes: 'Purchase Types', users: 'Users', settings: 'Settings' };
 const subtitles = {
-  items: 'Manage items, prices and default units.', units: 'Manage units used by items and transactions.',
+  items: 'Manage items and prices for KG, 500 GM and 250 GM.',
   purchaseTypes: 'Manage purchase categories.', users: 'Manage user accounts and roles through the trusted backend.',
   settings: 'Store non-secret application settings.',
 };
 const columns = {
-  items: [['itemCode', 'Code'], ['name', 'Name'], ['defaultSellingPrice', 'Selling price'], ['defaultUnitId', 'Unit']],
-  units: [['name', 'Name'], ['symbol', 'Symbol']],
+  items: [['itemCode', 'Code'], ['name', 'Name'], ['defaultUnitId', 'Stock unit'], ['defaultSellingPrice', 'KG price'], ['sellingPrice500Gm', '500 GM price'], ['sellingPrice250Gm', '250 GM price']],
   purchaseTypes: [['name', 'Name'], ['description', 'Description']],
   users: [['displayName', 'Name'], ['role', 'Role'], ['email', 'Email']],
   settings: [['key', 'Key'], ['value', 'Value']],
@@ -130,7 +129,7 @@ export function initMasterData({ db, functions, auth, mode }) {
       for (const [key] of columns[type]) {
         const cell = document.createElement('td');
         let value = record[key] ?? (key === 'displayName' ? record.fullName : undefined);
-        if (key === 'defaultSellingPrice') value = `₹${Number(value || 0).toFixed(2)}`;
+        if (['defaultSellingPrice', 'sellingPrice500Gm', 'sellingPrice250Gm'].includes(key) && value !== undefined) value = `₹${Number(value).toFixed(2)}`;
         if (key === 'defaultUnitId') value = unitNames.get(value) || value || '—';
         if (key === 'role') value = ({ admin: 'Admin', account_admin: 'Account Admin', user: 'User' })[value] || value;
         cell.textContent = String(value ?? '—'); row.append(cell);
@@ -210,11 +209,13 @@ export function initMasterData({ db, functions, auth, mode }) {
       fields.append(field('name', 'Name', { required: true, value: record?.name }));
       fields.append(field('description', 'Description', { type: 'textarea', max: 500, value: record?.description }));
       fields.append(field('defaultSellingPrice', 'Default selling price (₹)', { type: 'number', required: true, value: record?.defaultSellingPrice ?? 0 }));
+      fields.append(field('sellingPrice500Gm', '500 GM selling price (₹)', { type: 'number', value: record?.sellingPrice500Gm ?? '' }));
+      fields.append(field('sellingPrice250Gm', '250 GM selling price (₹)', { type: 'number', value: record?.sellingPrice250Gm ?? '' }));
       try {
         const units = await listMasterRecords(db, 'units');
         if (!session || !isStaff(session.profile) || type !== editorType) return;
         const options = [{ value: '', label: 'Select a unit' }, ...units.filter((unit) => unit.active || unit.id === record?.defaultUnitId).map((unit) => ({ value: unit.id, label: `${unit.name} (${unit.symbol})${unit.active ? '' : ' — inactive'}` }))];
-        fields.append(selectField('defaultUnitId', 'Default unit', options, record?.defaultUnitId));
+        fields.append(selectField('defaultUnitId', 'Stock unit', options, record?.defaultUnitId));
       } catch (error) { message(friendlyError(error), true); return; }
     } else if (type === 'units') {
       fields.append(field('name', 'Name', { required: true, value: record?.name }));

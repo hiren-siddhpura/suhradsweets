@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { availableOrderUnits, itemUnitPrice, orderLineUnitLabel } from '../js/order-units.js';
 import { isStaff, validateProfile } from '../js/permissions.js';
 import { validateCustomerInput } from '../js/customer-validation.js';
 
@@ -26,17 +27,20 @@ test('new-customer choice is first; order form survives customer dialog cancel a
     crypto: { randomUUID: () => 'customer-request-1' }, FormData: class { get(name) { return values[name]; } },
     isStaff, validateProfile, validateCustomerInput, showToast() {}, customerSaveError: (error) => error.message,
     listOrders: async () => [], listCustomers: async () => [{ id: 'z', fullName: 'Zara', contact: '123' }, { id: 'a', fullName: 'Asha', contact: '456' }],
-    listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'sweet', name: 'Kaju Katli', active: true, defaultSellingPrice: 1200 }] : [],
+    listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'sweet', name: 'Kaju Katli', active: true, defaultSellingPrice: 1200 }] : type === 'units' ? [{ id: 'kg', name: '1 KG', active: true }, { id: 'half', name: '500 GM', active: true }, { id: 'quarter', name: '250 GM', active: true }] : [],
     listInvoices: async () => [], getOrderTaking: async () => true, listMasterRecords: async () => [],
     callOperation: async (_fn, name, payload) => name === 'getOrderStock' ? (stockReads++, { items: [{ itemId: 'sweet', availableQty: 988000, unit: 'kg', status: 'available' }] }) : name === 'saveOrderDraft' ? (orderSaves.push(payload), { orderId: payload.orderId }) : { rows: [], hasMore: false },
     saveCustomerDirect: async (_db, _auth, input, options) => { saved.push({ input, options }); return { customerId: options.customerId }; },
   };
   const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
-  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, context);
+  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, Object.assign(context, { availableOrderUnits, itemUnitPrice, orderLineUnitLabel }));
   context.init({ db: {}, functions: {}, auth: { currentUser: { uid: 'admin' } } }).setSession({ uid: 'admin' }, { role: 'admin', active: true });
   await el('order-refresh').listeners.click();
   el('order-new').listeners.click();
   const html = fields.innerHTML;
+  assert.match(html, /value="kg"[^>]*>KG/);
+  assert.match(html, /value="500gm"[^>]*>500 GM/);
+  assert.match(html, /value="250gm"[^>]*>250 GM/);
   assert.ok(html.indexOf('value="__new__"') < html.indexOf('value="a"'));
   assert.ok(html.indexOf('value="a"') < html.indexOf('value="z"'));
   assert.match(html, /Kaju Katli — ₹1,200\.00/);
@@ -72,6 +76,9 @@ test('new-customer choice is first; order form survives customer dialog cancel a
   context.init({ db: {}, functions: {}, auth: { currentUser: { uid: 'user-1' } } }).setSession({ uid: 'user-1' }, { role: 'user', active: true });
   await el('order-refresh').listeners.click();
   el('order-new').listeners.click();
+  assert.match(fields.innerHTML, /value="kg"[^>]*>KG/);
+  assert.match(fields.innerHTML, /value="500gm"[^>]*>500 GM/);
+  assert.doesNotMatch(fields.innerHTML, /250 GM|250gm/);
   el('order-customer').value = '__new__';
   fields.listeners.click({ target: { id: 'order-add-customer', matches: () => false } });
   await el('order-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
@@ -89,7 +96,7 @@ test('new-customer choice is first; order form survives customer dialog cancel a
 test('Admin may edit special lines; assigned User can view the saved special order', async () => {
   const nodes = new Map();
   const el = (id) => { if (!nodes.has(id)) nodes.set(id, { value: '', innerHTML: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, querySelectorAll() { return []; }, showModal() {}, close() {} }); return nodes.get(id); };
-  const order = { id: 'order-1', orderNumber: 'SS-1', ownerUid: 'user-1', assignedUserId: 'user-1', customerId: 'customer-1', customerSnapshot: { fullName: 'Asha' }, status: 'draft', orderDate: '2026-10-10', lines: [{ kind: 'item', productId: 'sweet', quantityQty: 1000 }, { kind: 'special', productId: 'combo', quantityQty: 1000, specialSnapshot: { name: 'Gift Box' } }] };
+  const order = { id: 'order-1', orderNumber: 'SS-1', ownerUid: 'user-1', assignedUserId: 'user-1', customerId: 'customer-1', customerSnapshot: { fullName: 'Asha' }, status: 'draft', orderDate: '2026-10-10', lines: [{ kind: 'item', productId: 'sweet', quantityQty: 1000, orderUnitId: 'half', orderUnitName: '500 GM', itemSnapshot: { name: 'Kaju Katli', unitSymbol: 'kg' } }, { kind: 'special', productId: 'combo', quantityQty: 1000, specialSnapshot: { name: 'Gift Box' } }] };
   const context = {
     document: { getElementById: el, addEventListener() {}, querySelector() { return null; } }, isStaff, validateProfile, showToast() {},
     listOrders: async () => [order], listCustomers: async () => [{ id: 'customer-1', fullName: 'Asha', contact: '123' }],
@@ -98,23 +105,28 @@ test('Admin may edit special lines; assigned User can view the saved special ord
     callOperation: async (_fn, name) => { if (name === 'getOrderStock') throw new Error('Network unavailable'); return { rows: [], hasMore: false }; },
   };
   const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
-  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, context);
+  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, Object.assign(context, { availableOrderUnits, itemUnitPrice, orderLineUnitLabel }));
   const ui = context.init({ db: {}, functions: {}, auth: {} });
   ui.setSession({ uid: 'admin-1' }, { role: 'admin', active: true });
   await el('order-refresh').listeners.click();
   el('order-body').listeners.click({ target: { closest: () => ({ dataset: { action: 'editOrder', id: 'order-1' } }) } });
   const html = el('order-fields').innerHTML;
   assert.equal((html.match(/class="ops-line order-entry-line"/g) || []).length, 2);
+  assert.match(html, /Choose an active permitted unit/);
   assert.match(html, /Kaju Katli — ₹1,200\.00/);
   assert.match(html, /Gift Box — ₹1,600\.00/);
   assert.equal((html.match(/Available: Unavailable/g) || []).length, 2);
   assert.doesNotMatch(html, /On hand:|Reserved:|Low stock|Out of stock/);
+  el('special-new').listeners.click();
+  assert.match(el('order-fields').innerHTML, /Final selling price/);
+  assert.match(el('order-fields').innerHTML, /name="price" type="number"/);
   ui.setSession({ uid: 'user-1' }, { role: 'user', active: true });
   await el('order-refresh').listeners.click();
   assert.match(el('order-body').innerHTML, /data-action="viewOrder"/);
   assert.doesNotMatch(el('order-body').innerHTML, /data-action="editOrder"|data-action="confirmOrder"|data-action="archiveOrder"|data-action="cancelOrder"/);
   el('order-body').listeners.click({ target: { closest: () => ({ dataset: { action: 'viewOrder', id: 'order-1' } }) } });
   assert.match(el('order-fields').innerHTML, /Gift Box/);
+  assert.match(el('order-fields').innerHTML, /500 GM/);
   assert.equal(el('order-dialog-save').hidden, true);
   el('order-new').listeners.click();
   assert.doesNotMatch(el('order-fields').innerHTML, /Special product/);

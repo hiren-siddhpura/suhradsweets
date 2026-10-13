@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { availableOrderUnits, itemUnitPrice, orderLineUnitLabel } from '../js/order-units.js';
 import { customerSaveError, validateCustomerInput } from '../js/customer-validation.js';
 
 test('customer form shows Firestore denial, keeps the dialog open and reuses the submission ID', async () => {
@@ -20,7 +21,7 @@ test('customer form shows Firestore denial, keeps the dialog open and reuses the
     callOperation: async () => { callableRequests++; },
   };
   const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
-  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, context);
+  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, Object.assign(context, { availableOrderUnits, itemUnitPrice, orderLineUnitLabel }));
   context.init({ db: {}, auth: { currentUser: { uid: 'admin' } }, functions: {} }).setSession({ uid: 'admin' }, { role: 'admin' });
   getElement('customer-new').listeners.click();
   for (let retry = 0; retry < 2; retry++) await getElement('order-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
@@ -55,7 +56,7 @@ test('Delete confirms the escaped name and preserves the exact dependency error 
     saveCustomerDirect: () => { throw new Error('Deletion must not use direct writes.'); },
   };
   const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
-  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, context);
+  vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, Object.assign(context, { availableOrderUnits, itemUnitPrice, orderLineUnitLabel }));
   const ui = context.init({ db: {}, functions: {}, mode: 'live' });
   ui.setSession({ uid: 'admin' }, { role: 'admin' });
   await element('customer-refresh').listeners.click();

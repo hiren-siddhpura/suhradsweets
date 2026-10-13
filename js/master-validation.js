@@ -27,6 +27,13 @@ export function normalizeItemCode(value) {
   return code;
 }
 
+export function hasDuplicateItemName(items, candidate, currentId = null) {
+  const name = String(candidate.name ?? '').trim().toLocaleLowerCase();
+  return items.some((item) => item.id !== currentId
+    && item.defaultUnitId === candidate.defaultUnitId
+    && String(item.name ?? '').trim().toLocaleLowerCase() === name);
+}
+
 export function validateMasterInput(type, input, { existing = null, actorRole = null } = {}) {
   if (!MASTER_TYPES.includes(type)) throw new Error('Unknown master-data collection.');
   const active = input.active === true;
@@ -37,8 +44,16 @@ export function validateMasterInput(type, input, { existing = null, actorRole = 
     if (!/^\d+(\.\d{1,2})?$/.test(priceText)) throw new Error('Enter a nonnegative selling price with at most two decimal places.');
     const price = Number(priceText);
     if (!Number.isFinite(price) || price > 100000000) throw new Error('Selling price must be between ₹0 and ₹100,000,000.');
+    const unitPrice = (value, label) => {
+      const entered = text(value);
+      if (!entered) return undefined;
+      if (!/^\d+(\.\d{1,2})?$/.test(entered) || Number(entered) > 100000000) throw new Error(`${label} must be a nonnegative price with at most two decimal places.`);
+      return Number(entered);
+    };
+    const sellingPrice500Gm = unitPrice(input.sellingPrice500Gm, '500 GM price');
+    const sellingPrice250Gm = unitPrice(input.sellingPrice250Gm, '250 GM price');
     return { itemCode, name: required(input.name, 'Name'), description: optional(input.description, 'Description'),
-      defaultSellingPrice: price, defaultUnitId: required(input.defaultUnitId, 'Default unit ID', 128), active };
+      defaultSellingPrice: price, ...(sellingPrice500Gm !== undefined ? { sellingPrice500Gm } : {}), ...(sellingPrice250Gm !== undefined ? { sellingPrice250Gm } : {}), defaultUnitId: required(input.defaultUnitId, 'Default unit ID', 128), active };
   }
   if (type === 'units') return { name: required(input.name, 'Name'), symbol: required(input.symbol, 'Symbol', 16), active };
   if (type === 'purchaseTypes') return { name: required(input.name, 'Name'), description: optional(input.description, 'Description'), active };

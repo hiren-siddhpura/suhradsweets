@@ -158,8 +158,4 @@ export function initUi() {
     closeMenu();
     document.dispatchEvent(new CustomEvent('oms:pagechange', { detail: { page } }));
   }));
-  const dialog = byId('about-dialog');
-  byId('about-button').addEventListener('click', () => { closeMenu(); dialog.showModal(); });
-  byId('close-dialog-button').addEventListener('click', () => dialog.close());
-  byId('dialog-done-button').addEventListener('click', () => dialog.close());
 }

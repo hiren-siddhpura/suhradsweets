@@ -34,6 +34,61 @@ test.beforeEach(async () => {
 });
 test.after(async () => { await deleteApp(app); });
 
+test('fixed unit prices are selected on the server and 250 GM is Admin only', async () => {
+  await db.doc('items/itemA').update({ sellingPrice500Gm: 60, sellingPrice250Gm: 35 });
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  const line = (unitId) => [{ kind: 'item', productId: 'itemA', quantityQty: 1000, unitId }];
+  await assert.rejects(saveOrderDraft(db, 'userA', regularOrder(customerId, { assignedUserId: undefined, lines: line('250gm') })), /Only Admin may select 250 GM/);
+  await assert.rejects(saveOrderDraft(db, 'accountA', regularOrder(customerId, { assignedUserId: undefined, lines: line('250gm') })), /Only Admin may select 250 GM/);
+  for (const [unitId, expected] of [['kg', 10000], ['500gm', 6000], ['250gm', 3500]]) {
+    const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId, { lines: line(unitId) }));
+    const saved = (await db.doc(`orders/${orderId}`).get()).data();
+    assert.equal(saved.lines[0].orderUnitId, unitId);
+    assert.equal(saved.lines[0].unitPricePaise, expected);
+    assert.equal(saved.grandTotal, expected);
+  }
+  await db.doc('items/itemA').update({ sellingPrice500Gm: null });
+  await assert.rejects(saveOrderDraft(db, 'adminA', regularOrder(customerId, { lines: line('500gm') })), /Item selling price/);
+});
+
+test('order unit selection keeps catalog price, totals, stock and invoice snapshots', async () => {
+  await Promise.all([
+    db.doc('units/orderKg').set({ name: '1 KG', symbol: 'kg', active: true }),
+    db.doc('units/orderHalf').set({ name: '500 GM', symbol: 'gm', active: true }),
+    db.doc('units/orderQuarter').set({ name: '250 GM', symbol: 'gm', active: true }),
+    db.doc('units/orderInactive').set({ name: '500 GM', symbol: 'gm', active: false }),
+  ]);
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const makeOrder = (unitId, extra = {}) => regularOrder(customerId, { lines: [{ kind: 'item', productId: 'itemA', quantityQty: 2000, unitId }], ...extra });
+  await saveOrderDraft(db, 'adminA', regularOrder(customerId)); // link the customer to userA
+  for (const role of ['accountA', 'userA']) {
+    await assert.rejects(saveOrderDraft(db, role, makeOrder('orderQuarter', { assignedUserId: undefined })), /Only Admin may select 250 GM/);
+  }
+  await assert.rejects(saveOrderDraft(db, 'adminA', makeOrder('orderInactive')), /active order unit/);
+  await assert.rejects(saveOrderDraft(db, 'adminA', makeOrder('missing')), /active order unit/);
+  const { orderId } = await saveOrderDraft(db, 'adminA', makeOrder('orderHalf'));
+  let saved = (await db.doc(`orders/${orderId}`).get()).data();
+  assert.equal(saved.lines[0].orderUnitId, 'orderHalf');
+  assert.equal(saved.lines[0].orderUnitName, '500 GM');
+  assert.equal(saved.lines[0].unitPricePaise, 10000);
+  assert.equal(saved.grandTotal, 20000);
+  await saveOrderDraft(db, 'adminA', makeOrder('orderQuarter', { orderId }));
+  saved = (await db.doc(`orders/${orderId}`).get()).data();
+  assert.equal(saved.lines[0].orderUnitName, '250 GM');
+  assert.equal(saved.lines[0].unitPricePaise, 10000);
+  assert.equal(saved.grandTotal, 20000);
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 5000);
+  await confirmOrder(db, 'adminA', orderId);
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 3000);
+  await createInvoiceFromOrder(db, 'adminA', orderId);
+  const invoice = (await db.doc(`invoices/${orderId}`).get()).data();
+  assert.equal(invoice.lines[0].unit, '250 GM');
+  assert.equal(invoice.lines[0].unitPricePaise, 10000);
+  assert.equal(invoice.totalPaise, 20000);
+  assert.equal((await db.collection('units').get()).size, 5);
+});
+
 test('customer contact is reserved; user cannot edit customers or ownership', async () => {
   const { customerId } = await saveCustomer(db, 'adminA', customer);
   await assert.rejects(saveCustomer(db, 'adminA', { ...customer, fullName: 'Another' }), /already exists/);

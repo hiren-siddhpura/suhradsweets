@@ -20,6 +20,12 @@ test('searchable customer choice preserves order form through customer cancel an
     return nodes.get(id);
   };
   const fields = el('order-fields');
+  const dialogClasses = new Set();
+  const dialogStyles = new Map();
+  el('order-dialog').classList = { toggle(name, force) { if (force) dialogClasses.add(name); else dialogClasses.delete(name); }, contains(name) { return dialogClasses.has(name); }, remove(name) { dialogClasses.delete(name); } };
+  el('order-dialog').style = { setProperty(name, value) { dialogStyles.set(name, value); }, removeProperty(name) { dialogStyles.delete(name); } };
+  el('order-dialog').contains = () => true;
+  const visualViewport = { height: 844, listeners: {}, addEventListener(name, listener) { this.listeners[name] = listener; }, removeEventListener(name) { delete this.listeners[name]; } };
   let markup = '', formNodes = [];
   Object.defineProperties(fields, {
     innerHTML: { get() { return markup; }, set(value) { markup = value; formNodes = value.includes('id="order-lines"') ? [{ note: 'keep my order note', parent: fields }] : value ? [{ customer: true, parent: fields }] : []; } },
@@ -33,11 +39,12 @@ test('searchable customer choice preserves order form through customer cancel an
     document: { getElementById: el, addEventListener() {}, querySelector() { return null; }, createDocumentFragment() { return { children: [], appendChild(child) { child.parent.children.splice(child.parent.children.indexOf(child), 1); child.parent = this; this.children.push(child); } }; } },
     uniqueId: () => 'customer-request-1', FormData: class { get(name) { return values[name]; } },
     isStaff, validateProfile, hasPermission, validateCustomerInput, showToast(message) { toasts.push(message); }, customerSaveError: (error) => error.message,
-    listOrders: async () => [], listCustomers: async () => [{ id: 'z', fullName: 'Zara', contact: '123' }, { id: 'a', fullName: 'Asha', contact: '456' }],
-    listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'sweet', name: 'Kaju Katli', active: true, defaultSellingPrice: 1200 }] : type === 'units' ? [{ id: 'kg', name: '1 KG', active: true }, { id: 'half', name: '500 GM', active: true }, { id: 'quarter', name: '250 GM', active: true }] : [],
+    listOrders: async () => [], listCustomers: async () => [{ id: 'z', fullName: 'Zara', contact: '123' }, { id: 'a', fullName: 'Asha', contact: '456' }, { id: 'unicode', fullName: 'આશા Élodie', contact: '789' }],
+    listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'sweet', name: 'Kaju Katli', active: true, defaultSellingPrice: 1200, sellingPrice500Gm: 600 }] : type === 'units' ? [{ id: 'kg', name: '1 KG', active: true }, { id: 'half', name: '500 GM', active: true }, { id: 'quarter', name: '250 GM', active: true }] : [],
     listInvoices: async () => [], getOrderTaking: async () => true, listMasterRecords: async () => [],
     callOperation: async (_fn, name, payload) => name === 'getOrderStock' ? (stockReads++, { items: [{ itemId: 'sweet', availableQty: 988000, unit: 'kg', status: 'available' }] }) : name === 'saveOrderDraft' ? (orderSaves.push(payload), { orderId: payload.orderId, orderNumber: 'SS-2026-000001', status: 'confirmed' }) : { rows: [], hasMore: false },
     saveCustomerDirect: async (_db, _auth, input, options) => { saved.push({ input, options }); return { customerId: options.customerId }; },
+    visualViewport, innerHeight: 844, requestAnimationFrame(callback) { callback(); },
   };
   const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
   vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, Object.assign(context, { availableOrderUnits, itemUnitPrice, orderLineUnitLabel }));
@@ -52,6 +59,48 @@ test('searchable customer choice preserves order form through customer cancel an
   assert.match(html, /Customer \*/);
   assert.match(html, /Search customer by name or phone number/);
   assert.match(html, /Add New Customer/);
+  assert.doesNotMatch(html, /order-product-search|data-add-product/);
+  assert.match(el('order-product-list').innerHTML, /data-unit-id="500gm"/);
+  assert.match(el('order-product-list').innerHTML, /data-unit-id="kg"/);
+  assert.doesNotMatch(el('order-product-list').innerHTML, /Add Item|data-add-product/);
+  assert.match(el('order-product-filters').innerHTML, /data-product-category="kaju"/);
+  let addedMarkup = '', pendingUnit = 'kg';
+  const lineRows = [];
+  el('order-lines').children = lineRows;
+  el('order-lines').insertAdjacentHTML = (_position, value) => {
+    addedMarkup = value;
+    const fields = { kind: { value: 'item' }, productId: { value: 'sweet' }, unitId: { value: pendingUnit }, quantity: { value: String(/name="quantity" type="text" value="([^"]+)/.exec(value)?.[1] || '') } };
+    const row = { querySelector(selector) { return fields[/\[name=([^\]]+)\]/.exec(selector)?.[1]]; }, remove() { lineRows.splice(lineRows.indexOf(row), 1); } };
+    lineRows.push(row);
+  };
+  const unitQuantity = { value: '3', dataset: { kind: 'item', productId: 'sweet', unitId: 'kg' }, matches(selector) { return selector === '[data-unit-quantity]' || selector.startsWith('input:'); }, closest() { return { classList: { toggle() {} } }; }, setAttribute() {}, removeAttribute() {}, scrollIntoView() {} };
+  fields.listeners.input({ target: unitQuantity });
+  assert.match(addedMarkup, /name="quantity" type="text" value="3"/);
+  assert.equal(unitQuantity.value, '3');
+  assert.equal(lineRows.length, 1);
+  pendingUnit = '500gm';
+  const halfQuantity = { ...unitQuantity, value: '2', dataset: { kind: 'item', productId: 'sweet', unitId: '500gm' } };
+  fields.listeners.input({ target: halfQuantity });
+  assert.equal(lineRows.length, 2);
+  assert.equal(lineRows[0].querySelector('[name=quantity]').value, '3');
+  unitQuantity.value = '0';
+  fields.listeners.input({ target: unitQuantity });
+  assert.equal(lineRows.length, 1);
+  assert.equal(lineRows[0].querySelector('[name=unitId]').value, '500gm');
+  addedMarkup = '';
+  unitQuantity.value = '1.5';
+  fields.listeners.input({ target: unitQuantity });
+  assert.equal(addedMarkup, '');
+  lineRows.length = 0;
+  context.document.activeElement = unitQuantity;
+  visualViewport.height = 480;
+  visualViewport.listeners.resize();
+  assert.equal(dialogClasses.has('order-keyboard-open'), true);
+  assert.equal(dialogStyles.get('--order-visible-height'), '480px');
+  visualViewport.height = 844;
+  visualViewport.listeners.resize();
+  assert.equal(dialogClasses.has('order-keyboard-open'), false);
+  assert.equal(dialogStyles.has('--order-visible-height'), false);
   assert.doesNotMatch(html, /Enter new customer details|<option value="__new__"/);
   el('order-customer-search').value = '456';
   fields.listeners.input({ target: { id: 'order-customer-search' } });
@@ -66,6 +115,45 @@ test('searchable customer choice preserves order form through customer cancel an
   assert.match(el('order-customer-options').innerHTML, /No customers found.*Add New Customer/);
   fields.listeners.click({ target: { id: '', closest: (selector) => selector === '[data-customer-id]' ? { dataset: { customerId: 'a' } } : null, matches: () => false } });
   assert.equal(el('order-customer').value, 'a');
+  const search = el('order-customer-search'); search.id = 'order-customer-search'; search.matches = () => false;
+  assert.equal(search.value, 'Asha');
+  fields.listeners.focusin({ target: search });
+  assert.equal(search.value, '');
+  assert.equal(el('order-customer').value, 'a');
+  search.value = 'A'; fields.listeners.input({ target: search });
+  assert.equal(search.value, 'A');
+  assert.equal(el('order-customer').value, '');
+  search.value = ''; fields.listeners.input({ target: search });
+  assert.equal(search.value, '');
+  fields.listeners.click({ target: { id: '', closest: (selector) => selector === '[data-customer-id]' ? { dataset: { customerId: 'unicode' } } : null, matches: () => false } });
+  assert.equal(search.value, 'આશા Élodie');
+  fields.listeners.focusin({ target: search });
+  fields.listeners.focusout({ target: search });
+  assert.equal(search.value, 'આશા Élodie');
+  fields.listeners.click({ target: { id: '', closest: (selector) => selector === '[data-customer-id]' ? { dataset: { customerId: 'a' } } : null, matches: () => false } });
+  pendingUnit = 'kg'; unitQuantity.value = '2'; fields.listeners.input({ target: unitQuantity });
+  let reviewPresent = false, reviewMarkup = '';
+  const review = { set outerHTML(value) { reviewMarkup = value; }, remove() { reviewPresent = false; } };
+  const nextButton = { textContent: '' }, backButton = { hidden: true, textContent: '' };
+  fields.querySelector = (selector) => selector === '#order-customer' ? el('order-customer') : selector === 'textarea[name=notes]' ? { closest: () => ({}) } : selector === '[name=notes]' ? { value: 'Keep this note' } : selector === '.order-entry-lines' || selector === '.order-product-picker' || selector === '.order-customer-choice' ? {} : selector === '.order-flow-header h3' || selector === '.order-step-subtitle' ? { textContent: '' } : selector === '#order-step-next' ? nextButton : selector === '#order-step-back' ? backButton : selector === '.order-review-panel' && reviewPresent ? review : selector === '.order-flow-actions' ? { insertAdjacentHTML(_position, value) { reviewPresent = true; reviewMarkup = value; } } : null;
+  const clickTarget = (name, data) => ({ closest(selector) { return selector === name ? { dataset: data || {} } : null; } });
+  fields.listeners.click({ target: clickTarget('#order-step-next') });
+  assert.equal(nextButton.textContent, 'Continue to Review');
+  fields.listeners.click({ target: clickTarget('#order-step-next') });
+  assert.equal(nextButton.textContent, 'Save Order');
+  assert.match(reviewMarkup, /Edit Items/);
+  assert.match(reviewMarkup, /Keep this note/);
+  assert.equal(orderSaves.length, 0);
+  fields.listeners.click({ target: clickTarget('[data-edit-order-step]', { editOrderStep: '2' }) });
+  assert.equal(nextButton.textContent, 'Continue to Review');
+  assert.equal(lineRows[0].querySelector('[name=quantity]').value, '2');
+  fields.listeners.click({ target: clickTarget('#order-step-next') });
+  assert.equal(backButton.textContent, 'Back to Items');
+  fields.listeners.click({ target: clickTarget('#order-step-back') });
+  assert.equal(nextButton.textContent, 'Continue to Review');
+  assert.equal(orderSaves.length, 0);
+  delete fields.querySelector;
+  lineRows.length = 0;
   assert.match(html, /Kaju Katli — ₹1,200\.00/);
   assert.match(html, /Available: 988 kg/);
   assert.doesNotMatch(html, /On hand:|Reserved:|Available: 988 kg<\/option>/);
@@ -102,6 +190,7 @@ test('searchable customer choice preserves order form through customer cancel an
   assert.match(fields.innerHTML, /value="kg"[^>]*>KG/);
   assert.match(fields.innerHTML, /value="500gm"[^>]*>500 GM/);
   assert.doesNotMatch(fields.innerHTML, /250 GM|250gm/);
+  assert.doesNotMatch(el('order-product-list').innerHTML, /data-unit-id="250gm"|Special product/);
   el('order-customer').value = '__new__';
   fields.listeners.click({ target: { id: 'order-add-customer', matches: () => false } });
   await el('order-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
@@ -109,6 +198,8 @@ test('searchable customer choice preserves order form through customer cancel an
   assert.match(el('order-customer-search').value, /New Customer/);
   assert.equal(el('order-customer').value, '__new__');
   Object.assign(values, { customerId: '__new__', orderDate: '2026-10-10', deliveryDate: '', notes: 'Keep this note' });
+  // This legacy form harness submits directly; the step guard is covered by the real UI path.
+  dialogClasses.delete('order-create-mode');
   let orderQuantity = '0.999';
   el('order-lines').children = [{ querySelector(selector) { return { value: selector === '[name=kind]' ? 'item' : selector === '[name=productId]' ? 'sweet' : orderQuantity }; } }];
   await el('order-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
@@ -120,7 +211,7 @@ test('searchable customer choice preserves order form through customer cancel an
   assert.equal(orderSaves[0].newCustomer.fullName, 'New Customer');
   assert.equal(orderSaves[0].lines[0].quantityQty, 2000);
   assert.equal(orderSaves[0].notes, 'Keep this note');
-  assert.ok(toasts.includes('Order SS-2026-000001 confirmed.'));
+  assert.ok(toasts.includes('Order SS-2026-000001 saved.'));
 });
 
 test('Admin may edit special lines; assigned User can view the saved special order', async () => {

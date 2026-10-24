@@ -11,6 +11,7 @@ const shownQty = (value) => ((value || 0) / 1000).toLocaleString('en-IN', { maxi
 const dateOf = (value) => value?.toDate ? value.toDate().toLocaleString('en-IN') : '';
 const empty = (columns, message) => `<tr><td colspan="${columns}" class="empty-cell">${escaped(message)}</td></tr>`;
 const safeError = (error) => error?.message?.replace(/^.*?: /, '') || 'Operation failed. Try again.';
+const movementLabel = (movementType) => ({ purchase_confirm: 'Stock received', order_confirm: 'Stock reserved / deducted', order_cancel: 'Stock released / restored', stock_adjustment: 'Stock adjustment' }[movementType] || String(movementType || 'Stock movement').replace(/_/g, ' '));
 
 export function initOperationsUi({ db, functions }) {
   let user = null, profile = null, purchases = [], stocks = [], movements = [], items = [], units = [], types = [];
@@ -111,7 +112,7 @@ export function initOperationsUi({ db, functions }) {
     } else { byId('inventory-head').innerHTML = ''; byId('inventory-body').innerHTML = ''; byId('inventory-mobile-list').innerHTML = ''; }
     const history = selectedMovements();
     byId('movement-summary').textContent = `${history.length} movements`;
-    byId('movement-body').innerHTML = history.length ? history.map((m) => `<tr><td>${escaped(dateOf(m.at))}</td><td>${escaped(m.itemSnapshot?.name)} <small>${escaped(m.itemSnapshot?.itemCode)}</small></td><td>${shownQty(m.previousQty)} ${escaped(m.itemSnapshot?.unitSymbol)}</td><td>${m.changeQty > 0 ? '+' : ''}${shownQty(m.changeQty)} ${escaped(m.itemSnapshot?.unitSymbol)}</td><td>${shownQty(m.newQty)} ${escaped(m.itemSnapshot?.unitSymbol)}</td><td>${escaped(m.reason)}</td><td>${escaped(m.actorName || 'Unknown user')}</td></tr>`).join('') : empty(7, staff ? 'No stock movements match the filters.' : 'No inventory activity is linked to your orders.');
+    byId('movement-body').innerHTML = history.length ? history.map((m) => `<tr><td>${escaped(dateOf(m.at))}</td><td>${escaped(m.itemSnapshot?.name)} <small>${escaped(m.itemSnapshot?.itemCode)}</small></td><td>${shownQty(m.previousQty)} ${escaped(m.itemSnapshot?.unitSymbol)}</td><td>${m.changeQty > 0 ? '+' : ''}${shownQty(m.changeQty)} ${escaped(m.itemSnapshot?.unitSymbol)}</td><td>${shownQty(m.newQty)} ${escaped(m.itemSnapshot?.unitSymbol)}</td><td><strong>${escaped(movementLabel(m.movementType))}</strong><small>${escaped(m.reason)}</small></td><td>${escaped(m.actorName || 'Unknown user')}</td></tr>`).join('') : empty(7, staff ? 'No stock movements match the filters.' : 'No inventory activity is linked to your orders.');
   }
   function inventoryActions(item, stock) {
     const id = escaped(item.id);

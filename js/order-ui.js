@@ -16,11 +16,20 @@ const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const inr = new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' });
 const rupees = (paise) => inr.format((paise || 0) / 100);
+const amountValue = (value, fallback = null) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 const qtyText = (milli) => ((milli || 0) / 1000).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 const empty = (count, label) => `<tr><td colspan="${count}" class="empty-cell">${esc(label)}</td></tr>`;
 const cleanError = (error) => error?.message?.replace(/^.*?: /, '') || 'Operation failed. Try again.';
 const field = (label, name, type = 'text', value = '', attrs = '') => `<label class="ops-field">${label}<input name="${name}" type="${type}" value="${esc(value)}" ${attrs}></label>`;
 const normalize = (value) => String(value || '').trim().toLowerCase().replace(/[\s()-]/g, '');
+const productImageByName = new Map([
+  ['dryfruitbar', './logo/dryfruit bar.png'], ['anjirroll', './logo/anjir roll.png'], ['kesarkajukatri', './logo/kesar kaju katri.png'],
+  ['anjircake', './logo/anjir cake.png'], ['kajukatri', './logo/kaju katri.png'], ['mohanthal', './logo/mohanthal.png'],
+]);
+const productImage = (name) => {
+  const path = productImageByName.get(normalize(name).replace(/[^a-z0-9]/g, ''));
+  return path ? encodeURI(path) : '';
+};
 const displayOrderStatus = (status) => status === 'confirmed' ? 'Confirmed' : status;
 const orderStatusBadge = (status, archived = false) => {
   const label = archived ? `${displayOrderStatus(status)} Â· Archived` : displayOrderStatus(status);
@@ -41,11 +50,57 @@ export function initOrderUi({ db, functions, auth, mode }) {
   $('order-activity-type').insertAdjacentHTML?.('beforeend', '<option value="order.locked">Editing locked</option>');
   $('order-activity-type').insertAdjacentHTML?.('beforeend', '<option value="order.stock_deducted">Stock deducted</option>');
   $('order-activity-order').insertAdjacentHTML?.('afterend', '<input id="order-activity-invoice" type="search" placeholder="Invoice ID" aria-label="Activity invoice"><input id="order-activity-payment" type="search" placeholder="Payment ID" aria-label="Activity payment">');
-  let user = null, profile = null, orders = [], customers = [], items = [], specials = [], users = [], acceptingOrders = true;
+  let user = null, profile = null, orders = [], customers = [], items = [], specials = [], users = [], acceptingOrders = true, orderStep = 1, productCategory = '';
+  const mobileNavigation = $('mobile-navigation');
+  const mobileNavigationParent = mobileNavigation?.parentNode;
+  const mobileNavigationNext = mobileNavigation?.nextSibling;
   let invoiceIds = new Set(), stockAvailability = new Map(), stockMessage = '';
   let activityPage = 1, activityCursors = [null], activityRows = [], activityNext = null, activityHasMore = false, activityRevision = 0;
   let action = '', targetId = '', pendingOrderId = '', pendingCustomerId = '', pendingCustomerDetails = null, parkedOrder = null, saving = false;
   let sessionVersion = 0;
+  let orderViewportBaseHeight = 0, orderViewportListening = false;
+  const orderVisualViewport = globalThis.visualViewport;
+  function syncOrderViewport() {
+    const dialog = $('order-dialog');
+    if (!dialog?.open || !dialog.classList?.contains?.('order-create-mode')) return;
+    const height = Math.round(orderVisualViewport?.height || globalThis.innerHeight || 0);
+    if (!height) return;
+    const focused = document.activeElement;
+    const typing = dialog.contains?.(focused) && focused?.matches?.('input:not([type="hidden"]), textarea');
+    if (!typing && !dialog.classList.contains('order-keyboard-open') && height >= orderViewportBaseHeight - 120) orderViewportBaseHeight = height;
+    const keyboardOpen = height < orderViewportBaseHeight - 120 && (typing || dialog.classList.contains('order-keyboard-open'));
+    dialog.classList.toggle('order-keyboard-open', Boolean(keyboardOpen));
+    if (keyboardOpen) {
+      dialog.style?.setProperty?.('--order-visible-height', `${height}px`);
+      if (typing) globalThis.requestAnimationFrame?.(() => focused.scrollIntoView?.({ block: 'nearest' }));
+    } else {
+      dialog.style?.removeProperty?.('--order-visible-height');
+      if (!typing) orderViewportBaseHeight = height;
+    }
+  }
+  function startOrderViewport() {
+    if (orderViewportListening) return;
+    orderViewportListening = true;
+    const height = Math.round(orderVisualViewport?.height || globalThis.innerHeight || 0);
+    if (height < orderViewportBaseHeight - 120) $('order-dialog').classList?.add?.('order-keyboard-open');
+    orderViewportBaseHeight = Math.max(orderViewportBaseHeight, height);
+    orderVisualViewport?.addEventListener?.('resize', syncOrderViewport);
+    globalThis.addEventListener?.('resize', syncOrderViewport);
+    document.addEventListener?.('focusin', syncOrderViewport, true);
+    document.addEventListener?.('focusout', syncOrderViewport, true);
+    syncOrderViewport();
+  }
+  function stopOrderViewport(resetBase = false) {
+    if (!orderViewportListening) { if (resetBase) orderViewportBaseHeight = 0; return; }
+    orderViewportListening = false;
+    orderVisualViewport?.removeEventListener?.('resize', syncOrderViewport);
+    globalThis.removeEventListener?.('resize', syncOrderViewport);
+    document.removeEventListener?.('focusin', syncOrderViewport, true);
+    document.removeEventListener?.('focusout', syncOrderViewport, true);
+    $('order-dialog').classList?.remove?.('order-keyboard-open');
+    $('order-dialog').style?.removeProperty?.('--order-visible-height');
+    if (resetBase) orderViewportBaseHeight = 0;
+  }
   const staff = () => isStaff(profile);
   const admin = () => !validateProfile(profile) && profile.role === 'admin';
   // Special orders were administered by Admin before the temporary role change.
@@ -240,6 +295,8 @@ export function initOrderUi({ db, functions, auth, mode }) {
   function orderLine(line = {}) {
     const kind = line.kind || 'item';
     const productId = line.productId || (kind === 'item' ? items.find((item) => item.active)?.id : specials.find((special) => special.active)?.id);
+    const product = items.find((item) => item.id === productId);
+    const thumbnail = kind === 'item' && productImage(product?.name || line.itemSnapshot?.name) ? `<img class="order-product-thumb" src="${productImage(product?.name || line.itemSnapshot?.name)}" alt="" loading="lazy" onerror="this.hidden=true">` : '<span class="order-product-thumb order-product-placeholder" aria-hidden="true">🍬</span>';
     const notice = stockNotice(kind, productId);
     const choices = availableOrderUnits(profile?.role);
     const legacy = kind === 'item' && line.productId && !line.orderUnitId;
@@ -247,12 +304,19 @@ export function initOrderUi({ db, functions, auth, mode }) {
     const legacyOption = legacy ? `<option value="__legacy__" selected>Current: ${esc(line.itemSnapshot?.unitSymbol || 'item unit')}</option>` : '';
     const missingOption = line.orderUnitId && !choices.some((unit) => unit.id === line.orderUnitId) ? '<option value="" selected>Choose an active permitted unit</option>' : '';
     const unitField = kind === 'item' ? `<label class="order-line-unit">Unit<select name="unitId" required>${legacyOption}${missingOption}${choices.map((unit) => `<option value="${esc(unit.id)}" ${unit.id === selectedUnit ? 'selected' : ''}>${esc(unit.label)}</option>`).join('')}</select></label>` : '';
-    return `<div class="ops-line order-entry-line"><label class="order-line-type">Type<select name="kind"><option value="item" ${kind === 'item' ? 'selected' : ''}>Regular item</option>${special() ? `<option value="special" ${kind === 'special' ? 'selected' : ''}>Special product</option>` : ''}</select></label><label class="order-line-product">Product<select name="productId">${productOptions(kind, line.productId)}</select><small class="order-stock-hint">${esc(stockLabel(kind, productId))}</small><small class="order-stock-warning" ${notice ? '' : 'hidden'}>${esc(notice)}</small></label>${field('Quantity', 'quantity', 'text', line.quantityQty ? line.quantityQty / 1000 : 1, 'inputmode="numeric" pattern="[1-9][0-9]*" title="Enter a whole number of at least 1" required')}${unitField}<button type="button" class="ops-link order-line-remove" data-remove-line aria-label="Remove order line">Remove</button></div>`;
+    const quantityField = field('Quantity', 'quantity', 'text', line.quantityQty ? line.quantityQty / 1000 : 1, 'inputmode="numeric" pattern="[1-9][0-9]*" title="Enter a whole number of at least 1" required').replace('<input ', '<span class="order-quantity-control"><button type="button" data-quantity-step="-1" aria-label="Decrease quantity">−</button><input ').replace('</label>', '<button type="button" data-quantity-step="1" aria-label="Increase quantity">+</button></span></label>');
+    return `<div class="ops-line order-entry-line"><div class="order-line-image">${thumbnail}</div><label class="order-line-type">Type<select name="kind"><option value="item" ${kind === 'item' ? 'selected' : ''}>Regular item</option>${special() ? `<option value="special" ${kind === 'special' ? 'selected' : ''}>Special product</option>` : ''}</select></label><label class="order-line-product">Product<select name="productId">${productOptions(kind, line.productId)}</select><small class="order-stock-hint">${esc(stockLabel(kind, productId))}</small><small class="order-stock-warning" ${notice ? '' : 'hidden'}>${esc(notice)}</small></label>${quantityField}${unitField}<button type="button" class="ops-link order-line-remove" data-remove-line aria-label="Remove order line">Remove</button></div>`;
   }
   function componentLine(part = {}) { return `<div class="ops-line"><label>Item<select name="itemId">${itemOptions(part.itemId)}</select></label>${field('Quantity', 'quantity', 'number', part.quantityQty ? part.quantityQty / 1000 : 1, 'min="0.001" step="0.001" required')}<button type="button" class="button button-outline" data-remove-line>Remove</button></div>`; }
 
   function viewOrderContent(o) {
     const invoiced = invoiceIds.has(o.id) || Boolean(o.invoiceId);
+    const lineSubtotal = (o.lines || []).reduce((sum, line) => sum + (amountValue(line.lineTotalPaise, 0) || 0), 0);
+    const subtotal = amountValue(o.subtotal, lineSubtotal);
+    const total = amountValue(o.grandTotal, subtotal);
+    o.subtotal = subtotal;
+    o.grandTotal = total;
+    if (!Number.isFinite(Number(o.subtotal)) || !Number.isFinite(Number(o.grandTotal))) console.warn('Order view is using a calculated fallback for missing totals.', { orderId: o.id, subtotal: o.subtotal, grandTotal: o.grandTotal });
     const lines = (o.lines || []).map((line) => {
       const name = line.kind === 'special' ? line.specialSnapshot?.name : line.itemSnapshot?.name;
       const unit = line.kind === 'special' ? 'combo' : orderLineUnitLabel(line);
@@ -267,6 +331,12 @@ export function initOrderUi({ db, functions, auth, mode }) {
 
   function openDialog(nextAction, id = '') {
     if (saving) return;
+    if (nextAction !== 'order' || id) stopOrderViewport();
+    $('order-dialog').classList?.toggle?.('order-create-mode', nextAction === 'order' && !id);
+    if (nextAction === 'order' && !id && mobileNavigationParent) $('order-dialog').appendChild(mobileNavigation);
+    if (mobileNavigation?.parentNode === $('order-dialog')) mobileNavigation.hidden = nextAction !== 'order' || !!id;
+    $('order-dialog-close').textContent = nextAction === 'order' && !id ? '←' : '×';
+    $('order-dialog-close').setAttribute?.('aria-label', nextAction === 'order' && !id ? 'Back and close order' : 'Close dialog');
     if (nextAction === 'order' && !parkedOrder) pendingCustomerDetails = null;
     if (nextAction === 'customer') pendingCustomerId = id || uniqueId();
     action = nextAction; targetId = id; $('order-form-error').hidden = true;
@@ -276,7 +346,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     $('order-view-actions').innerHTML = '';
     $('order-dialog-save').textContent = nextAction === 'deleteCustomer' ? 'Delete customer' : 'Save';
     const c = customers.find((row) => row.id === id), o = orders.find((row) => row.id === id), s = specials.find((row) => row.id === id);
-    $('order-dialog-title').textContent = ({ customer: c ? 'Edit customer' : 'Add customer', order: o ? `Edit ${o.orderNumber}` : 'New order', viewOrder: `Order ${o?.orderNumber || ''}`, special: s ? 'Edit combination' : 'Add combination', cancel: 'Cancel order', archive: 'Archive order', restore: 'Restore order', request: 'Record payment request', intake: 'Order-taking', invoice: 'Create invoice' })[nextAction];
+    $('order-dialog-title').textContent = ({ customer: c ? 'Edit customer' : 'Add customer', order: o ? `Edit ${o.orderNumber}` : 'Create Order', viewOrder: `Order ${o?.orderNumber || ''}`, special: s ? 'Edit combination' : 'Add combination', cancel: 'Cancel order', archive: 'Archive order', restore: 'Restore order', request: 'Record payment request', intake: 'Order-taking', invoice: 'Create invoice' })[nextAction];
     if (nextAction === 'viewOrder' && o) {
       $('order-fields').innerHTML = viewOrderContent(o);
       const actions = $('order-view-actions');
@@ -295,8 +365,19 @@ export function initOrderUi({ db, functions, auth, mode }) {
     }
     if (nextAction === 'order') {
       const selectedCustomer = o?.customerId || '';
-      $('order-fields').innerHTML = `<div class="order-customer-choice"><label class="ops-field" for="order-customer-search">Customer *</label><div class="order-customer-input-wrap"><input id="order-customer-search" type="search" autocomplete="off" placeholder="Search customer by name or phone number" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="order-customer-options" ${o ? 'readonly' : ''}><div id="order-customer-options" class="order-customer-options" role="listbox" hidden></div></div><input type="hidden" name="customerId" id="order-customer" value="${esc(selectedCustomer)}"><small id="order-customer-details"></small><button id="order-add-customer" class="order-add-customer" type="button" ${o ? 'hidden' : ''}><span aria-hidden="true">ï¼‹</span><span>${pendingCustomerDetails ? 'Edit new customer' : 'Add New Customer'}</span></button></div>${admin() ? `<label class="ops-field">Assigned User<select name="assignedUserId" required ${o ? 'disabled' : ''}>${eligibleUsers().map((row) => `<option value="${esc(row.id)}" ${o?.assignedUserId === row.id ? 'selected' : ''}>${esc(row.displayName || row.fullName || row.id)}</option>`).join('')}</select></label>` : ''}${field('Order date', 'orderDate', 'date', o?.orderDate || new Date().toISOString().slice(0, 10), 'required')}${field('Delivery date (optional)', 'deliveryDate', 'date', o?.deliveryDate || '')}<div class="ops-lines order-entry-lines"><h3>Order Lines</h3><p id="order-stock-message" class="muted"></p><div id="order-lines">${(o?.lines || [{}]).map(orderLine).join('')}</div><button id="order-add-line" class="button button-outline" type="button">+ Add Line</button><p class="muted">Prices and stock are checked when the order is confirmed.${special() ? ' Special products use whole combos.' : ''}</p></div><label class="ops-field">Notes<textarea name="notes" maxlength="1000">${esc(o?.notes || '')}</textarea></label>`;
+      $('order-fields').innerHTML = `<div class="order-customer-choice"><label class="ops-field" for="order-customer-search">Customer *</label><div class="order-customer-input-wrap"><input id="order-customer-search" type="search" autocomplete="off" placeholder="Search customer by name or phone number" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="order-customer-options" ${o ? 'readonly' : ''}><div id="order-customer-options" class="order-customer-options" role="listbox" hidden></div></div><input type="hidden" name="customerId" id="order-customer" value="${esc(selectedCustomer)}"><small id="order-customer-details"></small><button id="order-add-customer" class="order-add-customer" type="button" ${o ? 'hidden' : ''}><span aria-hidden="true">+</span><span>${pendingCustomerDetails ? 'Edit new customer' : 'Add New Customer'}</span></button></div>${admin() && o ? `<label class="ops-field">Assigned User<select name="assignedUserId" required disabled aria-describedby="order-assignment-lock">${eligibleUsers().map((row) => `<option value="${esc(row.id)}" ${o?.assignedUserId === row.id ? 'selected' : ''}>${esc(row.displayName || row.fullName || row.id)}</option>`).join('')}</select><small id="order-assignment-lock" class="muted">Assignment is locked after order creation.</small></label>` : admin() ? `<input type="hidden" name="assignedUserId" value="${esc(user?.uid || '')}">` : ''}${field('Order date', 'orderDate', 'date', o?.orderDate || new Date().toISOString().slice(0, 10), 'required')}${field('Delivery date (optional)', 'deliveryDate', 'date', o?.deliveryDate || '')}<div class="ops-lines order-entry-lines"><h3>Order Lines</h3><p id="order-stock-message" class="muted"></p><div id="order-lines">${(o?.lines || [{}]).map(orderLine).join('')}</div><button id="order-add-line" class="button button-outline" type="button">+ Add Line</button><p class="muted">Prices and stock are checked when the order is confirmed.${special() ? ' Special products use whole combos.' : ''}</p></div><label class="ops-field">Notes<textarea name="notes" maxlength="1000">${esc(o?.notes || '')}</textarea></label>`;
       const addCustomerIcon = $('order-add-customer')?.querySelector?.('[aria-hidden="true"]');
+      if (!o) {
+      $('order-fields').innerHTML = '<div class="order-flow-header"><nav class="order-stepper" aria-label="Order steps"><span data-step="1" class="is-current">Customer</span><span data-step="2">Items</span><span data-step="3">Review</span></nav><h3>1. Customer details</h3><p class="order-step-subtitle">Select a customer for this order.</p></div>' + $('order-fields').innerHTML;
+      orderStep = 1;
+      productCategory = '';
+      if (!o) { $('order-lines')?.replaceChildren?.(); $('order-fields').querySelector?.('.order-entry-lines')?.classList?.add?.('order-editor-source'); }
+      $('order-dialog-save').hidden = true;
+      $('order-fields').insertAdjacentHTML?.('beforeend', '<div class="order-flow-actions"><button type="button" class="button button-outline" id="order-step-back" hidden>Back to Customer</button><button type="button" class="button button-primary" id="order-step-next">Continue to Items</button></div>');
+      $('order-fields').querySelector?.('.order-entry-lines')?.insertAdjacentHTML?.('beforebegin', '<section class="order-product-picker" aria-label="Choose order items"><div id="order-product-filters" class="order-product-filters" role="group" aria-label="Filter sweets"></div><div id="order-product-list"></div><div class="order-added-items"><div class="order-added-heading"><button type="button" class="order-cart-toggle" aria-expanded="false" data-toggle-order-cart><span class="order-cart-label">Order Items (0)</span><strong class="order-cart-total"></strong><span class="order-cart-chevron" aria-hidden="true">⌃</span></button></div><div class="order-cart-detail" hidden><div class="order-added-list"></div><button type="button" class="ops-link" data-clear-order-items hidden>Clear all</button></div><div class="order-running-total" hidden></div></div></section>');
+      renderProductPicker();
+      renderOrderStep();
+      }
       if (addCustomerIcon) addCustomerIcon.textContent = '+';
       toggleNewCustomer();
       refreshStock();
@@ -309,6 +390,113 @@ export function initOrderUi({ db, functions, auth, mode }) {
     if (nextAction === 'intake') $('order-fields').innerHTML = `<p>Order-taking is currently ${acceptingOrders ? 'open' : 'paused'}.</p><label class="ops-field">New status<select name="acceptingOrders"><option value="false">Pause</option><option value="true">Resume</option></select></label>${field('Reason', 'reason', 'text', '', 'required maxlength="500"')}`;
     if (nextAction === 'invoice') $('order-fields').innerHTML = `<p>Create one invoice from ${esc(o?.orderNumber)}? The invoice checks stock, locks order edits, and uses the saved customer and price snapshots. Sabha is excluded.</p>`;
     if (!$('order-dialog').open) $('order-dialog').showModal();
+    if (nextAction === 'order' && !id) startOrderViewport();
+  }
+  function renderProductPicker() {
+    const list = $('order-product-list'); if (!list) return;
+    const filterBar = $('order-product-filters');
+    const names = items.filter((item) => item.active).map((item) => String(item.name || '').toLowerCase());
+    const preferred = ['Kesar', 'Kaju', 'Anjir', 'Dryfruit', 'Mohanthal', 'Barfi'];
+    const categoryNames = preferred.filter((name) => names.some((value) => value.split(/\s+/).includes(name.toLowerCase())));
+    const isOther = (item) => !preferred.some((name) => String(item.name || '').toLowerCase().split(/\s+/).includes(name.toLowerCase()));
+    if (items.some((item) => item.active && isOther(item))) categoryNames.push('Others');
+    if (filterBar) filterBar.innerHTML = `<button type="button" data-product-category="" aria-pressed="${!productCategory}">All</button>${categoryNames.map((name) => `<button type="button" data-product-category="${esc(name.toLowerCase())}" aria-pressed="${productCategory === name.toLowerCase()}">${esc(name)}</button>`).join('')}`;
+    const categoryMatches = (item) => !productCategory || (productCategory === 'others' ? isOther(item) : String(item.name || '').toLowerCase().split(/\s+/).includes(productCategory));
+    const matches = [
+      ...items.filter((item) => item.active && categoryMatches(item)).map((item) => ({ ...item, kind: 'item' })),
+      ...(special() ? specials.filter((item) => item.active && categoryMatches(item)).map((item) => ({ ...item, kind: 'special' })) : []),
+    ];
+    const selectedLines = draftLines();
+    list.innerHTML = matches.length ? matches.map((item) => {
+      const image = item.kind === 'item' ? productImage(item.name) : '';
+      const units = item.kind === 'item' ? availableOrderUnits(profile?.role).filter((unit) => { try { const price = itemUnitPrice(item, unit.id); return price !== null && price !== undefined && price !== '' && Number.isSafeInteger(toPaise(price)); } catch { return false; } }).sort((a, b) => ({ '500gm': 0, kg: 1, '250gm': 2 }[a.id] ?? 3) - ({ '500gm': 0, kg: 1, '250gm': 2 }[b.id] ?? 3)) : Number.isSafeInteger(item.finalPricePaise) && item.finalPricePaise >= 0 ? [{ id: 'combo', label: 'Combo' }] : [];
+      const unitChoices = units.map((unit) => {
+        const price = item.kind === 'special' ? item.finalPricePaise : toPaise(itemUnitPrice(item, unit.id));
+        const quantity = selectedLines.find((line) => line.kind === item.kind && line.productId === item.id && line.unitId === unit.id)?.quantity || 0;
+        const label = `${item.name}, ${unit.id === 'kg' ? '1 KG' : unit.label}`;
+        return `<div class="order-unit-choice ${quantity > 0 ? 'is-active' : ''}"><strong>${esc(unit.id === 'kg' ? '1 KG' : unit.label)}</strong><small>${rupees(price)}</small><div class="order-unit-quantity"><button type="button" data-unit-step="-1" aria-label="Decrease ${esc(label)} quantity">−</button><input type="text" inputmode="numeric" pattern="[0-9]*" value="${quantity}" data-unit-quantity data-kind="${item.kind}" data-product-id="${esc(item.id)}" data-unit-id="${esc(unit.id)}" aria-label="Quantity for ${esc(label)}"><button type="button" data-unit-step="1" aria-label="Increase ${esc(label)} quantity">+</button></div></div>`;
+      }).join('');
+      return `<article class="order-product-card"><span class="order-product-card-image">${image ? `<img src="${image}" alt="" loading="lazy" onerror="this.hidden=true">` : '<span aria-hidden="true">◇</span>'}</span><div class="order-product-info"><strong>${esc(item.name)}</strong><div class="order-unit-choices" role="group" aria-label="Units for ${esc(item.name)}">${unitChoices || '<small>Price unavailable</small>'}</div>${item.kind === 'item' ? `<small class="order-product-stock">${esc(stockLabel('item', item.id))}</small>` : ''}</div></article>`;
+    }).join('') : '<p class="order-product-empty">No sweets match your search.</p>';
+  }
+  function draftLines() {
+    return [...($('order-lines')?.children || [])].map((row) => {
+      const kind = row.querySelector('[name=kind]')?.value || 'item';
+      const productId = row.querySelector('[name=productId]')?.value;
+      const unitId = row.querySelector('[name=unitId]')?.value || (kind === 'special' ? 'combo' : 'kg');
+      const product = kind === 'special' ? specials.find((item) => item.id === productId) : items.find((item) => item.id === productId);
+      let price = null;
+      try { if (product) { const configured = kind === 'special' ? product.finalPricePaise : itemUnitPrice(product, unitId); if (configured !== null && configured !== undefined && configured !== '') price = kind === 'special' ? configured : toPaise(configured); } } catch { /* Missing catalog price is shown as unavailable. */ }
+      const quantity = Number(row.querySelector('[name=quantity]')?.value);
+      return { row, kind, productId, unitId, product, price, quantity, total: Number.isSafeInteger(price) && Number.isSafeInteger(quantity) && quantity > 0 ? price * quantity : null };
+    });
+  }
+  const draftTotal = (lines) => lines.every((line) => line.total !== null && Number.isSafeInteger(line.total)) ? lines.reduce((sum, line) => sum + line.total, 0) : null;
+  const draftError = (lines) => !lines.length ? 'Add at least one item.' : lines.some((line) => !line.productId || !line.product) ? 'Select a valid item.' : lines.some((line) => !Number.isSafeInteger(line.quantity) || line.quantity < 1) ? 'Enter a whole-number quantity of at least 1.' : lines.some((line) => line.price === null || !Number.isSafeInteger(line.price)) ? 'A selected unit has no valid price.' : new Set(lines.map((line) => `${line.kind}:${line.productId}:${line.unitId}`)).size !== lines.length ? 'Each item and unit may be added only once.' : stockWarning(lines.map((line) => ({ kind: line.kind, productId: line.productId, unitId: line.unitId, quantityQty: line.quantity * 1000 }))) || '';
+  function setUnitQuantity(input, quantity) {
+    const { kind, productId, unitId } = input.dataset;
+    if (!Number.isSafeInteger(quantity) || quantity < 0 || !Number.isSafeInteger(quantity * 1000)) return false;
+    const lines = draftLines();
+    const existing = lines.find((line) => line.kind === kind && line.productId === productId && line.unitId === unitId);
+    const proposed = lines.filter((line) => line !== existing).map((line) => ({ kind: line.kind, productId: line.productId, unitId: line.unitId, quantityQty: line.quantity * 1000 }));
+    if (quantity) proposed.push({ kind, productId, unitId, quantityQty: quantity * 1000 });
+    const warning = quantity > (existing?.quantity || 0) ? stockWarning(proposed) : '';
+    if (warning) { showToast(warning, 'toast-error'); return false; }
+    if (existing && quantity === 0) existing.row.remove();
+    else if (existing) existing.row.querySelector('[name=quantity]').value = String(quantity);
+    else if (quantity) $('order-lines').insertAdjacentHTML('beforeend', orderLine({ kind, productId, ...(kind === 'item' ? { orderUnitId: unitId } : {}), quantityQty: quantity * 1000 }));
+    input.value = String(quantity);
+    input.removeAttribute?.('aria-invalid');
+    input.closest('.order-unit-choice')?.classList.toggle('is-active', quantity > 0);
+    updateStockLabels();
+    renderAddedItems();
+    return true;
+  }
+  function renderAddedItems() {
+    const fields = $('order-fields'); if (!fields?.querySelector) return;
+    let panel = fields.querySelector('.order-added-items');
+    const lines = draftLines();
+    if (!panel) return;
+    const cards = lines.map((line, index) => { const image = line.kind === 'item' ? productImage(line.product?.name) : ''; return `<article class="order-added-card"><div class="order-added-top">${image ? `<img src="${image}" alt="" loading="lazy" onerror="this.hidden=true">` : '<span class="order-product-placeholder" aria-hidden="true">◇</span>'}<div><strong>${esc(line.product?.name || 'Item unavailable')}</strong><small>${esc(availableOrderUnits(profile?.role).find((unit) => unit.id === line.unitId)?.label || line.unitId)} × ${line.quantity} · ${line.price == null ? 'Rate unavailable' : rupees(line.price)}</small></div><strong>${line.total == null ? 'Unavailable' : rupees(line.total)}</strong></div><button type="button" class="ops-link" data-remove-order-item="${index}" aria-label="Remove ${esc(line.product?.name || 'item')}">Remove</button></article>`; }).join('');
+    panel.querySelector('.order-cart-label').textContent = `Order Items (${lines.length})`;
+    panel.querySelector('.order-cart-total').textContent = draftTotal(lines) === null ? 'Unavailable' : rupees(draftTotal(lines));
+    panel.querySelector('[data-clear-order-items]').hidden = !lines.length;
+    panel.querySelector('.order-added-list').innerHTML = cards || '<p class="order-product-empty">No items added yet.</p>';
+    panel.querySelector('.order-running-total').textContent = `Running total: ${draftTotal(lines) === null ? 'Unavailable' : rupees(draftTotal(lines))}`;
+  }
+  function renderOrderStep() {
+    if (action !== 'order') return;
+    const fields = $('order-fields');
+    if (!fields?.querySelector) return;
+    const customerPart = fields.querySelector('.order-customer-choice');
+    const dateFields = [...fields.querySelectorAll('input[name=orderDate],input[name=deliveryDate]')].map((input) => input.closest('label')).filter(Boolean);
+    const notesPart = fields.querySelector('textarea[name=notes]')?.closest('label');
+    const itemsPart = fields.querySelector('.order-entry-lines');
+    const review = fields.querySelector('.order-review-panel');
+    if (customerPart) customerPart.hidden = orderStep !== 1;
+    if (notesPart) notesPart.hidden = orderStep !== 1;
+    dateFields.forEach((field) => { if (field) field.hidden = true; });
+    if (itemsPart) itemsPart.hidden = orderStep !== 2;
+    const picker = fields.querySelector('.order-product-picker'); if (picker) picker.hidden = orderStep !== 2;
+    const added = fields.querySelector('.order-added-items'); if (added) added.hidden = orderStep !== 2;
+    if (orderStep === 3) {
+      const selected = customers.find((row) => row.id === fields.querySelector('#order-customer')?.value) || pendingCustomerDetails || {};
+      const lines = draftLines(), total = draftTotal(lines);
+      const rows = lines.map((line) => { const image = line.kind === 'item' ? productImage(line.product?.name) : ''; const unit = availableOrderUnits(profile?.role).find((choice) => choice.id === line.unitId)?.label || line.unitId; return `<tr><th scope="row"><span class="order-review-product">${image ? `<img src="${image}" alt="" loading="lazy" onerror="this.hidden=true">` : '<span class="order-product-placeholder" aria-hidden="true">◇</span>'}<span>${esc(line.product?.name || 'Item unavailable')}</span></span></th><td data-label="Unit">${esc(unit)}</td><td data-label="Qty">${line.quantity}</td><td data-label="Rate">${line.price == null ? 'Unavailable' : rupees(line.price)}</td><td data-label="Total"><strong>${line.total == null ? 'Unavailable' : rupees(line.total)}</strong></td></tr>`; }).join('');
+      const note = fields.querySelector('[name=notes]')?.value?.trim();
+      const summary = `<section class="order-review-panel"><section class="order-review-card order-review-customer"><div class="order-review-heading"><strong><span aria-hidden="true">♙</span> Customer</strong><button type="button" class="ops-link" data-edit-order-step="1">Edit</button></div><p><strong>${esc(selected.fullName || 'Not selected')}</strong>${selected.contact ? `<br>${esc(selected.contact)}` : ''}${selected.address || selected.area ? `<br>${esc([selected.address, selected.area].filter(Boolean).join(', '))}` : ''}</p></section><section class="order-review-card order-review-notes"><div class="order-review-heading"><strong><span aria-hidden="true">▤</span> Notes</strong><button type="button" class="ops-link" data-edit-order-step="1">Edit</button></div><p>${note ? esc(note) : 'No notes'}</p></section><section class="order-review-card order-review-items"><div class="order-review-heading"><strong><span aria-hidden="true">🛒</span> Order items (${lines.length})</strong><button type="button" class="ops-link" data-edit-order-step="2">Edit Items</button></div><div class="order-review-table-wrap"><table class="order-review-table"><thead><tr><th scope="col">Item</th><th scope="col">Unit</th><th scope="col">Qty</th><th scope="col">Rate</th><th scope="col">Total</th></tr></thead><tbody>${rows}</tbody></table></div></section><section class="order-review-card order-review-summary"><div class="order-review-total"><span>Subtotal (${lines.length} items)</span><strong>${total == null ? 'Unavailable' : rupees(total)}</strong><b>Total</b><strong>${total == null ? 'Unavailable' : rupees(total)}</strong></div></section></section>`;
+      if (review) review.outerHTML = summary; else fields.querySelector('.order-flow-actions')?.insertAdjacentHTML?.('beforebegin', summary);
+    } else if (review) review.remove();
+    if (orderStep === 2) renderAddedItems();
+    const heading = fields.querySelector('.order-flow-header h3');
+    if (heading) heading.textContent = ['1. Customer details', '2. Add sweets to order', '3. Review and create order'][orderStep - 1];
+    const subtitle = fields.querySelector('.order-step-subtitle');
+    if (subtitle) subtitle.textContent = ['Select a customer for this order.', 'Select sweets with required unit and quantity.', 'Check details and confirm.'][orderStep - 1];
+    fields.querySelectorAll('.order-stepper span').forEach((step, index) => { step.classList.toggle('is-current', index + 1 === orderStep); step.classList.toggle('is-complete', index + 1 < orderStep); });
+    const next = fields.querySelector('#order-step-next');
+    if (next) next.textContent = orderStep === 1 ? 'Continue to Items' : orderStep === 2 ? 'Continue to Review' : 'Save Order';
+    const back = fields.querySelector('#order-step-back');
+    if (back) { back.hidden = orderStep === 1; back.textContent = orderStep === 3 ? 'Back to Items' : 'Back to Customer'; }
   }
   function customerMatches(query) {
     const term = query.trim().toLocaleLowerCase();
@@ -318,7 +506,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     const search = $('order-customer-search'), list = $('order-customer-options');
     if (!search || !list || search.readOnly) return;
     const matches = customerMatches($('order-customer')?.value ? '' : search.value);
-    list.innerHTML = matches.length ? matches.map((row) => `<button type="button" role="option" class="order-customer-option" data-customer-id="${esc(row.id)}"><strong>${esc(row.fullName)}</strong><small>${esc(row.contact)}</small></button>`).join('') : `<div class="order-customer-empty">No customers found.<button type="button" id="order-add-customer-empty">ï¼‹ Add New Customer</button></div>`;
+    list.innerHTML = matches.length ? matches.map((row) => `<button type="button" role="option" aria-selected="${row.id === $('order-customer')?.value}" class="order-customer-option ${row.id === $('order-customer')?.value ? 'is-selected' : ''}" data-customer-id="${esc(row.id)}"><strong>${esc(row.fullName)}</strong><small>${esc(row.contact)}</small><span class="order-customer-check" aria-hidden="true">${row.id === $('order-customer')?.value ? '●' : '○'}</span></button>`).join('') : `<div class="order-customer-empty">No customers found.<button type="button" id="order-add-customer-empty">+ Add New Customer</button></div>`;
     const addCustomerButton = $('order-add-customer-empty');
     if (addCustomerButton) addCustomerButton.textContent = '+ Add New Customer';
     list.hidden = false; search.setAttribute?.('aria-expanded', 'true');
@@ -333,12 +521,13 @@ export function initOrderUi({ db, functions, auth, mode }) {
     if (!input || !search) return;
     input.value = customerId;
     const customer = customers.find((row) => row.id === customerId);
-    search.value = customer ? `${customer.fullName} Â· ${customer.contact}` : customerId === '__new__' && pendingCustomerDetails ? `${pendingCustomerDetails.fullName} Â· ${pendingCustomerDetails.contact}` : '';
+    search.value = customer?.fullName || (customerId === '__new__' ? pendingCustomerDetails?.fullName : '') || '';
     const details = $('order-customer-details');
-    if (details) details.textContent = customer ? [customer.area, customer.address].filter(Boolean).join(' Â· ') : customerId === '__new__' && pendingCustomerDetails ? pendingCustomerDetails.area || '' : '';
+    if (details) details.textContent = customer ? [customer.contact, customer.area, customer.address].filter(Boolean).join(' · ') : customerId === '__new__' && pendingCustomerDetails ? [pendingCustomerDetails.contact, pendingCustomerDetails.area].filter(Boolean).join(' · ') : '';
     const button = $('order-add-customer');
     if (button?.lastElementChild) button.lastElementChild.textContent = pendingCustomerDetails ? 'Edit new customer' : 'Add New Customer';
     hideCustomerOptions();
+    if (action === 'order' && !targetId && orderStep === 1) showCustomerOptions();
   }
   function toggleNewCustomer() { selectCustomer($('order-customer')?.value || ''); }
   function openCustomerFromOrder() {
@@ -355,6 +544,10 @@ export function initOrderUi({ db, functions, auth, mode }) {
     parkedOrder = null;
     const fields = $('order-fields'); fields.innerHTML = ''; fields.appendChild(previous.fragment);
     action = 'order'; targetId = previous.targetId;
+    $('order-dialog').classList?.toggle?.('order-create-mode', !targetId);
+    if (mobileNavigation?.parentNode === $('order-dialog')) mobileNavigation.hidden = !!targetId;
+    $('order-dialog-close').textContent = targetId ? '×' : '←';
+    $('order-dialog-close').setAttribute?.('aria-label', targetId ? 'Close dialog' : 'Back and close order');
     $('order-dialog-title').textContent = previous.title;
     $('order-dialog-save').textContent = 'Save';
     $('order-form-error').hidden = true;
@@ -363,18 +556,25 @@ export function initOrderUi({ db, functions, auth, mode }) {
     else if (select && pendingCustomerDetails) select.value = '__new__';
     toggleNewCustomer();
     updateStockLabels();
+    renderOrderStep();
+    if (!targetId) startOrderViewport();
   }
   function closeOrderDialog() {
     if (parkedOrder) restoreOrderForm();
-    else $('order-dialog').close();
+    else if (!saving) {
+      const hasDraft = action === 'order' && !targetId && ($('order-customer')?.value || draftLines().length || $('order-fields').querySelector?.('[name=notes]')?.value?.trim());
+      if (!hasDraft || !globalThis.confirm || globalThis.confirm('Discard this order draft?')) $('order-dialog').close();
+    }
   }
 
   async function submit(event) {
     event.preventDefault();
     if (saving || action === 'viewOrder') return;
+    if (action === 'order' && !targetId && $('order-dialog').classList?.contains?.('order-create-mode') && orderStep !== 3) return;
     saving = true;
     const data = new FormData(event.currentTarget), button = $('order-dialog-save');
     button.disabled = true; $('order-form-error').hidden = true;
+    const flowButton = $('order-fields').querySelector?.('#order-step-next'); if (flowButton) flowButton.disabled = true;
     try {
       let name, payload, result;
       if (action === 'deleteCustomer') { if (!staff()) throw new Error('Access denied: staff access is required.'); name = 'deleteCustomer'; payload = { customerId: targetId }; } else if (action === 'customer') {
@@ -425,12 +625,12 @@ export function initOrderUi({ db, functions, auth, mode }) {
       else if (action === 'intake') { name = 'setOrderTaking'; payload = { acceptingOrders: data.get('acceptingOrders') === 'true', reason: data.get('reason') }; }
       else { name = 'createInvoiceFromOrder'; payload = { orderId: targetId }; }
       if (action === 'customer') await saveCustomerDirect(db, auth, payload, { customerId: pendingCustomerId, create: !targetId });
-      else result = await callOperation(functions, name, payload);
-      pendingOrderId = ''; $('order-dialog').close(); showToast(action === 'order' && !targetId ? `Order ${result?.orderNumber || ''} confirmed.` : action === 'deleteCustomer' ? 'Customer deleted.' : action === 'invoice' ? 'Invoice created. Record payment from the Invoices page.' : 'Saved successfully.');
+      else result = action === 'order' && globalThis.omsLoading?.withLoading ? await globalThis.omsLoading.withLoading(() => callOperation(functions, name, payload), 'Saving your order…') : await callOperation(functions, name, payload);
+      pendingOrderId = ''; $('order-dialog').close(); showToast(action === 'order' && !targetId ? `Order ${result?.orderNumber || ''} saved.` : action === 'deleteCustomer' ? 'Customer deleted.' : action === 'invoice' ? 'Invoice created. Record payment from the Invoices page.' : 'Saved successfully.');
       await refresh(['customer', 'deleteCustomer'].includes(action) ? 'customers' : action === 'special' ? 'specials' : 'orders');
       if (action === 'invoice') viewInvoice(orders.find((row) => row.id === targetId)?.orderNumber);
     } catch (error) { $('order-form-error').textContent = action === 'customer' ? customerSaveError(error) : cleanError(error); $('order-form-error').hidden = false; }
-    finally { saving = false; button.disabled = false; }
+    finally { saving = false; button.disabled = false; if (flowButton) flowButton.disabled = false; }
   }
 
   async function runOrderAction(nextAction, id) {
@@ -525,20 +725,77 @@ export function initOrderUi({ db, functions, auth, mode }) {
   });
   $('order-fields').addEventListener('input', (event) => {
     if (event.target.id === 'order-customer-search') { $('order-customer').value = ''; $('order-customer-details').textContent = ''; showCustomerOptions(); }
+    if (event.target.matches?.('[data-unit-quantity]')) {
+      const value = event.target.value.trim();
+      const quantity = Number(value);
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(quantity) || !Number.isSafeInteger(quantity * 1000)) { event.target.setAttribute?.('aria-invalid', 'true'); return; }
+      if (!setUnitQuantity(event.target, quantity)) event.target.setAttribute?.('aria-invalid', 'true');
+      return;
+    }
   });
-  $('order-fields').addEventListener('focusin', (event) => { if (event.target.id === 'order-customer-search') showCustomerOptions(); });
+  $('order-fields').addEventListener('focusin', (event) => {
+    if (event.target.id !== 'order-customer-search') return;
+    if ($('order-customer')?.value) event.target.value = '';
+    showCustomerOptions();
+  });
+  $('order-fields').addEventListener('focusout', (event) => {
+    if (event.target.id === 'order-customer-search' && $('order-customer')?.value) {
+      const id = $('order-customer').value;
+      event.target.value = customers.find((row) => row.id === id)?.fullName || (id === '__new__' ? pendingCustomerDetails?.fullName : '') || '';
+    }
+    if (!event.target.matches?.('[data-unit-quantity]')) return;
+    const { kind, productId, unitId } = event.target.dataset;
+    event.target.value = String(draftLines().find((line) => line.kind === kind && line.productId === productId && line.unitId === unitId)?.quantity || 0);
+    event.target.removeAttribute?.('aria-invalid');
+  });
   $('order-fields').addEventListener('keydown', (event) => {
     if (event.target.id !== 'order-customer-search') return;
     if (event.key === 'Escape') { hideCustomerOptions(); event.target.blur(); }
     if (event.key === 'ArrowDown') { event.preventDefault(); $('order-customer-options')?.querySelector('button')?.focus(); }
   });
-  document.addEventListener('click', (event) => { if (!event.target.closest?.('.order-customer-choice')) hideCustomerOptions(); });
+  document.addEventListener('click', (event) => { if (action === 'order' && !targetId && orderStep === 1) return; if (!event.target.closest?.('.order-customer-choice')) hideCustomerOptions(); });
   $('order-fields').addEventListener('change', (event) => {
     if (event.target.name === 'productId') refreshStock();
     if (event.target.name === 'unitId') updateStockLabels();
     if (event.target.name === 'kind') { const row = event.target.closest('.ops-line'); row.querySelector('[name=productId]').innerHTML = productOptions(event.target.value); const unit = row.querySelector('.order-line-unit'); if (unit) { unit.hidden = event.target.value !== 'item'; unit.querySelector('select').disabled = event.target.value !== 'item'; } refreshStock(); }
   });
   $('order-fields').addEventListener('click', (event) => {
+    const category = event.target.closest?.('[data-product-category]');
+    if (category) { productCategory = category.dataset.productCategory; renderProductPicker(); return; }
+    if (event.target.closest?.('[data-toggle-order-cart]')) {
+      const toggle = event.target.closest('[data-toggle-order-cart]');
+      const panel = toggle.closest('.order-added-items');
+      const expanded = toggle.getAttribute('aria-expanded') !== 'true';
+      toggle.setAttribute('aria-expanded', String(expanded));
+      panel.querySelector('.order-cart-detail').hidden = !expanded;
+      panel.classList.toggle('is-expanded', expanded);
+      return;
+    }
+    const unitStep = event.target.closest?.('[data-unit-step]');
+    if (unitStep) {
+      const input = unitStep.closest('.order-unit-quantity')?.querySelector('[data-unit-quantity]');
+      if (!input) return;
+      const { kind, productId, unitId } = input.dataset;
+      const current = draftLines().find((line) => line.kind === kind && line.productId === productId && line.unitId === unitId)?.quantity || 0;
+      setUnitQuantity(input, Math.max(0, current + Number(unitStep.dataset.unitStep)));
+      return;
+    }
+    if (event.target.closest?.('#order-step-back')) { orderStep = Math.max(1, orderStep - 1); renderOrderStep(); return; }
+    const editStep = event.target.closest?.('[data-edit-order-step]');
+    if (editStep) { orderStep = Number(editStep.dataset.editOrderStep); renderOrderStep(); return; }
+    const removeItem = event.target.closest?.('[data-remove-order-item]');
+    if (removeItem) { $('order-lines')?.children[Number(removeItem.dataset.removeOrderItem)]?.remove(); renderProductPicker(); renderAddedItems(); return; }
+    if (event.target.closest?.('[data-clear-order-items]')) { if (!globalThis.confirm || globalThis.confirm('Remove all added items?')) { $('order-lines').replaceChildren(); renderProductPicker(); renderAddedItems(); } return; }
+    if (event.target.closest?.('#order-step-next')) {
+      if (saving) return;
+      const error = orderStep === 1 ? !$('order-customer')?.value ? 'Select a customer or add a new customer first.' : $('order-customer').value === '__new__' && !pendingCustomerDetails ? 'Finish entering the new customer.' : '' : draftError(draftLines());
+      if (error) { $('order-form-error').textContent = error; $('order-form-error').hidden = false; return; }
+      $('order-form-error').hidden = true;
+      if (orderStep < 3) { orderStep++; renderOrderStep(); } else void submit({ preventDefault() {}, currentTarget: $('order-form') });
+      return;
+    }
+    const quantityStep = event.target.closest?.('[data-quantity-step]');
+    if (quantityStep) { const input = quantityStep.closest('label')?.querySelector('[name=quantity]'); const next = Math.max(1, Number(input?.value || 1) + Number(quantityStep.dataset.quantityStep)); if (input) { input.value = String(next); input.dispatchEvent(new Event('input', { bubbles: true })); } return; }
     const choice = event.target.closest?.('[data-customer-id]');
     if (choice) selectCustomer(choice.dataset.customerId);
     if (event.target.closest?.('#order-add-customer, #order-add-customer-empty') || ['order-add-customer', 'order-add-customer-empty'].includes(event.target.id)) openCustomerFromOrder();
@@ -549,7 +806,24 @@ export function initOrderUi({ db, functions, auth, mode }) {
   $('order-form').addEventListener('submit', submit);
   $('order-dialog-close').addEventListener('click', closeOrderDialog);
   $('order-dialog-cancel').addEventListener('click', closeOrderDialog);
-  $('order-dialog').addEventListener('cancel', (event) => { if (parkedOrder) { event.preventDefault(); restoreOrderForm(); } });
+  $('order-dialog').addEventListener('cancel', (event) => {
+    if (parkedOrder) { event.preventDefault(); restoreOrderForm(); return; }
+    if (saving || action === 'order' && !targetId && ($('order-customer')?.value || draftLines().length || $('order-fields').querySelector?.('[name=notes]')?.value?.trim()) && globalThis.confirm && !globalThis.confirm('Discard this order draft?')) event.preventDefault();
+  });
+  $('order-dialog').addEventListener('close', () => {
+    stopOrderViewport(true);
+    if (mobileNavigationParent && mobileNavigation?.parentNode === $('order-dialog')) {
+      if (mobileNavigationNext?.parentNode === mobileNavigationParent) mobileNavigationParent.insertBefore(mobileNavigation, mobileNavigationNext);
+      else mobileNavigationParent.appendChild(mobileNavigation);
+      mobileNavigation.hidden = !profile;
+    }
+  });
+  mobileNavigation?.addEventListener('click', (event) => {
+    if (!$('order-dialog').open || !$('order-dialog').classList?.contains?.('order-create-mode') || !event.target.closest?.('[data-mobile-page]')) return;
+    const hasDraft = $('order-customer')?.value || draftLines().length || $('order-fields').querySelector?.('[name=notes]')?.value?.trim();
+    if (saving || hasDraft && globalThis.confirm && !globalThis.confirm('Discard this order draft?')) { event.preventDefault(); event.stopImmediatePropagation?.(); return; }
+    $('order-dialog').close();
+  }, true);
   $('customer-export').addEventListener('click', () => exportBook('customers', [['Customers', filteredCustomers().map((c) => ({ Name: c.fullName, Contact: c.contact, Address: c.address, Area: c.area, ...(staff() ? { DateOfBirth: c.dateOfBirth, Sabha: c.sabha } : {}) }))]]));
   $('order-export').addEventListener('click', () => { const rows = filteredOrders(); exportBook('orders', [['Orders', rows.map((o) => ({ OrderNumber: o.orderNumber, Customer: o.customerSnapshot?.fullName, Date: o.orderDate, DeliveryDate: o.deliveryDate, AssignedUser: assignedUserName(o), Status: displayOrderStatus(o.status), TotalRupees: (o.grandTotal || 0) / 100 }))], ['Lines', rows.flatMap((o) => o.lines?.map((l) => ({ OrderNumber: o.orderNumber, Product: l.kind === 'item' ? l.itemSnapshot?.name : l.specialSnapshot?.name, Quantity: l.quantityQty / 1000, Unit: l.kind === 'item' ? orderLineUnitLabel(l) : 'combo', UnitPriceRupees: l.unitPricePaise / 100, LineTotalRupees: l.lineTotalPaise / 100 })) || [])]]); });
   $('special-export').addEventListener('click', () => exportBook('specials', [['Special Products', filteredSpecials().map((s) => ({ Name: s.name, FinalPriceRupees: s.finalPricePaise / 100, Active: s.active, Components: s.components?.map((p) => `${p.itemSnapshot?.name}: ${qtyText(p.quantityQty)} ${p.itemSnapshot?.unitSymbol}`).join('; ') }))]]));

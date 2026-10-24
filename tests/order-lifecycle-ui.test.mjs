@@ -28,6 +28,8 @@ test('order form shows trusted availability; financial locks disable edit and ar
   assert.match(el('order-body').innerHTML, /View invoice/);
   el('order-body').listeners.click({ target: { closest: () => ({ dataset: { action: 'viewOrder', id: 'orderA' } }) } });
   assert.match(el('order-fields').innerHTML, /order-view-table/);
+  assert.match(el('order-fields').innerHTML, /Subtotal/);
+  assert.match(el('order-fields').innerHTML, /Total/);
   assert.match(el('order-fields').innerHTML, /Sweet/);
   assert.match(el('order-fields').innerHTML, /kg × 1/);
   assert.match(el('order-fields').innerHTML, /₹100\.00/);
@@ -54,6 +56,11 @@ test('order form shows trusted availability; financial locks disable edit and ar
   assert.match(el('order-view-actions').innerHTML, /Create Invoice/);
   assert.doesNotMatch(el('order-view-actions').innerHTML, /View Invoice|> Edit/);
   assert.doesNotMatch(el('order-body').innerHTML, /data-action="editOrder"|data-action="confirmOrder"/);
+  order.subtotal = 0; order.grandTotal = 0; order.lines = [{ kind: 'item', productId: 'itemA', quantityQty: 1000, unitPricePaise: 0, lineTotalPaise: 0, itemSnapshot: { name: 'A very long product name that must wrap without clipping', unitSymbol: 'kg' } }];
+  el('order-body').listeners.click({ target: { closest: () => ({ dataset: { action: 'viewOrder', id: 'orderA' } }) } });
+  assert.match(el('order-fields').innerHTML, /Subtotal/);
+  assert.match(el('order-fields').innerHTML, /Total/);
+  assert.match(el('order-fields').innerHTML, /A very long product name/);
   ui.setSession({ uid: 'accountA' }, { role: 'account_admin', active: true, fullName: 'Account Admin' });
   await el('order-refresh').listeners.click();
   assert.doesNotMatch(el('order-body').innerHTML, /data-action="editOrder"/);

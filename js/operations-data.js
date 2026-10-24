@@ -12,6 +12,8 @@ export const listMovements = async (db, ownerUid = null) => unpack(await getDocs
   ? query(collection(db, 'inventoryMovements'), where('ownerUid', '==', ownerUid))
   : collection(db, 'inventoryMovements')));
 export const callOperation = async (functions, name, data) => {
+  const message = ({ saveOrderDraft: 'Saving your order…', createInvoiceFromOrder: 'Creating invoice…', submitPayment: 'Submitting payment…', reviewPayment: 'Updating payment…', adjustStock: 'Updating inventory…', saveUserProfile: 'Saving user account…', sendUserSetupLink: 'Sending password setup link…', saveCustomer: 'Saving customer…', savePurchaseDraft: 'Saving purchase order…' })[name] || 'Updating Suhrad Sweets…';
+  const token = globalThis.omsLoading?.start(message);
   try { return (await httpsCallable(functions, `${name}Call`)(data)).data; }
   catch (error) {
     const mode = contexts.get(functions) || 'unknown';
@@ -20,5 +22,5 @@ export const callOperation = async (functions, name, data) => {
     const failure = new Error(operationErrorMessage(error, mode));
     failure.code = code;
     throw failure;
-  }
+  } finally { globalThis.omsLoading?.stop(token); }
 };

@@ -10,6 +10,7 @@ test('missing live backend and stopped emulator have different actionable messag
   assert.match(operationErrorMessage(error, 'emulator'), /Functions emulator on port 5001/);
   assert.match(operationErrorMessage({ code: 'functions/unauthenticated' }), /Sign in again/);
   assert.match(operationErrorMessage({ code: 'functions/permission-denied' }), /permission/);
+  assert.match(operationErrorMessage({ code: 'functions/not-found' }, 'live'), /not deployed in us-central1/);
   assert.equal(operationErrorMessage({ code: 'functions/failed-precondition', message: 'A customer with this contact already exists.' }), 'A customer with this contact already exists.');
 });
 

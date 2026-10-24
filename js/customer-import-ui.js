@@ -88,6 +88,7 @@ export function initCustomerImport({ db, auth }) {
     if ($('customer-import-duplicates').value === 'stop' && rows.some((row) => row.status === 'duplicate')) { status('Duplicate rows were found. Correct the file or choose Skip duplicate rows.'); return; }
     if (!window.confirm(`Import ${candidates.length} new customer row${candidates.length === 1 ? '' : 's'}? Existing and invalid rows will be skipped.`)) return;
     running = true; $('customer-import-run').disabled = true; $('customer-import-close').disabled = true;
+    const loadingToken = globalThis.omsLoading?.start(`Importing ${candidates.length} customer${candidates.length === 1 ? '' : 's'}…`);
     const currentGeneration = generation;
     try {
       for (let index = 0; index < candidates.length; index++) {
@@ -123,7 +124,12 @@ export function initCustomerImport({ db, auth }) {
       status(`Completed: ${counts.processed} rows; ${counts.imported} imported, ${counts.existing} existing, ${counts.duplicate} duplicate, ${counts.invalid} invalid, ${counts.failed} failed.${assigned ? ` Assigned: ${assigned}.` : ''}${auditWarning}`);
       document.dispatchEvent(new CustomEvent('oms:pagechange', { detail: { page: 'customers' } }));
     } catch (error) { status(`Import stopped: ${note(error)}. Review failed rows and retry the same file.`); }
-    finally { running = false; $('customer-import-close').disabled = false; resultTable(); }
+    finally {
+      globalThis.omsLoading?.stop(loadingToken);
+      running = false;
+      $('customer-import-close').disabled = false;
+      resultTable();
+    }
   }
   $('customer-import-open').addEventListener('click', async () => {
     if (!isAdmin(profile)) return;
@@ -134,12 +140,14 @@ export function initCustomerImport({ db, auth }) {
     $('customer-import-mapping').hidden = true; $('customer-import-sheet-wrap').hidden = true; $('customer-import-results').hidden = true;
     $('customer-import-preview').disabled = true; $('customer-import-run').disabled = true;
     status('Loading active users…'); dialog.showModal();
+    const loadingToken = globalThis.omsLoading?.start('Loading customer import tools…');
     try {
       const snapshot = await getDocsFromServer(collection(db, 'users'));
       users = activeUsers(snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() })));
       $('customer-import-default-user').innerHTML = '<option value="">Unassigned</option>' + users.map((user) => `<option value="${esc(user.id)}">${esc(user.displayName || user.fullName || user.email || user.id)}</option>`).join('');
       status('Select a file. The default assignment is Unassigned.');
     } catch (error) { status(`Could not load active users: ${note(error)}`); }
+    finally { globalThis.omsLoading?.stop(loadingToken); }
   });
   $('customer-import-template').addEventListener('click', () => {
     const headers = IMPORT_FIELDS.map((field) => `"${field.label.replace(/"/g, '""')}"`).join(',');
@@ -147,11 +155,27 @@ export function initCustomerImport({ db, auth }) {
     const link = document.createElement('a'); link.href = url; link.download = 'suhrad-customer-import-template.csv'; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
-  $('customer-import-file').addEventListener('change', async () => { try { invalidatePreview(); sheets = []; fileBytes = null; status('Reading file…'); await loadFile(); } catch (error) { status(note(error)); } });
+  $('customer-import-file').addEventListener('change', async () => {
+    invalidatePreview(); sheets = []; fileBytes = null; status('Reading file…');
+    const loadingToken = globalThis.omsLoading?.start('Reading customer file…');
+    try { await loadFile(); } catch (error) { status(note(error)); }
+    finally { globalThis.omsLoading?.stop(loadingToken); }
+  });
   $('customer-import-sheet').addEventListener('change', () => showMapping(selectedSheet().rows[0] || []));
   $('customer-import-mapping').addEventListener('change', invalidatePreview);
   $('customer-import-default-user').addEventListener('change', invalidatePreview);
-  $('customer-import-preview').addEventListener('click', async () => { try { status('Checking customers and contact reservations…'); await preview(); } catch (error) { status(note(error)); } });
+  $('customer-import-preview').addEventListener('click', async () => {
+    const button = $('customer-import-preview');
+    if (button.disabled) return;
+    button.disabled = true;
+    const loadingToken = globalThis.omsLoading?.start('Validating customer import…');
+    try { status('Checking customers and contact reservations…'); await preview(); }
+    catch (error) { status(note(error)); }
+    finally {
+      globalThis.omsLoading?.stop(loadingToken);
+      button.disabled = false;
+    }
+  });
   $('customer-import-run').addEventListener('click', run);
   $('customer-import-prev').addEventListener('click', () => { if (rowPage > 1) { rowPage--; resultTable(); } });
   $('customer-import-next').addEventListener('click', () => { if (rowPage * 100 < rows.length) { rowPage++; resultTable(); } });

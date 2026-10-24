@@ -8,7 +8,12 @@ export function operationErrorMessage(error, mode = 'unknown') {
   if (code === 'unauthenticated') return 'Your session has expired. Sign in again before saving.';
   if (code === 'permission-denied') return 'Your account does not have permission to perform this action.';
   const genericInternal = code === 'internal' && /^internal(?:\s*\[\d+\])?$/i.test(String(error?.message || '').trim());
-  if (genericInternal || ['not-found', 'unavailable', 'deadline-exceeded'].includes(code)) {
+  if (code === 'not-found') {
+    return mode === 'live'
+      ? 'The required Cloud Function is not deployed in us-central1 for the suhrad-sweets-oms project.'
+      : 'The required local Cloud Function is not running. Start the Functions emulator and retry.';
+  }
+  if (genericInternal || ['unavailable', 'deadline-exceeded'].includes(code)) {
     if (mode === 'live') return 'The live backend could not be reached. Check that the required Cloud Function is deployed and your connection is working. Local testing is available in emulator mode.';
     if (mode === 'emulator') return 'The local backend could not be reached. Start the Functions emulator on port 5001, then retry.';
     return 'The trusted backend could not be reached. Check its setup and your connection, then retry.';

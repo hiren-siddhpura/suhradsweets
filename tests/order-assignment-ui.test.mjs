@@ -20,7 +20,8 @@ for (const role of ['admin','account_admin','user']) test(`Orders assignee contr
  el('order-export').listeners.click();
  assert.equal(exports[0][0][1][0].AssignedUser,'User Name');
  if(role==='admin') {
-  for(const id of ['adminUID','accountsUID','userUID']) assert.match(el('order-fields').innerHTML,new RegExp(`value="${id}"`));
+  assert.match(el('order-fields').innerHTML,/name="assignedUserId" value="actor"/);
+  for(const id of ['adminUID','accountsUID','userUID']) assert.doesNotMatch(el('order-fields').innerHTML,new RegExp(`value="${id}"`));
   assert.doesNotMatch(el('order-fields').innerHTML,/value="inactive"|value="invalid"/);
   assert.equal((el('order-user').innerHTML.match(/value="userUID"/g)||[]).length,1);
   assert.match(el('order-user').innerHTML,/Admin Name/);

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
 import { collection, deleteDoc, doc, getAggregateFromServer, getDoc, getDocs, orderBy, query, serverTimestamp, setDoc, sum, Timestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
@@ -202,6 +203,36 @@ test('all client roles are denied order, special, invoice, counter and malformed
     await assertFails(setDoc(record(db, 'orderCounters/2026'), { nextNumber: 1 }));
     await assertFails(setDoc(record(db, 'customerContacts/forged'), { customerId: 'customerA' }));
   }
+});
+
+test('active Admin and Account Admin can create valid customers, but User, inactive and anonymous cannot', async () => {
+  const createCustomer = async (uid, id) => {
+    const db = dbFor(uid);
+    const contact = '98765 43210';
+    const contactKey = createHash('sha256').update(contact.trim().toLowerCase().replace(/[\s()-]/g, '')).digest('hex');
+    const auditId = `${id}-audit`;
+    const customer = {
+      fullName: 'Asha Patel', contact, address: 'Main Street', area: 'West', dateOfBirth: null, sabha: false,
+      contactKey, assignedUserId: null, ownerUserIds: [], orderLinks: {}, createdBy: uid,
+      createdAt: serverTimestamp(), updatedBy: uid, updatedAt: serverTimestamp(), lastAuditId: auditId,
+    };
+    const audit = {
+      type: 'customer.created', actorUid: uid, referenceType: 'customer', referenceId: id,
+      detail: { before: null, after: { fullName: customer.fullName, contact, address: customer.address, area: customer.area, dateOfBirth: null, sabha: false, assignedUserId: null } },
+      at: serverTimestamp(),
+    };
+    const batch = writeBatch(db);
+    batch.set(record(db, `customers/${id}`), customer);
+    batch.set(record(db, `customerContacts/${contactKey}`), { customerId: id, createdAt: serverTimestamp() });
+    batch.set(record(db, `auditLogs/${auditId}`), audit);
+    await assertSucceeds(batch.commit());
+  };
+
+  await createCustomer('adminA', 'adminCustomer');
+  await createCustomer('accountA', 'accountCustomer');
+  await assert.rejects(createCustomer('userA', 'userCustomer'));
+  await assert.rejects(createCustomer('inactiveA', 'inactiveCustomer'));
+  await assert.rejects(createCustomer(null, 'anonymousCustomer'));
 });
 
 test('staff can read named modules but no one gets an unknown collection', async () => {

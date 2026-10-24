@@ -3,6 +3,7 @@ import { validateProfile } from './permissions.js';
 import { firebaseErrorCode, profileReadErrorMessage } from './profile-error.js';
 import { initPasswordVisibilityToggle } from './password-visibility.js';
 import { initPwa } from './pwa.js';
+import { startLoading, stopLoading } from './loading.js';
 
 // Diagnostic fields are limited to mode, public project ID, category and Firebase error code.
 // Never log Auth users, profile data, passwords, credentials or raw Firebase error objects.
@@ -107,6 +108,7 @@ try {
       const button = document.getElementById('sign-in-button');
       const form = event.currentTarget;
       button.disabled = true;
+      const loadingToken = startLoading('Signing in…');
       button.textContent = 'Signing in…';
       clearLoginError();
       try {
@@ -124,6 +126,7 @@ try {
         authDiagnostic('sign-in-failed', services, error);
         showLoginError(loginMessage(error));
       } finally {
+        stopLoading(loadingToken);
         button.disabled = false;
         button.textContent = 'Sign in';
       }

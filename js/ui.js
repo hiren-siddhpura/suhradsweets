@@ -123,7 +123,6 @@ export function showToast(message, tone = '') {
 export function initUi() {
   const menu = byId('menu-button');
   const scrim = byId('mobile-scrim');
-  const mobileMore = byId('mobile-more-button');
   const masterView = byId('master-view');
   for (const id of ['specials-view', 'targets-view']) masterView.append(byId(id));
   const masterTabs = [...document.querySelectorAll('.master-tab')];
@@ -154,7 +153,6 @@ export function initUi() {
     menu.setAttribute('aria-expanded', String(open));
     menu.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
   });
-  mobileMore.addEventListener('click', () => menu.click());
   scrim.addEventListener('click', closeMenu);
   document.querySelectorAll('[data-mobile-page]').forEach((button) => button.addEventListener('click', () => {
     document.querySelector(`[data-page="${button.dataset.mobilePage}"]`)?.click();

@@ -13,6 +13,9 @@
     <script type="module" src="./js/app.js"></script>
   </head>
   <body>
+    <div id="global-loader" class="global-loader" role="status" aria-live="polite" aria-busy="false" hidden>
+      <div class="global-loader-card"><div class="global-loader-spinner" aria-hidden="true"></div><p class="global-loader-devotional">હે હરિ! બસ એક તું રાજી થા</p><p id="global-loader-message" class="global-loader-message">Loading…</p></div>
+    </div>
     <div id="app" class="app-shell">
       <div id="mobile-scrim" class="mobile-scrim" hidden></div>
       <aside id="sidebar" class="sidebar" aria-label="Main navigation">
@@ -58,7 +61,7 @@
           <section id="emulator-banner" class="notice" role="status" hidden><div><strong>Local emulator mode</strong><p>Test data only. This session uses the local Auth, Firestore and Functions emulators.</p></div></section>
           <section id="error-panel" class="notice notice-error" role="alert" hidden><div><strong>Something needs attention</strong><p id="error-message"></p></div></section>
           <section id="access-panel" class="notice notice-error" role="alert" hidden><div><strong>Access denied</strong><p id="access-message"></p></div></section>
-          <section id="loading-panel" class="notice" role="status"><div class="spinner" aria-hidden="true"></div><div><strong>Loading application</strong><p>Checking Firebase and your sign-in state.</p></div></section>
+          <section id="loading-panel" class="notice app-loading" role="status"><div class="global-loader-spinner" aria-hidden="true"></div><div><strong class="global-loader-devotional">હે હરિ! બસ એક તું રાજી થા</strong><p>Checking Firebase and your sign-in state.</p></div></section>
 
           <section id="auth-panel" class="auth-card card" hidden aria-labelledby="auth-heading">
             <div><p class="eyebrow">WELCOME BACK</p><h2 id="auth-heading">Sign in to continue</h2><p>Use an account created for Suhrad Sweets in Firebase Authentication.</p></div>
@@ -160,6 +163,7 @@
       <button type="button" data-mobile-page="customers"><span aria-hidden="true">♧</span><span>Customers</span></button>
       <button type="button" data-mobile-page="invoices"><span aria-hidden="true">▣</span><span>Invoices</span></button>
       <button id="mobile-more-button" type="button" aria-label="Open more pages" aria-expanded="false"><span aria-hidden="true">☰</span><span>More</span></button>
+      <button type="button" data-mobile-page="payments"><span aria-hidden="true">₹</span><span>Payments</span></button>
     </nav>
   </body>
 </html>

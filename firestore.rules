@@ -25,6 +25,8 @@ service cloud.firestore {
         && get(profilePath()).data.role in ['admin', 'account_admin'];
     }
 
+    function canManageMaster() { return isStaff(); }
+
     function ownsRecord() {
       return activeProfile() && resource.data.ownerUid == request.auth.uid;
     }
@@ -34,7 +36,7 @@ service cloud.firestore {
       return uid == null || (uid is string && uid.size() > 0 && uid.size() <= 128
         && exists(/databases/$(database)/documents/users/$(uid))
         && get(/databases/$(database)/documents/users/$(uid)).data.active == true
-        && get(/databases/$(database)/documents/users/$(uid)).data.role == 'user');
+        && get(/databases/$(database)/documents/users/$(uid)).data.role in ['admin', 'account_admin', 'user']);
     }
 
     function validText(value, maxLength) {
@@ -62,7 +64,7 @@ service cloud.firestore {
       return validText(data.fullName, 120) && data.fullName == data.fullName.trim()
         && validText(data.contact, 80) && data.contact == data.contact.trim()
         && data.contact.lower().replace('[\\s()-]', '').size() > 0
-        && validText(data.address, 300) && data.address == data.address.trim()
+        && validOptionalText(data.address, 300) && data.address == data.address.trim()
         && validText(data.area, 100) && data.area == data.area.trim()
         && data.sabha is bool
         && (data.dateOfBirth == null || (data.dateOfBirth is string
@@ -79,7 +81,17 @@ service cloud.firestore {
         && event.actorUid == request.auth.uid && event.at == request.time
         && event.referenceType == 'customer'
         && event.type == (exists(path) ? 'customer.updated' : 'customer.created')
-        && event.detail.keys().hasOnly(['before', 'after'])
+        && event.detail.keys().hasOnly(['before', 'after', 'import'])
+        && (!event.detail.keys().hasAny(['import']) || (
+          get(profilePath()).data.role == 'admin'
+          && event.type == 'customer.created'
+          && event.detail.import.keys().hasOnly(['jobId', 'rowNumber'])
+          && event.detail.import.keys().hasAll(['jobId', 'rowNumber'])
+          && event.detail.import.jobId is string
+          && event.detail.import.jobId.matches('^[a-f0-9]{64}$')
+          && event.detail.import.rowNumber is int
+          && event.detail.import.rowNumber >= 2
+          && event.detail.import.rowNumber <= 100000))
         && event.detail.before == (exists(path) ? customerAuditFields(get(path).data) : null)
         && event.detail.after == customerAuditFields(after)
         && after.lastAuditId == eventId && after.updatedAt == request.time
@@ -110,8 +122,7 @@ service cloud.firestore {
     }
 
     function canManageProfile(uid, newRole) {
-      return isStaff() && request.auth.uid != uid
-        && validRole(newRole)
+      return isStaff() && request.auth.uid != uid && validRole(newRole)
         && (get(profilePath()).data.role == 'admin' || newRole == 'user');
     }
 
@@ -169,29 +180,29 @@ service cloud.firestore {
       // Active items may still reference a unit that was later deactivated.
       allow get: if activeProfile();
       allow list: if isStaff() || (activeProfile() && resource.data.active == true);
-      allow create: if isStaff()
+      allow create: if canManageMaster()
         && request.resource.data.keys().hasOnly(['name', 'symbol', 'active', 'createdAt', 'updatedAt'])
         && request.resource.data.keys().hasAll(['name', 'symbol', 'active', 'createdAt', 'updatedAt'])
         && validUnitFields() && validMasterTimestampsOnCreate();
-      allow update: if isStaff() && validUnitFields()
+      allow update: if canManageMaster() && validUnitFields()
         && validMasterUpdate(['name', 'symbol', 'active', 'updatedAt']);
       allow delete: if false;
     }
 
     match /purchaseTypes/{purchaseTypeId} {
       allow get, list: if isStaff();
-      allow create: if isStaff()
+      allow create: if canManageMaster()
         && request.resource.data.keys().hasOnly(['name', 'description', 'active', 'createdAt', 'updatedAt'])
         && request.resource.data.keys().hasAll(['name', 'description', 'active', 'createdAt', 'updatedAt'])
         && validPurchaseTypeFields() && validMasterTimestampsOnCreate();
-      allow update: if isStaff() && validPurchaseTypeFields()
+      allow update: if canManageMaster() && validPurchaseTypeFields()
         && validMasterUpdate(['name', 'description', 'active', 'updatedAt']);
       allow delete: if false;
     }
 
     match /items/{itemId} {
       allow get, list: if isStaff() || (activeProfile() && resource.data.active == true);
-      allow create: if isStaff()
+      allow create: if canManageMaster()
         && request.resource.data.keys().hasOnly(['itemCode', 'name', 'description', 'defaultSellingPrice', 'sellingPrice500Gm', 'sellingPrice250Gm', 'defaultUnitId', 'active', 'createdAt', 'createdBy', 'updatedAt'])
         && request.resource.data.keys().hasAll(['itemCode', 'name', 'description', 'defaultSellingPrice', 'defaultUnitId', 'active', 'createdAt', 'createdBy', 'updatedAt'])
         && validItemFields()
@@ -200,7 +211,7 @@ service cloud.firestore {
         && activeUnit(request.resource.data.defaultUnitId)
         && getAfter(/databases/$(database)/documents/itemCodes/$(request.resource.data.itemCode)).data.itemId == itemId
         && getAfter(/databases/$(database)/documents/itemCodes/$(request.resource.data.itemCode)).data.createdAt == request.time;
-      allow update: if isStaff() && validItemFields()
+      allow update: if canManageMaster() && validItemFields()
         && validMasterUpdate(['name', 'description', 'defaultSellingPrice', 'sellingPrice500Gm', 'sellingPrice250Gm', 'defaultUnitId', 'active', 'updatedAt'])
         && (request.resource.data.defaultUnitId == resource.data.defaultUnitId
           || (!exists(/databases/$(database)/documents/inventory/$(itemId))
@@ -211,7 +222,7 @@ service cloud.firestore {
     match /itemCodes/{code} {
       allow get: if isStaff();
       allow list: if false;
-      allow create: if isStaff()
+      allow create: if canManageMaster()
         && request.resource.data.keys().hasOnly(['itemId', 'createdAt'])
         && request.resource.data.keys().hasAll(['itemId', 'createdAt'])
         && request.resource.data.itemId is string
@@ -245,7 +256,7 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly(['key', 'address', 'contactNumber', 'fssaiLicenseNo', 'active', 'createdAt', 'updatedAt'])
           && request.resource.data.keys().hasAll(['key', 'address', 'contactNumber', 'fssaiLicenseNo', 'active', 'createdAt', 'updatedAt'])
           && validBusinessDetails() && validMasterTimestampsOnCreate()
-        : isStaff()
+        : canManageMaster()
           && request.resource.data.keys().hasOnly(['key', 'value', 'description', 'active', 'createdAt', 'updatedAt'])
           && request.resource.data.keys().hasAll(['key', 'value', 'description', 'active', 'createdAt', 'updatedAt'])
           && validSettingFields() && validDashboardTarget() && validMasterTimestampsOnCreate();
@@ -253,14 +264,14 @@ service cloud.firestore {
         ? isStaff() && get(profilePath()).data.role == 'admin'
           && validBusinessDetails()
           && validMasterUpdate(['address', 'contactNumber', 'fssaiLicenseNo', 'updatedAt'])
-        : isStaff() && validSettingFields() && validDashboardTarget()
+        : canManageMaster() && validSettingFields() && validDashboardTarget()
           && validMasterUpdate(['value', 'description', 'active', 'updatedAt']);
       allow delete: if false;
     }
 
     match /orders/{orderId} {
       allow get, list: if isStaff() || ownsRecord();
-      // Confirmation/cancellation, snapshots and ownership require a trusted operation.
+      // Creation, confirmation, Admin edits, invoicing locks and stock snapshots require trusted operations.
       allow create, update, delete: if false;
     }
 
@@ -372,9 +383,36 @@ service cloud.firestore {
     }
 
     match /auditLogs/{eventId} {
-      allow get, list: if isStaff();
+      // Users may query only their own order/payment events. New events include
+      // backend-owned ownerUid and referenceType snapshots; legacy events without
+      // these fields remain staff-only rather than becoming broadly readable.
+      allow get, list: if isStaff() || (activeProfile()
+        && resource.data.ownerUid == request.auth.uid
+        && resource.data.referenceType in ['order', 'payment']);
       // Client audit creation is restricted to a matching atomic customer change.
-      allow create: if isStaff() && validCustomerAudit(eventId, request.resource.data);
+      allow create: if isStaff() && ((get(profilePath()).data.role == 'admin'
+          && request.resource.data.keys().hasOnly(['type', 'actorUid', 'referenceType', 'referenceId', 'detail', 'at'])
+          && request.resource.data.keys().hasAll(['type', 'actorUid', 'referenceType', 'referenceId', 'detail', 'at'])
+          && request.resource.data.type == 'customer.import_completed'
+          && request.resource.data.actorUid == request.auth.uid
+          && request.resource.data.referenceType == 'customerImport'
+          && request.resource.data.referenceId is string
+          && request.resource.data.referenceId.matches('^[a-f0-9]{64}$')
+          && request.resource.data.at == request.time
+          && request.resource.data.detail.keys().hasOnly(['processed', 'imported', 'existing', 'duplicate', 'invalid', 'failed'])
+          && request.resource.data.detail.keys().hasAll(['processed', 'imported', 'existing', 'duplicate', 'invalid', 'failed'])
+          && request.resource.data.detail.processed is int
+          && request.resource.data.detail.processed >= 0
+          && request.resource.data.detail.processed <= 100000
+          && request.resource.data.detail.imported is int && request.resource.data.detail.imported >= 0
+          && request.resource.data.detail.existing is int && request.resource.data.detail.existing >= 0
+          && request.resource.data.detail.duplicate is int && request.resource.data.detail.duplicate >= 0
+          && request.resource.data.detail.invalid is int && request.resource.data.detail.invalid >= 0
+          && request.resource.data.detail.failed is int && request.resource.data.detail.failed >= 0
+          && request.resource.data.detail.processed == request.resource.data.detail.imported
+            + request.resource.data.detail.existing + request.resource.data.detail.duplicate
+            + request.resource.data.detail.invalid + request.resource.data.detail.failed)
+        || validCustomerAudit(eventId, request.resource.data));
       allow update, delete: if false;
     }
 

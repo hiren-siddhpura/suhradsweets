@@ -50,6 +50,9 @@ async function seed() {
     await setDoc(record(db, 'inventoryMovements/movementA'), { ownerUid: 'userA', itemId: 'itemA', movementType: 'order_confirm', changeQty: -1000 });
     await setDoc(record(db, 'inventoryMovements/movementPrivate'), { ownerUid: null, itemId: 'itemA', movementType: 'purchase_confirm', changeQty: 1000 });
     await setDoc(record(db, 'auditLogs/auditA'), { actorUid: 'adminA', type: 'order.confirmed' });
+    await setDoc(record(db, 'auditLogs/orderActivityA'), { actorUid: 'adminA', actorName: 'Admin A', ownerUid: 'userA', referenceType: 'order', referenceId: 'orderA', orderNumber: 'SS-1', customerName: 'Customer A', type: 'order.confirmed', at: Timestamp.fromDate(new Date('2026-10-10T08:00:00Z')) });
+    await setDoc(record(db, 'auditLogs/orderActivityB'), { actorUid: 'adminA', actorName: 'Admin A', ownerUid: 'userB', referenceType: 'order', referenceId: 'orderB', orderNumber: 'SS-2', customerName: 'Customer B', type: 'order.confirmed', at: Timestamp.fromDate(new Date('2026-10-10T09:00:00Z')) });
+    await setDoc(record(db, 'auditLogs/paymentActivityA'), { actorUid: 'userA', actorName: 'User A', ownerUid: 'userA', referenceType: 'payment', referenceId: 'paymentA', paymentId: 'paymentA', invoiceId: 'invoiceA', type: 'payment.submitted', at: Timestamp.fromDate(new Date('2026-10-10T10:00:00Z')) });
     await setDoc(record(db, 'targets/targetA'), { ownerUid: 'userA', periodType: 'daily', active: true });
     await setDoc(record(db, 'targets/targetB'), { ownerUid: 'userB', periodType: 'weekly', active: true });
     await setDoc(record(db, 'announcements/annA'), { title: 'Welcome', audience: 'all', active: true });
@@ -99,6 +102,20 @@ test('normal user sees only own order-linked movement records', async () => {
   await assertFails(getDoc(record(dbFor('userA'), 'purchases/purchaseA')));
   await assertFails(getDoc(record(dbFor('userA'), 'inventory/itemA')));
   await assertSucceeds(getDoc(record(dbFor('adminA'), 'purchases/purchaseA')));
+});
+
+test('activity reads are staff-wide but User activity is restricted to owned order and payment events', async () => {
+  const user = dbFor('userA');
+  const ownOrders = query(collection(user, 'auditLogs'), where('referenceType', '==', 'order'), where('ownerUid', '==', 'userA'), orderBy('at', 'desc'));
+  const ownPayments = query(collection(user, 'auditLogs'), where('referenceType', '==', 'payment'), where('ownerUid', '==', 'userA'), orderBy('at', 'desc'));
+  assert.deepEqual((await assertSucceeds(getDocs(ownOrders))).docs.map((row) => row.id), ['orderActivityA']);
+  assert.deepEqual((await assertSucceeds(getDocs(ownPayments))).docs.map((row) => row.id), ['paymentActivityA']);
+  await assertFails(getDocs(query(collection(user, 'auditLogs'), where('referenceType', '==', 'order'), orderBy('at', 'desc'))));
+  await assertFails(getDocs(query(collection(user, 'auditLogs'), where('referenceType', '==', 'order'), where('ownerUid', '==', 'userB'), orderBy('at', 'desc'))));
+  await assertFails(getDoc(record(user, 'auditLogs/orderActivityB')));
+  await assertFails(getDocs(query(collection(dbFor('inactiveA'), 'auditLogs'), where('referenceType', '==', 'order'), where('ownerUid', '==', 'inactiveA'), orderBy('at', 'desc'))));
+  await assertFails(getDocs(query(collection(dbFor(null), 'auditLogs'), where('referenceType', '==', 'order'), orderBy('at', 'desc'))));
+  await assertSucceeds(getDocs(query(collection(dbFor('adminA'), 'auditLogs'), where('referenceType', '==', 'order'), orderBy('at', 'desc'))));
 });
 
 test('anonymous, missing and inactive profiles cannot read operational data', async () => {
@@ -278,7 +295,7 @@ test('login logs bind identity and server time but are client best-effort', asyn
 });
 
 test('dashboard KG target is staff-managed and only that setting is readable by Users', async () => {
-  const admin = dbFor('adminA'), user = dbFor('userA');
+  const admin = dbFor('adminA'), account = dbFor('accountA'), user = dbFor('userA');
   const target = { key: 'dashboardSalesTargetKg', value: '250.125', description: 'Confirmed KG sales target', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
   await assertSucceeds(setDoc(record(admin, 'settings/dashboard_sales_target'), target));
   await assertSucceeds(getDoc(record(user, 'settings/dashboard_sales_target')));
@@ -287,7 +304,7 @@ test('dashboard KG target is staff-managed and only that setting is readable by 
   await assertFails(setDoc(record(user, 'settings/dashboard_sales_target'), target));
   await assertFails(updateDoc(record(admin, 'settings/dashboard_sales_target'), { value: '-1', updatedAt: serverTimestamp() }));
   await assertFails(setDoc(record(admin, 'settings/duplicate_target'), target));
-  await assertSucceeds(updateDoc(record(dbFor('accountA'), 'settings/dashboard_sales_target'), { value: '0', updatedAt: serverTimestamp() }));
+  await assertSucceeds(updateDoc(record(account, 'settings/dashboard_sales_target'), { value: '0', updatedAt: serverTimestamp() }));
 });
 
 test('business details preserve FSSAI text and only Admin may write the fixed document', async () => {
@@ -368,5 +385,7 @@ test('item code reservation is atomic, and User cannot write master data', async
   await assertFails(setDoc(record(db, 'items/itemB'), { itemCode: 'SW-01', name: 'Other', description: '', defaultSellingPrice: 1, defaultUnitId: 'unitA', active: true, createdBy: 'adminA', createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
   await assertFails(setDoc(record(db, 'items/itemC'), { itemCode: 'SW-02', name: 'Other', description: '', defaultSellingPrice: 1, defaultUnitId: 'unitA', active: true, createdBy: 'adminA', createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
   await assertFails(deleteDoc(record(db, 'units/unitA')));
+  await assertFails(updateDoc(record(dbFor('adminA'), 'items/itemA'), { sellingPrice500Gm: 9, updatedAt: serverTimestamp() }));
+  await assertFails(setDoc(record(dbFor('adminA'), 'units/unitB'), { name: 'Box', symbol: 'box', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
   await assertFails(setDoc(record(dbFor('userA'), 'units/unitB'), { name: 'Box', symbol: 'box', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
 });

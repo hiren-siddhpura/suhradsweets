@@ -1,8 +1,9 @@
-import { isStaff } from './permissions.js';
+import { hasPermission, isStaff } from './permissions.js';
 import { showToast } from './ui.js';
 import { listMasterRecords } from './master-data.js';
 import { callOperation, listInventory, listMovements, listPurchases } from './operations-data.js';
 import { downloadXlsx } from './xlsx-export.js';
+import { uniqueId } from './unique-id.js';
 
 const byId = (id) => document.getElementById(id);
 const escaped = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -61,6 +62,7 @@ export function initOperationsUi({ db, functions }) {
     const data = filteredPurchases();
     byId('purchase-summary').textContent = `${data.length} purchases · ${data.filter((p) => p.status === 'draft').length} drafts · ${data.filter((p) => p.status === 'confirmed').length} confirmed · ₹${(data.filter((p) => p.status === 'confirmed').reduce((sum, p) => sum + (p.totalPaise || 0), 0) / 100).toLocaleString('en-IN')}`;
     byId('purchase-body').innerHTML = data.length ? data.map((p) => `<tr><td>${escaped(p.purchaseDate)}</td><td>${escaped(p.supplierName)}${/^https:\/\/drive\.google\.com\/file\/d\/[A-Za-z0-9_-]{10,}\/view\/?$/.test(p.documentUrl || '') ? ` <a href="${escaped(p.documentUrl)}" target="_blank" rel="noopener noreferrer">Document</a>` : ''}</td><td>${escaped(p.purchaseTypeSnapshot)}</td><td>${p.quantity == null || p.quantity === '' ? 'Not recorded' : escaped(p.quantity)}</td><td>${p.unit ? escaped(p.unit) : 'Not recorded'}</td><td>${((p.totalPaise || 0) / 100).toLocaleString('en-IN')}</td><td>${escaped(p.paymentStatus || 'Not recorded')}</td><td>${escaped(p.status)}</td><td class="ops-actions">${p.status === 'draft' ? `<button type="button" data-op="edit" data-id="${escaped(p.id)}">Edit</button><button type="button" data-op="confirm" data-id="${escaped(p.id)}">Confirm</button>` : ''}${p.status !== 'cancelled' ? `<button type="button" data-op="cancel" data-id="${escaped(p.id)}">Cancel</button>` : ''}</td></tr>`).join('') : empty(9, 'No purchases match the filters.');
+    byId('purchase-mobile-list').innerHTML = data.length ? data.map((p) => `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${escaped(p.supplierName)}</strong><span class="mobile-status">${escaped(p.status)}</span></div><p>${escaped(p.purchaseDate)} · ${escaped(p.purchaseTypeSnapshot)}<small>${p.quantity == null || p.quantity === '' ? 'Quantity not recorded' : `${escaped(p.quantity)} ${escaped(p.unit || '')}`}</small></p><div class="mobile-record-bottom"><b>₹${((p.totalPaise || 0) / 100).toLocaleString('en-IN')}</b><div class="mobile-record-actions">${p.status === 'draft' ? `<button type="button" data-op="edit" data-id="${escaped(p.id)}">Edit</button><button type="button" data-op="confirm" data-id="${escaped(p.id)}">Confirm</button>` : ''}${p.status !== 'cancelled' ? `<button type="button" data-op="cancel" data-id="${escaped(p.id)}">Cancel</button>` : ''}</div></div></article>`).join('') : '<p class="mobile-record-empty">No purchases match the current filters.</p>';
   }
 
   const selectedMovements = () => movements.filter((m) => {
@@ -113,12 +115,12 @@ export function initOperationsUi({ db, functions }) {
   }
   function inventoryActions(item, stock) {
     const id = escaped(item.id);
-    return `<button type="button" data-op="adjust" data-id="${id}">Adjust stock</button>${item.active === false ? '' : `<button type="button" data-op="${stock?.sellingBlocked ? 'unblock' : 'block'}" data-id="${id}">${stock?.sellingBlocked ? 'Unblock' : 'Block'}</button>`}<button type="button" data-op="threshold" data-id="${id}">Threshold</button><button type="button" data-op="history" data-id="${id}">History</button>`;
+    return `${hasPermission(profile, 'manageStock') ? `<button type="button" data-op="adjust" data-id="${id}">Adjust stock</button>${item.active === false ? '' : `<button type="button" data-op="${stock?.sellingBlocked ? 'unblock' : 'block'}" data-id="${id}">${stock?.sellingBlocked ? 'Unblock' : 'Block'}</button>`}<button type="button" data-op="threshold" data-id="${id}">Threshold</button>` : ''}<button type="button" data-op="history" data-id="${id}">History</button>`;
   }
 
   function field(label, name, type = 'text', value = '', extra = '') { return `<label class="ops-field">${label}<input name="${name}" type="${type}" value="${escaped(value)}" ${extra}></label>`; }
   function openDialog(action, id = null) {
-    dialogAction = action; draftId = id; adjustmentId = action === 'adjust' ? crypto.randomUUID() : null;
+    dialogAction = action; draftId = id; adjustmentId = action === 'adjust' ? uniqueId() : null;
     const purchase = purchases.find((p) => p.id === id);
     const item = items.find((i) => i.id === id);
     const stock = stocks.find((s) => s.id === id);
@@ -144,7 +146,8 @@ export function initOperationsUi({ db, functions }) {
     if (button.disabled) return;
     button.disabled = true; byId('ops-error').hidden = true;
     try {
-      if (!isStaff(profile)) throw new Error('Staff access is required.');
+      if (!isStaff(profile)) throw new Error('Access denied: operational access is required.');
+      if (['adjust', 'block', 'unblock', 'threshold'].includes(dialogAction) && !hasPermission(profile, 'manageStock')) throw new Error('Access denied: stock controls require a privileged OMS role.');
       let name, payload;
       if (dialogAction === 'draft') {
         const quantity = String(data.get('quantity') ?? '').trim();
@@ -188,6 +191,16 @@ export function initOperationsUi({ db, functions }) {
   ['purchase-search', 'purchase-status', 'purchase-from', 'purchase-to'].forEach((id) => byId(id).addEventListener('input', renderPurchases));
   ['inventory-search', 'inventory-item', 'inventory-status', 'inventory-history-search', 'inventory-from', 'inventory-to'].forEach((id) => byId(id).addEventListener('input', renderInventory));
   byId('purchase-body').addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-op]'); if (!button || !isStaff(profile) || ['adjust', 'block', 'unblock', 'threshold'].includes(button.dataset.op) && !hasPermission(profile, 'manageStock')) return;
+    const { op, id } = button.dataset;
+    if (op === 'edit') return openDialog('draft', id);
+    if (op === 'cancel') return openDialog('cancel', id);
+    button.disabled = true;
+    try { await callOperation(functions, 'confirmPurchase', { purchaseId: id }); showToast('Purchase confirmed. Inventory unchanged.'); await refresh('purchases'); }
+    catch (error) { showToast(safeError(error), 'toast-error'); }
+    finally { button.disabled = false; }
+  });
+  byId('purchase-mobile-list').addEventListener('click', async (event) => {
     const button = event.target.closest('[data-op]'); if (!button || !isStaff(profile)) return;
     const { op, id } = button.dataset;
     if (op === 'edit') return openDialog('draft', id);
@@ -198,7 +211,7 @@ export function initOperationsUi({ db, functions }) {
     finally { button.disabled = false; }
   });
   function inventoryAction(event) {
-    const button = event.target.closest('[data-op]'); if (!button || !isStaff(profile)) return;
+    const button = event.target.closest('[data-op]'); if (!button || !isStaff(profile) || ['adjust', 'block', 'unblock', 'threshold'].includes(button.dataset.op) && !hasPermission(profile, 'manageStock')) return;
     if (button.dataset.op === 'history') { byId('inventory-item').value = button.dataset.id; renderInventory(); byId('movement-summary').scrollIntoView?.({ behavior: 'smooth', block: 'start' }); return; }
     openDialog(button.dataset.op, button.dataset.id);
   }
@@ -210,7 +223,7 @@ export function initOperationsUi({ db, functions }) {
 
   return { setSession(nextUser, nextProfile) {
     sessionVersion++; user = nextUser; profile = nextProfile; loadedPage = ''; purchases = []; stocks = []; movements = []; items = []; units = []; types = [];
-    ['purchase-body', 'purchase-summary', 'inventory-body', 'inventory-mobile-list', 'inventory-cards', 'movement-body', 'movement-summary'].forEach((id) => { byId(id).innerHTML = ''; });
+    ['purchase-body', 'purchase-mobile-list', 'purchase-summary', 'inventory-body', 'inventory-mobile-list', 'inventory-cards', 'movement-body', 'movement-summary'].forEach((id) => { byId(id).innerHTML = ''; });
     if (profile && ['purchases', 'inventory'].includes(document.querySelector('[data-page].is-active')?.dataset.page)) refresh(document.querySelector('[data-page].is-active').dataset.page);
   } };
 }

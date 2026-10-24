@@ -16,6 +16,7 @@ test.beforeEach(async () => {
   for (const name of collections) { const docs = await db.collection(name).get(); if (!docs.empty) { const batch = db.batch(); docs.forEach((doc) => batch.delete(doc.ref)); await batch.commit(); } }
   await Promise.all([
     db.doc('users/adminA').set({ role: 'admin', active: true, displayName: 'Admin' }),
+    db.doc('users/opsAdmin').set({ role: 'admin', active: true, displayName: 'Operations Admin' }),
     db.doc('users/accountA').set({ role: 'account_admin', active: true, displayName: 'Accounts' }),
     db.doc('users/userA').set({ role: 'user', active: true, displayName: 'User' }),
     db.doc(`items/${itemId}`).set({ itemCode: 'SWEET01', name: 'Sweet A', active: true, defaultUnitId: 'kg' }),
@@ -122,10 +123,17 @@ test('selling block and threshold update do not change stock', async () => {
 });
 
 test('normal user cannot use stock or purchase operations; bad Drive links fail', async () => {
-  await assert.rejects(savePurchaseDraft(db, 'userA', draft), /access is required/);
-  await assert.rejects(adjustStock(db, 'userA', { itemId, countedQty: 1, reason: 'No', operationId: 'bad' }), /access is required/);
-  await assert.rejects(setInventoryControl(db, 'userA', { itemId, sellingBlocked: true, lowStockThresholdQty: 0, reason: 'No' }), /access is required/);
+  await assert.rejects(savePurchaseDraft(db, 'userA', draft), /Access denied/);
+  await assert.rejects(adjustStock(db, 'userA', { itemId, countedQty: 1, reason: 'No', operationId: 'bad' }), /Access denied/);
+  await assert.rejects(setInventoryControl(db, 'userA', { itemId, sellingBlocked: true, lowStockThresholdQty: 0, reason: 'No' }), /Access denied/);
   await assert.rejects(savePurchaseDraft(db, 'adminA', { ...draft, documentUrl: 'https://evil.example/file' }), /Google Drive/);
+});
+
+test('operational Admin can create purchases but cannot change physical stock', async () => {
+  const { purchaseId } = await savePurchaseDraft(db, 'opsAdmin', draft);
+  assert.ok(purchaseId);
+  await assert.rejects(adjustStock(db, 'opsAdmin', { itemId, countedQty: 1000, reason: 'Unauthorized count', operationId: 'adminCount' }), /Access denied/);
+  await assert.rejects(setInventoryControl(db, 'opsAdmin', { itemId, sellingBlocked: true, lowStockThresholdQty: 0, reason: 'Unauthorized block' }), /Access denied/);
 });
 
 test('purchase quantity is required text; manually entered units are independent of stock', async () => {

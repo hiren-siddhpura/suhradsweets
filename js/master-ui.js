@@ -2,10 +2,12 @@ import { listMasterRecords, saveMasterRecord, deactivateMasterRecord, readDashbo
 import { MASTER_LABELS } from './master-validation.js';
 import { isStaff } from './permissions.js';
 import { showToast } from './ui.js';
-import { sendUserSetupEmail } from './auth.js';
+import { callOperation } from './operations-data.js';
 import { BUSINESS_DETAILS_ID } from './business-settings.js';
+import { uniqueId } from './unique-id.js';
 
 const $ = (id) => document.getElementById(id);
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const PAGE_SIZE = 10;
 const titles = { items: 'Items', purchaseTypes: 'Purchase Types', users: 'Users', settings: 'Settings' };
 const subtitles = {
@@ -21,8 +23,8 @@ const columns = {
 };
 
 function friendlyError(error) {
-  if (error?.code === 'permission-denied') return 'Access was denied by Firestore rules. Check your role and refresh.';
-  if (error?.code === 'unavailable') return 'Firestore is unavailable. Check your connection and try again.';
+  if (error?.code === 'permission-denied') return 'Access denied. Check that your OMS profile is active and has the required role.';
+  if (error?.code === 'unavailable') return 'The service is unavailable. Check your connection and try again.';
   return error?.message || 'The operation could not be completed.';
 }
 
@@ -87,6 +89,19 @@ export function initMasterData({ db, functions, auth, mode }) {
   }
 
   function recordName(record) { return record.name || record.displayName || record.fullName || record.key || record.itemCode || record.id || ''; }
+  const canManageUser = (record) => type === 'users' && session && record.id !== session.uid && (session.role === 'admin' || session.role === 'account_admin' && record.role === 'user');
+  async function sendSetup(record, button) {
+    if (!canManageUser(record) || !record.active || !record.email || button.disabled) return;
+    if (globalThis.confirm && !globalThis.confirm(`Send a password setup link to ${record.email}?`)) return;
+    button.disabled = true;
+    const original = button.textContent;
+    button.textContent = 'Sending…';
+    try {
+      const result = await callOperation(functions, 'sendUserSetupLink', { targetUid: record.id });
+      showToast(mode === 'emulator' ? `Setup request accepted for ${result.email}. Check the Auth emulator email action.` : `Firebase accepted the setup email request for ${result.email}.`);
+    } catch (error) { message(`Setup link could not be sent: ${friendlyError(error)}`, true); }
+    finally { button.disabled = false; button.textContent = original; }
+  }
 
   function visibleRecords() {
     const search = $('master-search').value.trim().toLocaleLowerCase();
@@ -118,6 +133,16 @@ export function initMasterData({ db, functions, auth, mode }) {
     const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
     page = Math.min(page, totalPages);
     const shown = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    $('master-mobile-list').innerHTML = shown.length ? shown.map((record) => {
+      const name = recordName(record);
+      const details = columns[type].slice(1, 3).map(([key]) => {
+        let value = record[key] ?? (key === 'displayName' ? record.fullName : undefined);
+        if (key === 'role') value = ({ admin: 'Admin', account_admin: 'Account Admin', user: 'User' })[value] || value;
+        return value;
+      }).filter((value) => value !== undefined && value !== '').join(' · ');
+      const canEdit = type !== 'users' || canManageUser(record);
+      return `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${esc(name)}</strong><span class="master-status ${record.active ? 'is-active' : ''}">${record.active ? 'Active' : 'Inactive'}</span></div><p>${esc(details || '—')}</p>${canEdit ? `<div class="mobile-record-actions"><button type="button" data-master-action="edit" data-id="${esc(record.id)}">Edit</button>${canManageUser(record) && record.active && record.email ? `<button type="button" data-master-action="setup" data-id="${esc(record.id)}">✉ Send Setup Link</button>` : ''}${record.active ? `<button type="button" data-master-action="deactivate" data-id="${esc(record.id)}">Deactivate</button>` : type === 'users' ? `<button type="button" data-master-action="reactivate" data-id="${esc(record.id)}">Reactivate</button>` : ''}</div>` : ''}</article>`;
+    }).join('') : `<p class="mobile-record-empty">${records.length ? 'No records match the current filters.' : `No ${titles[type].toLowerCase()} yet.`}</p>`;
     if (!shown.length) {
       const row = document.createElement('tr'); const cell = document.createElement('td');
       cell.colSpan = columns[type].length + 2; cell.className = 'empty-cell';
@@ -138,18 +163,13 @@ export function initMasterData({ db, functions, auth, mode }) {
       const badge = document.createElement('span'); badge.className = `master-status ${record.active ? 'is-active' : ''}`;
       badge.textContent = record.active ? 'Active' : 'Inactive'; status.append(badge); row.append(status);
       const actions = document.createElement('td'); actions.className = 'master-actions';
-      const canEdit = !(type === 'users' && (record.id === session?.uid || (session?.role === 'account_admin' && record.role !== 'user')));
+      const canEdit = type !== 'users' || canManageUser(record);
       if (canEdit) {
         const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'text-button'; edit.textContent = 'Edit';
         edit.addEventListener('click', () => openEditor(record)); actions.append(edit);
-        if (type === 'users' && mode === 'emulator' && record.email && record.active) {
-          const setup = document.createElement('button'); setup.type = 'button'; setup.className = 'text-button'; setup.textContent = 'Send password setup';
-          setup.addEventListener('click', async () => {
-            setup.disabled = true;
-            try { await sendUserSetupEmail(auth, record.email); showToast('Password setup requested. Check the Auth emulator for the email action.'); }
-            catch { message('Password setup could not be sent. The saved account remains unchanged.', true); }
-            finally { setup.disabled = false; }
-          }); actions.append(setup);
+        if (type === 'users' && record.email && record.active) {
+          const setup = document.createElement('button'); setup.type = 'button'; setup.className = 'text-button'; setup.textContent = '✉ Send Setup Link';
+          setup.addEventListener('click', () => sendSetup(record, setup)); actions.append(setup);
         }
         if (record.active) {
           const deactivate = document.createElement('button'); deactivate.type = 'button'; deactivate.className = 'text-button danger-link'; deactivate.textContent = 'Deactivate';
@@ -187,19 +207,20 @@ export function initMasterData({ db, functions, auth, mode }) {
       if (revision !== loadRevision) return;
       records = []; render(); message(friendlyError(error), true);
     } finally {
-      if (revision === loadRevision) { $('master-add').disabled = type === 'users' && mode !== 'emulator'; $('master-add').title = type === 'users' && mode !== 'emulator' ? 'Live account creation is unavailable until the trusted backend is configured.' : ''; }
+      if (revision === loadRevision) {
+        $('master-add').disabled = false;
+        $('master-add').title = '';
+      }
     }
   }
 
   async function openEditor(record = null) {
-    if (!session || !isStaff(session.profile)) return;
-    if (saving || (type === 'users' && !record && mode !== 'emulator')) return;
-    userOperationId = crypto.randomUUID();
-    const editorType = type;
+    if (!session || !isStaff(session.profile) || saving) return;
+    userOperationId = uniqueId();
     editing = record;
     $('master-dialog-title').textContent = `${record ? 'Edit' : 'Add'} ${MASTER_LABELS[type].toLowerCase()}`;
     $('master-dialog-hint').textContent = type === 'users'
-      ? 'Account setup uses the trusted backend. The user sets their password through Firebase password reset; no password is stored here.'
+      ? 'Set a password here, or leave it blank and send a password setup email after saving. Passwords are not stored in user profiles.'
       : type === 'items' && record ? 'Item codes stay fixed to protect references and uniqueness.'
         : type === 'settings' ? 'Use settings for non-secret values only.' : '';
     $('master-form-error').hidden = true;
@@ -211,12 +232,11 @@ export function initMasterData({ db, functions, auth, mode }) {
       fields.append(field('defaultSellingPrice', 'Default selling price (₹)', { type: 'number', required: true, value: record?.defaultSellingPrice ?? 0 }));
       fields.append(field('sellingPrice500Gm', '500 GM selling price (₹)', { type: 'number', value: record?.sellingPrice500Gm ?? '' }));
       fields.append(field('sellingPrice250Gm', '250 GM selling price (₹)', { type: 'number', value: record?.sellingPrice250Gm ?? '' }));
-      try {
-        const units = await listMasterRecords(db, 'units');
-        if (!session || !isStaff(session.profile) || type !== editorType) return;
-        const options = [{ value: '', label: 'Select a unit' }, ...units.filter((unit) => unit.active || unit.id === record?.defaultUnitId).map((unit) => ({ value: unit.id, label: `${unit.name} (${unit.symbol})${unit.active ? '' : ' — inactive'}` }))];
-        fields.append(selectField('defaultUnitId', 'Stock unit', options, record?.defaultUnitId));
-      } catch (error) { message(friendlyError(error), true); return; }
+      const stockUnit = document.createElement('input');
+      stockUnit.type = 'hidden';
+      stockUnit.name = 'defaultUnitId';
+      stockUnit.value = record?.defaultUnitId || 'kg';
+      fields.append(stockUnit);
     } else if (type === 'units') {
       fields.append(field('name', 'Name', { required: true, value: record?.name }));
       fields.append(field('symbol', 'Symbol', { required: true, max: 16, value: record?.symbol }));
@@ -226,6 +246,7 @@ export function initMasterData({ db, functions, auth, mode }) {
     } else if (type === 'users') {
       fields.append(field('email', 'Email', { type: 'email', required: true, max: 254, value: record?.email }));
       fields.append(field('fullName', 'Full name', { required: true, max: 80, value: record?.displayName || record?.fullName }));
+      if (!record) fields.append(field('password', 'Password (optional)', { type: 'password', minLength: 8, max: 128, autocomplete: 'new-password' }));
       const options = session.role === 'admin'
         ? [{ value: 'user', label: 'User' }, { value: 'admin', label: 'Admin' }, { value: 'account_admin', label: 'Account Admin' }]
         : [{ value: 'user', label: 'User' }];
@@ -243,7 +264,7 @@ export function initMasterData({ db, functions, auth, mode }) {
     if (!session || !isStaff(session.profile)) return;
     if (!window.confirm(`Deactivate ${MASTER_LABELS[type].toLowerCase()} “${recordName(record)}”? Existing references will be kept.`)) return;
     try {
-      if (type === 'users' && !deactivationOperations.has(record.id)) deactivationOperations.set(record.id, crypto.randomUUID());
+      if (type === 'users' && !deactivationOperations.has(record.id)) deactivationOperations.set(record.id, uniqueId());
       await deactivateMasterRecord(db, type, record.id, session, functions, deactivationOperations.get(record.id));
       deactivationOperations.delete(record.id);
       showToast(`${MASTER_LABELS[type]} deactivated.`);
@@ -292,6 +313,14 @@ export function initMasterData({ db, functions, auth, mode }) {
     finally { $('master-business-save').disabled = session?.role !== 'admin'; }
   });
   $('master-add').addEventListener('click', () => openEditor());
+  $('master-mobile-list').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-master-action]'); if (!button) return;
+    const record = records.find((entry) => entry.id === button.dataset.id); if (!record) return;
+    if (button.dataset.masterAction === 'edit') openEditor(record);
+    if (button.dataset.masterAction === 'deactivate') deactivateRecord(record);
+    if (button.dataset.masterAction === 'setup') sendSetup(record, button);
+    if (button.dataset.masterAction === 'reactivate') openEditor(record);
+  });
   $('master-dialog-close').addEventListener('click', () => dialog.close());
   $('master-cancel').addEventListener('click', () => dialog.close());
   $('master-form').addEventListener('submit', async (event) => {

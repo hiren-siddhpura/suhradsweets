@@ -107,7 +107,7 @@ export async function allReportRows(db, kind, filters = {}, ownUid = null) {
 }
 
 export async function activeAnnouncements(db, role, today) {
-  const staff = role === 'admin' || role === 'account_admin';
+  const staff = ['admin', 'account_admin'].includes(role);
   const terms = [where('active', '==', true), where('startsOn', '<=', today), where('expiresOn', '>=', today)];
   if (!staff) terms.push(where('audience', 'in', ['all', 'users']));
   const snap = await getDocs(query(collection(db, 'announcements'), ...terms, orderBy('startsOn', 'desc'), limit(20)));

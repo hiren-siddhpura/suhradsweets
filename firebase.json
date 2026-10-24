@@ -1,20 +1,21 @@
 {
   "hosting": {
-    "public": ".",
+    "public": "dist",
+    "headers": [
+      {
+        "source": "**/*.@(js|html|webmanifest)",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+      },
+      {
+        "source": "/sw.js",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+      }
+    ],
     "ignore": [
-      "firebase.json",
-      "firestore.rules",
-      "firestore.indexes.json",
-      "package.json",
-      "package-lock.json",
-      "README.md",
-      "dev-server.mjs",
-      "docs/**",
-      "tests/**",
-      "functions/**",
       "**/.*",
       "**/node_modules/**",
-      "**/*-debug.log"
+      "**/*-debug.log",
+      "**/*.map"
     ]
   },
   "firestore": {

@@ -2,18 +2,16 @@
 
 Master Data > Users accepts full name, email, role and active status. No Auth UID is entered.
 The existing saveUserProfileCall now invokes manageUser, using the Admin SDK in Functions.
-Only active staff may call it; only Admin may grant/change staff roles. Account Admin may
-create/edit ordinary Users. Self changes remain prohibited. User edits retain the existing
+An active Admin may create, edit, deactivate and assign any supported role. An active Account Admin may create and manage User profiles only; it cannot assign staff roles or change a staff profile. Self changes remain prohibited. User edits retain the existing
 UID and require both Auth and Firestore records; missing profiles are not recreated by edits.
 The older reporting helper remains internal for compatibility and is not the callable route.
 
 ## Availability
 
-Live Add User stays disabled: there is no deployed trusted backend. This implementation does
-not enable live provisioning. Use the full existing Emulator Suite and localhost without
-`?firebase=live` to exercise the form. Firebase Cloud Functions deployment requires Blaze;
-no deployment or billing changes are performed. Firestore Rules remain unchanged: client
-user/profile writes and client provisioning metadata writes are denied.
+Live Add User uses `saveUserProfileCall`. The signed-in caller must have an active
+Admin or Account Admin profile. The callable must be deployed before publishing this frontend.
+Firebase Cloud Functions deployment requires Blaze. Firestore Rules keep direct browser
+user/profile writes and provisioning metadata writes denied.
 
 ## Provisioning and recovery
 
@@ -37,10 +35,11 @@ Auth-disabled status is checked operationally; authoritative inactive Firestore 
 deny OMS access even if Auth disabling temporarily fails. Existing sessions may remain signed
 in, but profile access revocation is enforced by Rules and the existing profile listener.
 
-No password is collected or stored. Active local accounts expose Send password setup, using
+The user form accepts an optional password for account creation or password changes. It is sent to Firebase Authentication through the trusted callable and is never stored in Firestore or audit logs. Active accounts also expose Send password setup, using
 Firebase password-reset delivery without signing the Admin out. The Auth emulator exposes
-test email actions locally; never paste reset links/codes into logs or Firestore. Email action
-failure leaves the saved account intact and can be retried. Live setup delivery remains disabled.
+test email actions locally; live delivery uses the project's Firebase Auth email setup.
+Never paste reset links/codes into logs or Firestore. Email action failure leaves the saved
+account intact and can be retried.
 
 ## Tests
 
@@ -63,8 +62,25 @@ Existing emulators on 9099/8080/5001 are preserved. It creates and removes a tem
 emulator configuration; firebase.json and production configuration are unchanged.
 Tests exercise actual Admin Auth, Firestore, browser Auth and the callable, duplicate
 emails/submissions, partial failures, identity-preserving edits, deactivation/history,
-role escalation/self changes, live Add User disabling and current Rules regression.
+role escalation/self changes, live Add User role restrictions and current Rules regression.
 
 Legacy profiles without email must supply the matching account email when edited; the
 deactivation path looks it up by existing UID. Accounts with no Auth counterpart need review.
 No production migration is performed.
+# Password setup email
+
+The Users list offers **Send Setup Link** for active accounts. Admin may use it
+for another active account; Account Admin may use it for an active User account.
+The trusted `sendUserSetupLinkCall` verifies the actor, target UID, active state,
+and matching Firestore/Auth email. It asks Firebase Authentication to send its
+password-reset action email. It never creates an account or stores a password.
+
+For production Functions, set `AUTH_WEB_API_KEY` to this Firebase project's web
+API key in the Functions runtime environment (for example, the project-specific
+`functions/.env.<project-id>` file used by Firebase CLI), enable Email/Password
+in Firebase Authentication, and configure its password-reset email template and
+authorized action domain. Deploy the Functions code with
+`firebase deploy --only functions:sendUserSetupLinkCall --project <project-id>`.
+The Auth emulator uses its local demo API key automatically. A successful
+call means Firebase accepted the email request; inbox delivery depends on the
+project's email configuration.

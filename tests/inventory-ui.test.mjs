@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { hasPermission } from '../js/permissions.js';
 
 test('inventory cards, four statuses, actions, history and absolute count use Firestore results', async () => {
   const elements = new Map(), calls = [], exports = [];
@@ -19,8 +20,8 @@ test('inventory cards, four statuses, actions, history and absolute count use Fi
   const values = { counted: '7.25', reason: 'Physical count' };
   const context = {
     document: { getElementById: element, addEventListener() {}, querySelector: () => null },
-    crypto: { randomUUID: () => 'count-1' },
-    isStaff: (profile) => profile?.role === 'admin', showToast() {},
+    uniqueId: () => 'count-1',
+    isStaff: (profile) => profile?.role === 'admin', hasPermission, showToast() {},
     listPurchases: async () => [], listInventory: async () => stocks,
     listMovements: async () => [{ itemId: 'a', itemSnapshot: { name: 'Sweet a', itemCode: 'SKU-a', unitSymbol: 'kg' }, previousQty: 6000, changeQty: -1000, newQty: 5000, reason: 'Order confirmed', actorName: 'Admin' }],
     listMasterRecords: async (_db, type) => type === 'items' ? items : type === 'units' ? [{ id: 'kg', symbol: 'kg' }] : [],
@@ -30,7 +31,7 @@ test('inventory cards, four statuses, actions, history and absolute count use Fi
   };
   const source = readFileSync(new URL('../js/operations-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOperationsUi', 'function initOperationsUi');
   vm.runInNewContext(`${source}\nthis.init = initOperationsUi;`, context);
-  context.init({ db: {}, functions: {} }).setSession({ uid: 'adminA' }, { role: 'admin' });
+  context.init({ db: {}, functions: {} }).setSession({ uid: 'adminA' }, { role: 'admin', active: true });
   await element('inventory-refresh').listeners.click();
   assert.match(element('inventory-cards').innerHTML, /Total items<\/span><strong>4/);
   assert.match(element('inventory-cards').innerHTML, /Low-stock items<\/span><strong>1/);

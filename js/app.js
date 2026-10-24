@@ -1,6 +1,8 @@
 import { clearLoginError, initUi, setStatus, showAccessDenied, showError, showLoading, showLoginError, showSetup, showSignedIn, showSignedOut, showToast } from './ui.js';
 import { validateProfile } from './permissions.js';
 import { firebaseErrorCode, profileReadErrorMessage } from './profile-error.js';
+import { initPasswordVisibilityToggle } from './password-visibility.js';
+import { initPwa } from './pwa.js';
 
 // Diagnostic fields are limited to mode, public project ID, category and Firebase error code.
 // Never log Auth users, profile data, passwords, credentials or raw Firebase error objects.
@@ -31,11 +33,13 @@ function accessMessage(reason) {
 }
 
 initUi();
+initPwa();
+initPasswordVisibilityToggle();
 showLoading();
 
 try {
-  const [{ initializeFirebase }, { observeAuth, signIn, signOutUser }, { observeUserProfile, recordAuthEvent }, { initMasterData }, { initOperationsUi }, { initOrderUi }, { initFinanceUi }, { initReportingUi }, { configureOperations }] = await Promise.all([
-    import('./firebase-config.js'), import('./auth.js'), import('./data.js'), import('./master-ui.js'), import('./operations-ui.js'), import('./order-ui.js'), import('./finance-ui.js'), import('./reporting-ui.js'), import('./operations-data.js'),
+  const [{ initializeFirebase }, { observeAuth, signIn, signOutUser }, { observeUserProfile, recordAuthEvent }, { initMasterData }, { initOperationsUi }, { initOrderUi }, { initFinanceUi }, { initReportingUi }, { configureOperations }, { initCustomerImport }] = await Promise.all([
+    import('./firebase-config.js'), import('./auth.js'), import('./data.js'), import('./master-ui.js'), import('./operations-ui.js'), import('./order-ui.js'), import('./finance-ui.js'), import('./reporting-ui.js'), import('./operations-data.js'), import('./customer-import-ui.js'),
   ]);
   const services = initializeFirebase();
   if (!services) {
@@ -43,6 +47,7 @@ try {
     showSetup();
   } else {
     configureOperations(services.functions, services.mode);
+    document.getElementById('emulator-banner').hidden = services.mode !== 'emulator';
     const emulatorMode = services.mode === 'emulator';
     const sameProject = services.auth.app === services.db.app
       && services.auth.app.options.projectId === services.db.app.options.projectId;
@@ -50,6 +55,7 @@ try {
     const master = initMasterData(services);
     const operations = initOperationsUi(services);
     const orders = initOrderUi(services);
+    const customerImport = initCustomerImport(services);
     const finance = initFinanceUi(services);
     const reporting = initReportingUi(services);
     let authRevision = 0;
@@ -57,7 +63,7 @@ try {
     observeAuth(services.auth, (user) => {
       const revision = ++authRevision;
       if (stopProfile) { stopProfile(); stopProfile = null; }
-      if (!user) { authDiagnostic('no-authenticated-user', services); master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); finance.setSession(null, null); reporting.setSession(null, null); showSignedOut(); return; }
+      if (!user) { authDiagnostic('no-authenticated-user', services); master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); customerImport.setSession(null, null); finance.setSession(null, null); reporting.setSession(null, null); showSignedOut(); return; }
       if (!sameProject) {
         authDiagnostic('firebase-configuration-mismatch', services);
         showAccessDenied(user, 'Authentication and Firestore are configured for different Firebase projects. Check the web configuration.');
@@ -71,6 +77,7 @@ try {
           master.setSession(null, null);
           operations.setSession(null, null);
           orders.setSession(null, null);
+          customerImport.setSession(null, null);
           finance.setSession(null, null);
           reporting.setSession(null, null);
           showLoading('Verifying your account with Firestore.');
@@ -79,14 +86,15 @@ try {
         const reason = validateProfile(profile);
         if (reason) authDiagnostic(reason === 'missing' ? 'user-document-missing' : reason === 'inactive' ? 'user-account-inactive' : 'user-role-or-profile-invalid', services);
         else authDiagnostic('user-profile-verified', services);
-        if (reason) { master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); finance.setSession(null, null); reporting.setSession(null, null); showAccessDenied(user, accessMessage(reason)); }
-        else { showSignedIn(user, profile); master.setSession(user, profile); operations.setSession(user, profile); orders.setSession(user, profile); finance.setSession(user, profile); reporting.setSession(user, profile); }
+        if (reason) { master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); customerImport.setSession(null, null); finance.setSession(null, null); reporting.setSession(null, null); showAccessDenied(user, accessMessage(reason)); }
+        else { showSignedIn(user, profile); master.setSession(user, profile); operations.setSession(user, profile); orders.setSession(user, profile); customerImport.setSession(user, profile); finance.setSession(user, profile); reporting.setSession(user, profile); }
       }, (error) => {
         authDiagnostic(firebaseErrorCode(error) === 'permission-denied' ? 'profile-read-permission-denied' : ['unavailable', 'deadline-exceeded'].includes(firebaseErrorCode(error)) ? 'profile-read-network-error' : 'profile-read-firebase-error', services, error);
         if (revision === authRevision) {
           master.setSession(null, null);
           operations.setSession(null, null);
           orders.setSession(null, null);
+          customerImport.setSession(null, null);
           finance.setSession(null, null);
           reporting.setSession(null, null);
           showAccessDenied(user, profileReadErrorMessage(error, emulatorMode));
@@ -120,6 +128,7 @@ try {
         button.textContent = 'Sign in';
       }
     });
+    document.getElementById('mobile-sign-out-button').addEventListener('click', () => document.getElementById('sign-out-button').click());
     document.getElementById('sign-out-button').addEventListener('click', async () => {
       const user = services.auth.currentUser;
       if (user) {
@@ -136,6 +145,8 @@ try {
   }
 } catch (error) {
   authDiagnostic('firebase-initialization-error', null, error);
-  showError('The app could not start. Reload the page and check your connection.');
+  showError(error?.code === 'local-emulator-required'
+    ? 'This LAN address is for local emulator testing only. Open the OMS development server without ?firebase=live.'
+    : 'The app could not start. Reload the page and check your connection.');
   setStatus('Unavailable', 'status-error');
 }

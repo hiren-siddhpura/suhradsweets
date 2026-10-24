@@ -11,13 +11,14 @@ if (!process.env.FIRESTORE_EMULATOR_HOST) throw new Error('Firestore emulator re
 const app = initializeApp({ projectId: 'demo-customer-deletion-tests' }, 'customer-deletion');
 const db = getFirestore(app), contactKey = createHash('sha256').update('9876543210').digest('hex');
 const customer = { fullName: 'Unused customer', contact: '9876543210', address: 'Street', area: 'West', sabha: false, ownerUserIds: [], orderLinks: {}, contactKey };
-const remove = (uid = 'admin') => deleteCustomer(db, uid, { customerId: 'customer' });
+const remove = (uid = 'super') => deleteCustomer(db, uid, { customerId: 'customer' });
 test.beforeEach(async () => {
   for (const collection of await db.listCollections()) {
     const docs = await collection.get();
     for (const doc of docs.docs) await doc.ref.delete();
   }
   await Promise.all([
+    db.doc('users/admin').set({ role: 'admin', active: true, fullName: 'Admin' }),
     db.doc('users/admin').set({ role: 'admin', active: true, fullName: 'Admin' }),
     db.doc('users/account').set({ role: 'account_admin', active: true }),
     db.doc('users/user').set({ role: 'user', active: true }),
@@ -28,8 +29,8 @@ test.beforeEach(async () => {
   ]);
 });
 test.after(() => deleteApp(app));
-test('both staff roles can delete unused customers with reservation release and immutable history', async () => {
-  for (const uid of ['admin', 'account']) {
+test('privileged roles can delete unused customers with reservation release and immutable history', async () => {
+  for (const uid of ['super', 'account']) {
     if (uid === 'account') {
       await db.doc('customers/customer').set(customer);
       await db.doc(`customerContacts/${contactKey}`).set({ customerId: 'customer' });
@@ -65,8 +66,8 @@ test('legacy snapshots and permanent order links block deletion', async () => {
   await db.doc('customers/customer').update({ orderLinks: { user: 'cancelled-or-missing-order' } });
   await assert.rejects(remove(), { message: CUSTOMER_LINKED_MESSAGE });
 });
-test('anonymous, normal User, missing and inactive profiles cannot delete', async () => {
-  for (const uid of ['', 'user', 'missing', 'inactive']) await assert.rejects(remove(uid));
+test('Admin, User, anonymous, missing and inactive profiles cannot delete', async () => {
+  for (const uid of ['', 'admin', 'user', 'missing', 'inactive']) await assert.rejects(remove(uid));
   assert.equal((await db.doc('customers/customer').get()).exists, true);
 });
 test('missing reservation is safe; mismatched reservation fails without deleting anything', async () => {

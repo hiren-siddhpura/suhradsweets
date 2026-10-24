@@ -10,7 +10,7 @@ export function profileReadErrorMessage(error, emulatorMode) {
   }
   if (code === 'unavailable' || code === 'deadline-exceeded') {
     return emulatorMode
-      ? 'The Firestore emulator could not be reached at 127.0.0.1:8080. Start the Firebase Emulator Suite, then reload.'
+      ? 'The Firestore emulator could not be reached. Start the Firebase Emulator Suite, then reload.'
       : 'Firestore could not be reached. Check your network connection and reload.';
   }
   return 'Your OMS profile could not be verified. Check your connection and Firestore Rules, then reload.';

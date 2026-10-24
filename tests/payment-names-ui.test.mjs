@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { isStaff } from '../js/permissions.js';
+import { hasPermission, isStaff } from '../js/permissions.js';
 
 test('payment status displays resolved names, safe fallbacks and names in export', async () => {
   const elements = new Map(), exports = [];
   const element = id => { if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', textContent: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, close() {}, showModal() {} }); return elements.get(id); };
   const payment = { id: 'paymentA', invoiceNumber: 'INV-1', orderNumber: 'SS-1', customerSnapshot: null, amountPaise: 1000, mode: 'cash', transactionNumber: '-', submittedBy: 'submitter', verifiedBy: 'verifier', verificationStatus: 'verified', submittedAt: { seconds: 1, toDate: () => new Date('2026-10-11T10:00:00Z') } };
-  const context = { document: { getElementById: element, addEventListener() {} }, isStaff, showToast() {}, listInvoices: async () => [], listPayments: async () => [payment], callOperation: async (_functions, name) => { assert.equal(name, 'getPaymentNames'); return { payments: [{ paymentId: 'paymentA', customerName: 'Asha', submittedByName: 'Submitting User', verifiedByName: 'Verifying Admin' }] }; }, downloadXlsx: async (_name, sheets) => { exports.push(sheets); } };
+  const context = { document: { getElementById: element, addEventListener() {} }, isStaff, hasPermission, showToast() {}, listInvoices: async () => [], listPayments: async () => [payment], callOperation: async (_functions, name) => { assert.equal(name, 'getPaymentNames'); return { payments: [{ paymentId: 'paymentA', customerName: 'Asha', submittedByName: 'Submitting User', verifiedByName: 'Verifying Admin' }] }; }, downloadXlsx: async (_name, sheets) => { exports.push(sheets); } };
   const source = readFileSync(new URL('../js/finance-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initFinanceUi', 'function initFinanceUi');
   vm.runInNewContext(`${source}\nthis.init = initFinanceUi;`, context);
   context.init({ db: {}, functions: {} }).setSession({ uid: 'submitter' }, { role: 'user', active: true, fullName: 'Submitting User' });
@@ -31,7 +31,7 @@ test('payment table pages 25 rows while export includes every authorized filtere
   const elements = new Map(), exports = [];
   const element = id => { if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', textContent: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, close() {}, showModal() {} }); return elements.get(id); };
   const payments = Array.from({ length: 30 }, (_, index) => ({ id: `payment${index}`, invoiceNumber: 'INV-1', orderNumber: 'SS-1', customerSnapshot: { fullName: 'Asha' }, amountPaise: 100, mode: 'cash', transactionNumber: '-', submittedBy: 'userA', verificationStatus: 'unverified', submittedAt: { seconds: index + 1, toDate: () => new Date('2026-10-11T10:00:00Z') } }));
-  const context = { document: { getElementById: element, addEventListener() {} }, isStaff, showToast() {}, listInvoices: async () => [], listPayments: async () => payments, callOperation: async () => ({ payments: [] }), downloadXlsx: async (_name, sheets) => exports.push(sheets) };
+  const context = { document: { getElementById: element, addEventListener() {} }, isStaff, hasPermission, showToast() {}, listInvoices: async () => [], listPayments: async () => payments, callOperation: async () => ({ payments: [] }), downloadXlsx: async (_name, sheets) => exports.push(sheets) };
   const source = readFileSync(new URL('../js/finance-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initFinanceUi', 'function initFinanceUi');
   vm.runInNewContext(`${source}\nthis.init = initFinanceUi;`, context);
   const ui = context.init({ db: {}, functions: {} });
@@ -47,7 +47,7 @@ test('invoice remains visible when payment list fails, with a separate payment e
   const elements = new Map();
   const element = id => { if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', textContent: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, close() {}, showModal() {} }); return elements.get(id); };
   const invoice = { id: 'orderA', invoiceNumber: 'INV-SS-1', orderNumber: 'SS-1', ownerUid: 'userA', customerSnapshot: { fullName: 'Asha' }, totalPaise: 1000, verifiedPaidPaise: 0, paymentStatus: 'unpaid' };
-  const context = { document: { getElementById: element, addEventListener() {} }, isStaff, showToast() {}, listInvoices: async () => [invoice], listPayments: async () => { throw new Error('permission-denied'); }, callOperation: async () => ({ payments: [] }), downloadXlsx: async () => {} };
+  const context = { document: { getElementById: element, addEventListener() {} }, isStaff, hasPermission, showToast() {}, listInvoices: async () => [invoice], listPayments: async () => { throw new Error('permission-denied'); }, callOperation: async () => ({ payments: [] }), downloadXlsx: async () => {} };
   const source = readFileSync(new URL('../js/finance-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initFinanceUi', 'function initFinanceUi');
   vm.runInNewContext(`${source}\nthis.init = initFinanceUi;`, context);
   context.init({ db: {}, functions: {} }).setSession({ uid: 'userA' }, { role: 'user', active: true, fullName: 'User A' });
@@ -56,6 +56,36 @@ test('invoice remains visible when payment list fails, with a separate payment e
   assert.doesNotMatch(element('invoice-body').innerHTML, /Add payment/);
   assert.match(element('invoice-message').textContent, /Could not check payment submissions/);
   assert.match(element('payment-message').textContent, /permission-denied/);
+});
+
+test('paid invoice status remains paid when an older pending payment is still in the payment list', async () => {
+  const elements = new Map();
+  const element = id => { if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', textContent: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, close() {}, showModal() {} }); return elements.get(id); };
+  const invoice = { id: 'orderA', invoiceNumber: 'INV-SS-1', orderNumber: 'SS-1', ownerUid: 'userA', customerSnapshot: { fullName: 'Asha' }, totalPaise: 10000, verifiedPaidPaise: 10000, paymentStatus: 'paid' };
+  const payment = { id: 'old-pending', invoiceId: 'orderA', verificationStatus: 'unverified' };
+  const context = { document: { getElementById: element, addEventListener() {} }, isStaff, hasPermission, showToast() {}, listInvoices: async () => [invoice], listPayments: async () => [payment], callOperation: async () => ({ payments: [] }), downloadXlsx: async () => {} };
+  const source = readFileSync(new URL('../js/finance-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initFinanceUi', 'function initFinanceUi');
+  vm.runInNewContext(`${source}\nthis.init = initFinanceUi;`, context);
+  context.init({ db: {}, functions: {} }).setSession({ uid: 'userA' }, { role: 'user', active: true, fullName: 'User A' });
+  for (let i = 0; i < 10 && !element('invoice-body').innerHTML.includes('INV-SS-1'); i++) await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(element('invoice-body').innerHTML, /status-badge is-paid">Paid<\/span>/);
+  assert.doesNotMatch(element('invoice-body').innerHTML, /In process|Add payment/);
+  element('invoice-status').value = 'paid';
+  element('invoice-status').listeners.input();
+  assert.match(element('invoice-body').innerHTML, /INV-SS-1/);
+});
+
+test('fully verified legacy invoice appears paid without another approval action', async () => {
+  const elements = new Map();
+  const element = id => { if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', textContent: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, close() {}, showModal() {} }); return elements.get(id); };
+  const invoice = { id: 'orderA', invoiceNumber: 'INV-SS-1', orderNumber: 'SS-1', ownerUid: 'userA', customerSnapshot: { fullName: 'Asha' }, totalPaise: 10000, verifiedPaidPaise: 10000, paymentStatus: 'ready_to_mark_paid' };
+  const context = { document: { getElementById: element, addEventListener() {} }, isStaff, hasPermission, showToast() {}, listInvoices: async () => [invoice], listPayments: async () => [], callOperation: async () => ({ payments: [] }), downloadXlsx: async () => {} };
+  const source = readFileSync(new URL('../js/finance-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initFinanceUi', 'function initFinanceUi');
+  vm.runInNewContext(`${source}\nthis.init = initFinanceUi;`, context);
+  context.init({ db: {}, functions: {} }).setSession({ uid: 'userA' }, { role: 'user', active: true, fullName: 'User A' });
+  for (let i = 0; i < 10 && !element('invoice-body').innerHTML.includes('INV-SS-1'); i++) await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(element('invoice-body').innerHTML, /status-badge is-paid">Paid<\/span>/);
+  assert.doesNotMatch(element('invoice-body').innerHTML, /Mark as Paid/);
 });
 
 test('pending payment shows In process, hides Add payment, and collection cards count verified funds only', async () => {
@@ -71,7 +101,7 @@ test('pending payment shows In process, hides Add payment, and collection cards 
     { id: 'online', invoiceId: 'orderA', mode: 'bank_transfer', amountPaise: 2000, verificationStatus: 'verified' },
     { id: 'reversed', invoiceId: 'orderA', mode: 'upi', amountPaise: 1000, verificationStatus: 'verified', reversalId: 'reversal' },
   ];
-  const context = { document: { getElementById: element, addEventListener() {} }, isStaff, showToast() {}, listInvoices: async () => [invoice], listPayments: async () => payments, callOperation: async () => ({ payments: [] }), downloadXlsx: async () => {} };
+  const context = { document: { getElementById: element, addEventListener() {} }, isStaff, hasPermission, showToast() {}, listInvoices: async () => [invoice], listPayments: async () => payments, callOperation: async () => ({ payments: [] }), downloadXlsx: async () => {} };
   const source = readFileSync(new URL('../js/finance-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initFinanceUi', 'function initFinanceUi');
   vm.runInNewContext(`${source}\nthis.init = initFinanceUi;`, context);
   const ui = context.init({ db: {}, functions: {} });
@@ -101,7 +131,7 @@ test('payment form starts with the outstanding amount and reports a failed save'
   const invoice = { id: 'orderA', invoiceNumber: 'INV-SS-1', orderNumber: 'SS-1', ownerUid: 'userA', customerSnapshot: { fullName: 'Asha' }, totalPaise: 10000, verifiedPaidPaise: 2500, paymentStatus: 'partially_paid' };
   let rejectSave;
   const context = {
-    document: { getElementById: element, addEventListener() {} }, crypto: { randomUUID: () => 'request-1' }, isStaff, showToast() {},
+    document: { getElementById: element, addEventListener() {} }, uniqueId: () => 'request-1', isStaff, hasPermission, showToast() {},
     listInvoices: async () => [invoice], listPayments: async () => [],
     callOperation: async (_functions, name, data) => { calls.push({ name, data }); return new Promise((_resolve, reject) => { rejectSave = reject; }); },
     FormData: class { get(name) { return { amount: '75.00', mode: 'cash', reference: '' }[name]; } },

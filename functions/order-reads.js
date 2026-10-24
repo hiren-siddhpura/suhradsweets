@@ -4,7 +4,7 @@ async function viewer(db, uid) {
   if (!validId(uid)) fail('Sign in is required.');
   const snap = await db.doc(`users/${uid}`).get();
   if (!snap.exists || snap.data().active !== true || !['admin', 'account_admin', 'user'].includes(snap.data().role)) fail('Active OMS access is required.');
-  return { uid, staff: snap.data().role !== 'user' };
+  return { uid, staff: ['admin', 'account_admin'].includes(snap.data().role) };
 }
 const uniqueIds = (values, max) => {
   if (!Array.isArray(values) || values.length > max || values.some((id) => !validId(id))) fail('Invalid record selection.');

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { quantityInKg, summarizeOrderKg, targetPercentage, validateTargetKg } from '../js/dashboard-metrics.js';
+import { hasPermission } from '../js/permissions.js';
 
 test('a missing dashboard index preserves other cards without a visible warning or link', async () => {
   const elements = new Map();
@@ -14,11 +15,12 @@ test('a missing dashboard index preserves other cards without a visible warning 
   const missingIndex = Object.assign(new Error('The query requires an index. https://console.firebase.google.com/v1/r/project/example/firestore/indexes?create_composite=example'), { code: 'failed-precondition' });
   const context = {
     document: { getElementById: element, querySelector: () => null, addEventListener() {}, createElement: () => ({}) },
-    isStaff: (profile) => profile?.role === 'admin', showToast() {}, callOperation() {}, downloadXlsx() {},
+    isStaff: (profile) => profile?.role === 'admin', hasPermission, showToast() {}, callOperation() {}, downloadXlsx() {},
     reportUsers: async () => [], targetPercentage,
     dashboardOrderKg: async () => ({ orderCount: 7, totalKg: 10, items: [{ name: 'Sweet', kg: 10 }], excludedQuantities: 0 }),
     dashboardTargetKg: async () => { targetReads++; return 20; },
     dashboardStockKg: async () => { stockReads++; throw missingIndex; },
+    listInvoices: async () => [{ paymentStatus: 'unpaid' }, { paymentStatus: 'paid' }],
     recentActivity: async () => { activityReads++; return []; }, activeAnnouncements: async () => { announcementReads++; throw missingIndex; },
     currentTargets: async () => [], targetAchievement: async () => 0,
     console: { warn() {} }, Intl, Date, Set, Object, Promise, Number, String,
@@ -48,7 +50,8 @@ test('a missing dashboard index preserves other cards without a visible warning 
   assert.equal((element('dashboard-cards').innerHTML.match(/class="card stat-card/g) || []).length, 1);
   assert.equal(element('dashboard-activity-panel').hidden, true);
   assert.equal(element('dashboard-announcements-panel').hidden, true);
-  assert.deepEqual([targetReads, stockReads, activityReads, announcementReads], priorReads);
+  assert.deepEqual([targetReads, stockReads, activityReads, announcementReads], [priorReads[0], priorReads[1], priorReads[2], priorReads[3]]);
+  assert.equal(elements.has('dashboard-priority'), false);
 });
 
 test('KG conversion excludes count units and sales snapshots count combos once', () => {

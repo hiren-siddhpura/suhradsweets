@@ -2,16 +2,16 @@ import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { OperationError, savePurchaseDraft, confirmPurchase, cancelPurchase, adjustStock, setInventoryControl } from './operations.js';
-import { saveCustomer, saveSpecialProduct, saveOrderDraft, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment } from './order-operations.js';
+import { saveCustomer, saveSpecialProduct, saveOrderDraft, confirmOrder, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment } from './order-operations.js';
 import { submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid } from './finance-operations.js';
 import { saveTarget, saveAnnouncement, saveUserProfile } from './reporting-operations.js';
 import { deleteCustomer } from './customer-operations.js';
-import { manageUser } from './user-operations.js';
+import { manageUser, sendUserSetupLink } from './user-operations.js';
 import { getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity } from './order-reads.js';
 
 initializeApp();
 const db = getFirestore();
-const operations = { savePurchaseDraft, confirmPurchase, cancelPurchase, adjustStock, setInventoryControl, saveCustomer, saveSpecialProduct, saveOrderDraft, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment, getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity, submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid, saveTarget, saveAnnouncement, saveUserProfile };
+const operations = { savePurchaseDraft, confirmPurchase, cancelPurchase, adjustStock, setInventoryControl, saveCustomer, saveSpecialProduct, saveOrderDraft, confirmOrder, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment, getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity, submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid, saveTarget, saveAnnouncement, saveUserProfile };
 
 function callable(name) {
   return onCall({ region: 'us-central1', maxInstances: 3, cors: true }, async (request) => {
@@ -19,10 +19,12 @@ function callable(name) {
     try {
       const data = request.data || {};
       if (name === 'saveUserProfile') return await manageUser(db, request.auth.uid, data);
+      if (name === 'sendUserSetupLink') return await sendUserSetupLink(db, request.auth.uid, data);
       if (name === 'deleteCustomer') return await deleteCustomer(db, request.auth.uid, data);
       if (['savePurchaseDraft', 'adjustStock', 'setInventoryControl', 'saveCustomer', 'saveSpecialProduct', 'saveOrderDraft', 'archiveOrder', 'restoreOrder', 'requestOrderPayment', 'getOrderStock', 'getPaymentNames', 'listOrderActivity', 'listPaymentActivity', 'submitPayment', 'reviewPayment', 'changePaymentMode', 'reversePayment', 'markInvoicePaid', 'saveTarget', 'saveAnnouncement', 'saveUserProfile'].includes(name)) return await operations[name](db, request.auth.uid, data);
       if (name === 'cancelPurchase') return await operations[name](db, request.auth.uid, data.purchaseId, data.reason);
       if (name === 'createInvoiceFromOrder') return await operations[name](db, request.auth.uid, data.orderId);
+      if (name === 'confirmOrder') return await operations[name](db, request.auth.uid, data.orderId);
       if (name === 'cancelOrder') return await operations[name](db, request.auth.uid, data.orderId, data.reason);
       if (name === 'advanceOrder') return await operations[name](db, request.auth.uid, data.orderId, data.nextStatus);
       if (name === 'setOrderTaking') return await operations[name](db, request.auth.uid, data.acceptingOrders, data.reason);
@@ -32,7 +34,7 @@ function callable(name) {
         console.error('Trusted operation failed:', error);
         throw new HttpsError('internal', 'The operation could not be completed. Try again later.');
       }
-      const code = error.message.includes('access is required') ? 'permission-denied' : 'failed-precondition';
+      const code = error.message.includes('access is required') || error.message.includes('Access denied') ? 'permission-denied' : 'failed-precondition';
       throw new HttpsError(code, error.message);
     }
   });
@@ -47,6 +49,7 @@ export const saveCustomerCall = callable('saveCustomer');
 export const deleteCustomerCall = callable('deleteCustomer');
 export const saveSpecialProductCall = callable('saveSpecialProduct');
 export const saveOrderDraftCall = callable('saveOrderDraft');
+export const confirmOrderCall = callable('confirmOrder');
 export const archiveOrderCall = callable('archiveOrder');
 export const restoreOrderCall = callable('restoreOrder');
 export const requestOrderPaymentCall = callable('requestOrderPayment');
@@ -66,3 +69,4 @@ export const markInvoicePaidCall = callable('markInvoicePaid');
 export const saveTargetCall = callable('saveTarget');
 export const saveAnnouncementCall = callable('saveAnnouncement');
 export const saveUserProfileCall = callable('saveUserProfile');
+export const sendUserSetupLinkCall = callable('sendUserSetupLink');

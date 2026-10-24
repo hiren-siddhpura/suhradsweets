@@ -17,6 +17,9 @@ export async function manageUser(db, uid, input, auth = getAuth()) {
   const fullName = String(input.fullName || input.displayName || '').trim();
   if (!text(fullName, 80) || !['admin', 'account_admin', 'user'].includes(input.role) || typeof input.active !== 'boolean') fail('Full name, role and active status are required.');
   if (input.targetUid && !validId(input.targetUid)) fail('Invalid user ID.');
+  const password = String(input.password || '');
+  if (input.targetUid && password) fail('Use the password setup email to change an existing password.');
+  if (password && (password.length < 8 || password.length > 128)) fail('Password must be 8 to 128 characters.');
   // Check authorization before making privileged Auth lookups.
   await db.runTransaction(async tx => {
     const old = input.targetUid ? await tx.get(db.doc(`users/${input.targetUid}`)) : null;
@@ -53,7 +56,7 @@ export async function manageUser(db, uid, input, auth = getAuth()) {
   const ref = db.doc(`users/${operation.targetUid}`);
   try {
     if (operation.create) {
-      try { await auth.createUser({ uid: operation.targetUid, email, displayName: fullName, disabled: true }); }
+      try { await auth.createUser({ uid: operation.targetUid, email, displayName: fullName, disabled: true, ...(password ? { password } : {}) }); }
       catch (error) {
         if (error.code !== 'auth/uid-already-exists') throw error;
         const account = await auth.getUser(operation.targetUid);
@@ -85,4 +88,34 @@ export async function manageUser(db, uid, input, auth = getAuth()) {
     if (error.code === 'auth/user-not-found') fail('The matching Authentication account is missing. Administrative review is required.');
     fail(error.message?.includes('access is required') || error.message?.includes('staff roles') ? error.message : 'User setup is incomplete. Access remains blocked. Retry with the same details; administrative recovery may be required.');
   }
+}
+
+// Firebase Admin can generate a reset link but does not deliver email. Identity
+// Toolkit's sendOobCode endpoint sends Firebase's configured action email.
+export async function sendUserSetupLink(db, uid, input, auth = getAuth(), send = fetch) {
+  const targetUid = input?.targetUid;
+  if (!validId(uid) || !validId(targetUid)) fail('Select a valid user account.');
+  const [actorSnap, targetSnap] = await Promise.all([db.doc(`users/${uid}`).get(), db.doc(`users/${targetUid}`).get()]);
+  const actor = actorSnap.data(), target = targetSnap.data();
+  if (!actorSnap.exists || actor?.active !== true || !['admin', 'account_admin'].includes(actor.role)) fail('Active Admin or Account Admin access is required.');
+  if (!targetSnap.exists || target?.active !== true) fail('This account is inactive or unavailable. Refresh the list.');
+  if (actor.role === 'account_admin' && target.role !== 'user') fail('Only an Admin can manage staff roles.');
+  if (targetUid === uid) fail('Use your own password reset flow.');
+  const account = await auth.getUser(targetUid).catch((error) => {
+    if (error.code === 'auth/user-not-found') fail('The Authentication account is missing. Ask an administrator to review it.');
+    throw error;
+  });
+  if (account.disabled) fail('This Authentication account is disabled. Reactivate it before sending a link.');
+  const email = String(account.email || '').trim().toLowerCase();
+  if (!email || email !== String(target.email || '').trim().toLowerCase()) fail('The profile email does not match Authentication. Refresh or correct the account before retrying.');
+  const apiKey = process.env.AUTH_WEB_API_KEY || (process.env.FIREBASE_AUTH_EMULATOR_HOST ? 'demo-local-key' : '');
+  if (!apiKey) fail('Password setup email is not configured. Set AUTH_WEB_API_KEY on the Functions backend.');
+  const host = process.env.FIREBASE_AUTH_EMULATOR_HOST;
+  const base = host ? `http://${host}/identitytoolkit.googleapis.com/v1/accounts:sendOobCode` : 'https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode';
+  let response;
+  try {
+    response = await send(`${base}?key=${encodeURIComponent(apiKey)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestType: 'PASSWORD_RESET', email }) });
+  } catch { fail('Firebase email service could not be reached. Try again.'); }
+  if (!response.ok) fail('Firebase could not send the setup email. Check Email/Password sign-in and the authorized email template, then retry.');
+  return { email };
 }

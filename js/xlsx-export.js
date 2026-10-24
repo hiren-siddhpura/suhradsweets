@@ -9,7 +9,7 @@ export function safeSpreadsheetRows(rows) {
 }
 
 let libraryPromise;
-async function sheetJs() {
+export async function loadSheetJs() {
   if (window.XLSX) return window.XLSX;
   libraryPromise ||= new Promise((resolve, reject) => {
     const script = document.createElement('script');
@@ -22,7 +22,7 @@ async function sheetJs() {
 }
 
 export async function downloadXlsx(name, sheets) {
-  const XLSX = await sheetJs();
+  const XLSX = await loadSheetJs();
   const book = XLSX.utils.book_new();
   for (const [title, rows] of sheets) {
     const sheet = XLSX.utils.json_to_sheet(safeSpreadsheetRows(rows));

@@ -1,9 +1,10 @@
-import { isStaff } from './permissions.js';
+import { hasPermission, isStaff } from './permissions.js';
 import { showToast } from './ui.js';
 import { callOperation } from './operations-data.js';
 import { activeAnnouncements, allReportRows, dashboardOrderKg, dashboardStockKg, dashboardTargetKg, recentActivity, reportPage, reportUsers, targetAchievement } from './reporting-data.js';
 import { targetPercentage } from './dashboard-metrics.js';
 import { downloadXlsx } from './xlsx-export.js';
+import { actionLabel, activityDate, changeSummary, references } from './activity-format.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -21,12 +22,13 @@ const issue = (error) => {
 const card = (label, value) => `<div class="card ops-stat"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
 const empty = (count, text) => `<tr><td colspan="${count}" class="empty-cell">${esc(text)}</td></tr>`;
 const textField = (label, name, value = '', extra = '') => `<label class="ops-field">${label}<input name="${name}" value="${esc(value)}" ${extra}></label>`;
-const detailText = (detail) => Object.entries(detail || {}).map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`).join('; ');
 
 export function initReportingUi({ db, functions }) {
+  document.querySelector('#auditLogs-view thead')?.replaceChildren(...(() => { const row = document.createElement('tr'); row.innerHTML = '<th>Date and time</th><th>Action</th><th>Actor</th><th>Record</th><th>Summary</th>'; return [row]; })());
   let user = null, profile = null, users = [], revision = 0, dashboardRun = 0, dialogKind = '', editing = null;
   const state = Object.fromEntries(['target', 'announcement', 'login', 'audit'].map((name) => [name, { page: 1, cursors: [null], rows: [], hasMore: false, busy: false }]));
   const staff = () => isStaff(profile);
+  const canManage = (kind) => hasPermission(profile, kind === 'target' ? 'manageTargets' : 'manageAnnouncements');
   const userName = (uid) => { const entry = users.find((item) => item.id === uid); return entry?.displayName || entry?.fullName || (uid === user?.uid ? profile?.displayName || profile?.fullName : '') || uid || '—'; };
   const mapping = { target: 'targets', announcement: 'announcements', login: 'loginLogs', audit: 'auditLogs' };
   const filters = (kind) => ({
@@ -41,7 +43,7 @@ export function initReportingUi({ db, functions }) {
   const ownUid = (kind) => kind === 'target' && !staff() ? user.uid : null;
 
   async function load(kind, reset = false) {
-    if (!profile || (kind !== 'target' && !staff())) return;
+    if (!profile || kind === 'target' && !canManage('target') || kind === 'announcement' && !canManage('announcement') || ['login', 'audit'].includes(kind) && !staff()) return;
     const version = revision, cursorState = state[kind];
     if (reset) { cursorState.page = 1; cursorState.cursors = [null]; }
     cursorState.busy = true; $(`${kind}-message`).textContent = 'Loading records…';
@@ -63,17 +65,17 @@ export function initReportingUi({ db, functions }) {
       const achieved = await Promise.all(rows.map((entry) => targetAchievement(db, entry).catch(() => null)));
       if (version !== revision) return;
       $('target-cards').innerHTML = card('Targets on page', rows.length) + card('Active on page', rows.filter((entry) => entry.active).length) + card('Target value on page', money(rows.reduce((sum, entry) => sum + Number(entry.targetPaise || 0), 0)));
-      $('target-body').innerHTML = rows.length ? rows.map((entry, index) => `<tr><td>${esc(userName(entry.ownerUid))}</td><td>${esc(entry.periodType)}</td><td>${esc(entry.periodStart)} to ${esc(entry.periodEnd)}</td><td>${esc(money(entry.targetPaise))}</td><td>${achieved[index] === null ? 'Unavailable' : esc(money(achieved[index]))}</td><td>${entry.targetPaise === 0 ? 'N/A' : achieved[index] === null ? 'Unavailable' : `${esc(((achieved[index] / entry.targetPaise) * 100).toFixed(1))}%`}</td><td>${entry.active ? 'Active' : 'Inactive'}</td><td class="ops-actions">${staff() ? `<button data-report="edit" data-kind="target" data-id="${esc(entry.id)}">Edit</button>${entry.active ? `<button data-report="deactivate" data-kind="target" data-id="${esc(entry.id)}">Deactivate</button>` : ''}` : ''}</td></tr>`).join('') : empty(8, 'No targets match these filters.');
+      $('target-body').innerHTML = rows.length ? rows.map((entry, index) => `<tr><td>${esc(userName(entry.ownerUid))}</td><td>${esc(entry.periodType)}</td><td>${esc(entry.periodStart)} to ${esc(entry.periodEnd)}</td><td>${esc(money(entry.targetPaise))}</td><td>${achieved[index] === null ? 'Unavailable' : esc(money(achieved[index]))}</td><td>${entry.targetPaise === 0 ? 'N/A' : achieved[index] === null ? 'Unavailable' : `${esc(((achieved[index] / entry.targetPaise) * 100).toFixed(1))}%`}</td><td>${entry.active ? 'Active' : 'Inactive'}</td><td class="ops-actions">${canManage('target') ? `<button data-report="edit" data-kind="target" data-id="${esc(entry.id)}">Edit</button>${entry.active ? `<button data-report="deactivate" data-kind="target" data-id="${esc(entry.id)}">Deactivate</button>` : ''}` : ''}</td></tr>`).join('') : empty(8, 'No targets match these filters.');
     } else if (kind === 'announcement') {
       const day = today();
       $('announcement-cards').innerHTML = card('Announcements on page', rows.length) + card('Currently visible', rows.filter((entry) => entry.active && entry.startsOn <= day && entry.expiresOn >= day).length) + card('Expired on page', rows.filter((entry) => entry.expiresOn < day).length);
-      $('announcement-body').innerHTML = rows.length ? rows.map((entry) => `<tr><td>${esc(entry.title)}<small>${esc(entry.body)}</small></td><td>${esc(entry.audience)}</td><td>${esc(entry.startsOn)}</td><td>${esc(entry.expiresOn)}</td><td>${entry.active ? entry.expiresOn < day ? 'Expired' : entry.startsOn > day ? 'Scheduled' : 'Active' : 'Inactive'}</td><td class="ops-actions"><button data-report="edit" data-kind="announcement" data-id="${esc(entry.id)}">Edit</button>${entry.active ? `<button data-report="deactivate" data-kind="announcement" data-id="${esc(entry.id)}">Deactivate</button>` : ''}</td></tr>`).join('') : empty(6, 'No announcements match these filters.');
+      $('announcement-body').innerHTML = rows.length ? rows.map((entry) => `<tr><td>${esc(entry.title)}<small>${esc(entry.body)}</small></td><td>${esc(entry.audience)}</td><td>${esc(entry.startsOn)}</td><td>${esc(entry.expiresOn)}</td><td>${entry.active ? entry.expiresOn < day ? 'Expired' : entry.startsOn > day ? 'Scheduled' : 'Active' : 'Inactive'}</td><td class="ops-actions">${canManage('announcement') ? `<button data-report="edit" data-kind="announcement" data-id="${esc(entry.id)}">Edit</button>${entry.active ? `<button data-report="deactivate" data-kind="announcement" data-id="${esc(entry.id)}">Deactivate</button>` : ''}` : ''}</td></tr>`).join('') : empty(6, 'No announcements match these filters.');
     } else if (kind === 'login') {
       $('login-cards').innerHTML = card('Events on page', rows.length) + card('Logins on page', rows.filter((entry) => entry.type === 'login').length) + card('Logouts on page', rows.filter((entry) => entry.type === 'logout').length);
       $('login-body').innerHTML = rows.length ? rows.map((entry) => `<tr><td>${esc(localDate(entry.at))}</td><td>${esc(entry.type)}</td><td>${esc(userName(entry.uid))}<small>${esc(entry.uid)}</small></td></tr>`).join('') : empty(3, 'No login events match these filters.');
     } else {
       $('audit-cards').innerHTML = card('Actions on page', rows.length) + card('Actors on page', new Set(rows.map((entry) => entry.actorUid)).size) + card('Entities on page', new Set(rows.map((entry) => entry.referenceId)).size);
-      $('audit-body').innerHTML = rows.length ? rows.map((entry) => `<tr><td>${esc(localDate(entry.at))}</td><td>${esc(entry.type)}</td><td>${esc(userName(entry.actorUid))}<small>${esc(entry.actorUid)}</small></td><td>${esc(entry.referenceType)} / ${esc(entry.referenceId)}</td><td>${esc(detailText(entry.detail))}</td></tr>`).join('') : empty(5, 'No audit events match these filters.');
+      $('audit-body').innerHTML = rows.length ? rows.map((entry) => { const ref = references(entry, { actor: userName(entry.actorUid) }); const entity = ref.order !== 'Not available' ? `Order ${ref.order}` : ref.invoice !== 'Not available' ? `Invoice ${ref.invoice}` : ref.customer !== 'Not available' ? `Customer ${ref.customer}` : 'Record not available'; return `<tr><td>${esc(activityDate(entry.at))}</td><td>${esc(actionLabel(entry.type))}</td><td>${esc(ref.actor)}</td><td>${esc(entity)}</td><td>${esc(changeSummary(entry))}<details class="technical-audit"><summary>Technical details</summary><span>Type: ${esc(entry.referenceType || 'Not available')} · Reference: ${esc(entry.referenceId || 'Not available')}</span></details></td></tr>`; }).join('') : empty(5, 'No audit events match these filters.');
     }
   }
 
@@ -96,6 +98,7 @@ export function initReportingUi({ db, functions }) {
       }
       return;
     }
+    const stockPromise = dashboardStockKg(db, profile.role);
     const labels = ['Total Orders', 'Target Achievement', 'Available Stock', 'Total Selling'];
     const icons = ['◫', '%', '◇', '▤'];
     const kg = (amount) => Number(amount).toLocaleString('en-IN', { maximumFractionDigits: 3 });
@@ -107,7 +110,7 @@ export function initReportingUi({ db, functions }) {
     try {
       const results = await Promise.allSettled([
         dashboardOrderKg(db, profile.role, user.uid), dashboardTargetKg(db),
-        dashboardStockKg(db, profile.role), recentActivity(db, profile.role, user.uid), activeAnnouncements(db, profile.role, day),
+        stockPromise, recentActivity(db, profile.role, user.uid), activeAnnouncements(db, profile.role, day),
       ]);
       if (version !== revision || run !== dashboardRun) return;
       const errors = [];
@@ -126,7 +129,7 @@ export function initReportingUi({ db, functions }) {
       if (orders?.excludedQuantities) hints[3] += ' · Non-weight or invalid units excluded from KG totals.';
       if (stock?.excludedQuantities) hints[2] += ' · Non-weight or invalid records excluded from KG totals.';
       $('dashboard-cards').innerHTML = labels.map((label, index) => dashboardCard(label, content[index], index, hints[index])).join('');
-      $('dashboard-activity').innerHTML = activity === null ? empty(4, 'Recent activity is temporarily unavailable.') : activity.length ? activity.map((entry) => `<tr><td>${esc(localDate(entry.at))}</td><td>${esc(entry.type)}</td><td>${esc(userName(entry.actorUid))}</td><td>${esc(entry.referenceType)} / ${esc(entry.referenceId)}</td></tr>`).join('') : empty(4, 'No recent activity.');
+      $('dashboard-activity').innerHTML = activity === null ? empty(4, 'Recent activity is temporarily unavailable.') : activity.length ? activity.map((entry) => { const ref = references(entry, { actor: userName(entry.actorUid) }); const record = ref.order !== 'Not available' ? `Order ${ref.order}` : ref.invoice !== 'Not available' ? `Invoice ${ref.invoice}` : ref.customer !== 'Not available' ? `Customer ${ref.customer}` : 'Record not available'; return `<tr><td>${esc(activityDate(entry.at))}</td><td>${esc(actionLabel(entry.type))}</td><td>${esc(ref.actor)}</td><td>${esc(record)}</td></tr>`; }).join('') : empty(4, 'No recent activity.');
       $('dashboard-announcements').innerHTML = announcements === null ? '<p>Announcements are temporarily unavailable.</p>' : announcements.length ? announcements.map((entry) => `<div class="report-announcement"><strong>${esc(entry.title)}</strong><p>${esc(entry.body)}</p><small>Until ${esc(entry.expiresOn)}</small></div>`).join('') : '<p>No active announcements.</p>';
       for (const error of errors) {
         console.warn('[OMS dashboard]', { code: String(error?.code || 'unknown'), category: /index/i.test(error?.message || '') ? 'missing-index' : 'query-failed' });
@@ -135,7 +138,7 @@ export function initReportingUi({ db, functions }) {
   }
 
   function openDialog(kind, record = null) {
-    if (!staff()) return;
+    if (!canManage(kind)) return;
     dialogKind = kind; editing = record; $('report-error').hidden = true;
     $('report-dialog-title').textContent = kind === 'target' ? record ? 'Edit target' : 'Set target' : record ? 'Edit announcement' : 'New announcement';
     if (kind === 'target') {
@@ -147,14 +150,14 @@ export function initReportingUi({ db, functions }) {
   }
 
   async function exportReport(kind) {
-    if (!profile || kind !== 'target' && !staff()) return;
+    if (!profile || kind === 'target' && !canManage('target') || kind === 'announcement' && !canManage('announcement') || ['login', 'audit'].includes(kind) && !staff()) return;
     $(`${kind}-message`).textContent = 'Preparing authorized, filtered export…';
     try {
       const rows = await allReportRows(db, mapping[kind], filters(kind), ownUid(kind));
       const data = kind === 'target' ? await Promise.all(rows.map(async (entry) => { const achieved = await targetAchievement(db, entry); return { User: userName(entry.ownerUid), 'User UID': entry.ownerUid, Period: entry.periodType, 'Start date': entry.periodStart, 'End date': entry.periodEnd, 'Target (INR)': entry.targetPaise / 100, 'Eligible sales (INR)': achieved / 100, 'Achievement (%)': entry.targetPaise === 0 ? 'N/A' : Number((achieved / entry.targetPaise * 100).toFixed(1)), Status: entry.active ? 'Active' : 'Inactive' }; }))
         : kind === 'announcement' ? rows.map((entry) => ({ Title: entry.title, Message: entry.body, Audience: entry.audience, 'Start date': entry.startsOn, 'Expiry date': entry.expiresOn, Status: entry.active ? 'Active' : 'Inactive' }))
           : kind === 'login' ? rows.map((entry) => ({ 'Date and time': localDate(entry.at), Event: entry.type, User: userName(entry.uid), 'User UID': entry.uid }))
-            : rows.map((entry) => ({ 'Date and time': localDate(entry.at), Action: entry.type, Actor: userName(entry.actorUid), 'Actor UID': entry.actorUid, 'Entity type': entry.referenceType, 'Entity ID': entry.referenceId, Details: detailText(entry.detail) }));
+            : rows.map((entry) => { const ref = references(entry, { actor: userName(entry.actorUid) }); return { 'Date and time': activityDate(entry.at), Action: actionLabel(entry.type), Actor: ref.actor, Customer: ref.customer, Order: ref.order, Invoice: ref.invoice, Summary: changeSummary(entry) }; });
       await downloadXlsx(kind, [[kind, data]]); $(`${kind}-message`).textContent = '';
     } catch (error) { $(`${kind}-message`).textContent = `Export failed: ${issue(error)}`; }
   }
@@ -173,7 +176,7 @@ export function initReportingUi({ db, functions }) {
   document.addEventListener('oms:dashboard-targetchange', () => { if (!document.getElementById('dashboard-view').hidden) dashboard(); });
   $('report-dialog-close').onclick = $('report-cancel').onclick = () => $('report-dialog').close();
   for (const kind of ['target', 'announcement']) $(`${kind}-body`).addEventListener('click', async (event) => {
-    const button = event.target.closest('[data-report]'); if (!button || !staff()) return;
+    const button = event.target.closest('[data-report]'); if (!button || !canManage(kind)) return;
     const record = state[kind].rows.find((entry) => entry.id === button.dataset.id); if (!record) return;
     if (button.dataset.report === 'edit') { openDialog(kind, record); return; }
     try {
@@ -183,7 +186,9 @@ export function initReportingUi({ db, functions }) {
     } catch (error) { showToast(issue(error), 'toast-error'); }
   });
   $('report-form').addEventListener('submit', async (event) => {
-    event.preventDefault(); $('report-save').disabled = true; $('report-error').hidden = true;
+    event.preventDefault();
+    if (!canManage(dialogKind)) { $('report-error').textContent = 'Access denied: a privileged OMS role is required.'; $('report-error').hidden = false; return; }
+    $('report-save').disabled = true; $('report-error').hidden = true;
     try {
       const values = new FormData(event.currentTarget);
       if (dialogKind === 'target') {
@@ -202,7 +207,7 @@ export function initReportingUi({ db, functions }) {
   });
   return { async setSession(nextUser, nextProfile) {
     revision++; user = nextUser; profile = nextProfile; users = [];
-    $('target-new').hidden = !staff(); $('target-users').hidden = !staff(); $('announcement-new').hidden = !staff(); $('target-user').hidden = !staff();
+    $('target-new').hidden = !canManage('target'); $('target-users').hidden = !hasPermission(profile, 'manageUsers'); $('announcement-new').hidden = !canManage('announcement'); $('target-user').hidden = !canManage('target');
     if (!user || !profile) { $('dashboard-cards').innerHTML = ''; return; }
     const version = revision;
     if (staff()) {

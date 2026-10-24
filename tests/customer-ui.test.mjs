@@ -1,4 +1,4 @@
-import { validateProfile } from '../js/permissions.js';
+import { hasPermission, validateProfile } from '../js/permissions.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -13,10 +13,10 @@ test('customer form shows Firestore denial, keeps the dialog open and reuses the
     return elements.get(id);
   };
   const fields = new Map(Object.entries({ fullName: 'Local customer', contact: '9876543210', address: 'Street', area: 'Area', dateOfBirth: '', sabha: 'false' }));
-  const context = { validateProfile, validateCustomerInput,
+  const context = { validateProfile, hasPermission, validateCustomerInput,
     document: { getElementById: getElement, addEventListener() {}, querySelector: () => null },
     isStaff: (profile) => profile?.role === 'admin', showToast() {}, customerSaveError,
-    crypto: { randomUUID: () => 'stable-customer-submission' }, FormData: class { get(name) { return fields.get(name); } },
+    uniqueId: () => 'stable-customer-submission', FormData: class { get(name) { return fields.get(name); } },
     saveCustomerDirect: async (_db, _auth, _data, options) => { submittedIds.push(options.customerId); throw { code: 'permission-denied' }; },
     callOperation: async () => { callableRequests++; },
   };
@@ -33,10 +33,12 @@ test('customer form shows Firestore denial, keeps the dialog open and reuses the
   assert.equal(getElement('order-dialog-save').disabled, false);
 });
 
-test('customer field validation rejects empty fields and invalid dates', () => {
+test('customer field validation allows a blank address and defaults removed fields', () => {
   const valid = { fullName: ' Name ', contact: '9876543210', address: 'Street', area: 'West', dateOfBirth: '2024-02-29', sabha: false };
   assert.equal(validateCustomerInput(valid).fullName, 'Name');
-  for (const field of ['fullName', 'contact', 'address', 'area']) assert.throws(() => validateCustomerInput({ ...valid, [field]: ' ' }), /required/);
+  assert.equal(validateCustomerInput({ ...valid, address: ' ' }).address, '');
+  assert.deepEqual(validateCustomerInput({ fullName: 'Name', contact: '9876543210', address: '', area: 'West' }), { fullName: 'Name', contact: '9876543210', address: '', area: 'West', dateOfBirth: null, sabha: false });
+  for (const field of ['fullName', 'contact', 'area']) assert.throws(() => validateCustomerInput({ ...valid, [field]: ' ' }), /required/);
   assert.throws(() => validateCustomerInput({ ...valid, dateOfBirth: '2026-02-29' }), /valid date/);
   assert.throws(() => validateCustomerInput({ ...valid, dateOfBirth: 0 }), /valid date/);
 });
@@ -48,10 +50,10 @@ test('Delete confirms the escaped name and preserves the exact dependency error 
     return elements.get(id);
   };
   const linkedMessage = 'Cannot delete this customer because transaction records are linked to them.';
-  const context = { validateProfile,
+  const context = { validateProfile, hasPermission,
     document: { getElementById: element, addEventListener() {}, querySelector: () => null },
     isStaff: profile => ['admin', 'account_admin'].includes(profile?.role), showToast() {},
-    FormData: class {}, listCustomers: async () => [{ id: 'customer', fullName: 'Name <private>', contact: '9876543210' }],
+    FormData: class {}, listCustomers: async () => [{ id: 'customer', fullName: 'Name <private>', contact: '9876543210' }], listMasterRecords: async () => [],
     callOperation: async (_functions, name, payload) => { requests.push({ name, payload }); throw new Error(linkedMessage); },
     saveCustomerDirect: () => { throw new Error('Deletion must not use direct writes.'); },
   };
@@ -62,7 +64,7 @@ test('Delete confirms the escaped name and preserves the exact dependency error 
   await element('customer-refresh').listeners.click();
   assert.doesNotMatch(element('customer-body').innerHTML, /data-action="deleteCustomer"/);
   const emulatorUi = context.init({ db: {}, functions: {}, mode: 'emulator' });
-  emulatorUi.setSession({ uid: 'admin' }, { role: 'admin' });
+  emulatorUi.setSession({ uid: 'admin' }, { role: 'admin', active: true });
   await element('customer-refresh').listeners.click();
   assert.match(element('customer-body').innerHTML, /data-action="deleteCustomer"/);
   element('customer-body').listeners.click({ target: { closest: () => ({ dataset: { action: 'deleteCustomer', id: 'customer' } }) } });

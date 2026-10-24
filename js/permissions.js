@@ -7,6 +7,7 @@ export const ROLES = Object.freeze({
 const validRoles = new Set(Object.values(ROLES));
 const staffRoles = new Set([ROLES.ADMIN, ROLES.ACCOUNT_ADMIN]);
 const userPages = new Set(['dashboard', 'orders', 'customers', 'invoices', 'payments']);
+const staffPermissions = new Set(['manageMaster', 'manageStock', 'manageTargets', 'manageAnnouncements', 'manageUsers', 'verifyPayments', 'systemSettings', 'specialOrders']);
 
 export function validateProfile(profile) {
   if (!profile || typeof profile !== 'object') return 'missing';
@@ -25,6 +26,10 @@ export function profileName(profile, authUser = null) {
 
 export function isStaff(profile) {
   return !validateProfile(profile) && staffRoles.has(profile.role);
+}
+
+export function hasPermission(profile, permission) {
+  return isStaff(profile) && staffPermissions.has(permission);
 }
 
 export function canAccessPage(profile, page) {

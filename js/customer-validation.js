@@ -1,5 +1,5 @@
-const limits = { fullName: 120, contact: 80, address: 300, area: 100 };
-const labels = { fullName: 'Full name', contact: 'Contact', address: 'Address', area: 'Area' };
+const limits = { fullName: 120, contact: 80, area: 100 };
+const labels = { fullName: 'Full name', contact: 'Contact', area: 'Area' };
 
 export function validateCustomerInput(input) {
   const result = {};
@@ -8,14 +8,16 @@ export function validateCustomerInput(input) {
     result[field] = input[field].trim();
     if (result[field].length > limit) throw new Error(`${labels[field]} must be ${limit} characters or fewer.`);
   }
+  if (typeof input?.address !== 'string') throw new Error('Address must be text.');
+  result.address = input.address.trim();
+  if (result.address.length > 300) throw new Error('Address must be 300 characters or fewer.');
   if (!normalizeCustomerContact(result.contact)) throw new Error('Enter a valid contact.');
   const birth = input.dateOfBirth === undefined || input.dateOfBirth === null || input.dateOfBirth === '' ? null : input.dateOfBirth;
   if (birth !== null) {
     const date = typeof birth === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(birth) ? new Date(`${birth}T00:00:00Z`) : null;
     if (!date || !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== birth) throw new Error('Enter a valid date of birth.');
   }
-  if (typeof input.sabha !== 'boolean') throw new Error('Choose a Sabha value.');
-  return { ...result, dateOfBirth: birth, sabha: input.sabha };
+  return { ...result, dateOfBirth: birth, sabha: input.sabha === true };
 }
 
 export function normalizeCustomerContact(contact) {

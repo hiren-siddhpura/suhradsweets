@@ -31,17 +31,17 @@ test('creation obtains the UID, writes a matching profile and retries without du
   const profile = (await db.doc(`users/${first.targetUid}`).get()).data();
   assert.equal(profile.fullName, values.fullName); assert.equal(profile.email, values.email); assert.equal(profile.role, 'user');
   assert.ok(profile.createdAt); assert.ok(profile.updatedAt); assert.equal(profile.password, undefined);
-  assert.equal((await db.collection('users').get()).size, 5);
+  assert.equal((await db.collection('users').get()).size, 6);
   assert.equal((await db.collection('auditLogs').where('type', '==', 'user.created').get()).size, 1);
 });
-test('only Admin can grant privileged roles; self, anonymous, inactive and ordinary access denied', async () => {
+test('Admin manages users and roles; Account Admin is limited to User profiles', async () => {
   for (const uid of ['', 'missing', 'inactive', 'user']) await assert.rejects(save(values, uid));
-  await assert.rejects(save({ ...values, role: 'admin' }, 'account'), /Only an Admin/);
+  await assert.rejects(save({ ...values, role: 'admin' }, 'account'), /Access denied/);
+  await assert.rejects(save({ ...values, role: 'owner' }), /required/);
   await assert.rejects(save({ ...values, targetUid: 'admin' }), /own profile/);
   const staff = await save({ ...values, role: 'account_admin' });
-  await assert.rejects(save({ ...values, targetUid: staff.targetUid, role: 'user', operationId: 'demote' }, 'account'), /Only an Admin/);
-  const regular = await save({ ...values, email: 'account-created@example.test', operationId: 'account-create' }, 'account');
-  assert.equal((await db.doc(`users/${regular.targetUid}`).get()).data().role, 'user');
+  await assert.rejects(save({ ...values, targetUid: staff.targetUid, role: 'user', operationId: 'demote' }, 'account'), /Access denied/);
+  await assert.rejects(save({ ...values, email: 'account-created@example.test', operationId: 'account-create' }, 'account'), /Access denied/);
 });
 test('duplicate email never attaches an existing account or creates another profile', async () => {
   const first = await save();

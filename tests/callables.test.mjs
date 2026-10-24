@@ -36,13 +36,25 @@ test('callables reject anonymous and User, then accept Admin and Account Admin',
     db.doc('purchaseTypes/local').set({ name: 'Local', active: true }),
   ]);
   await signInWithEmailAndPassword(auth, 'callable-user@example.test', 'LocalOnly123!');
-  await assert.rejects(httpsCallable(functions, 'savePurchaseDraftCall')(draft), /access is required/i);
+  await assert.rejects(httpsCallable(functions, 'savePurchaseDraftCall')(draft), /Access denied/);
   await signOut(auth);
   await signInWithEmailAndPassword(auth, 'callable-admin@example.test', 'LocalOnly123!');
   const created = (await httpsCallable(functions, 'savePurchaseDraftCall')(draft)).data;
   assert.equal((await db.doc(`purchases/${created.purchaseId}`).get()).data().status, 'draft');
   await httpsCallable(functions, 'confirmPurchaseCall')({ purchaseId: created.purchaseId });
   assert.equal((await db.doc('inventory/sweetA').get()).exists, false);
+  for (const [name, payload] of [
+    ['adjustStockCall', { itemId: 'sweetA', countedQty: 1000, reason: 'Unauthorized', operationId: 'admin-count' }],
+    ['setInventoryControlCall', { itemId: 'sweetA', sellingBlocked: true, lowStockThresholdQty: 0, reason: 'Unauthorized' }],
+    ['setOrderTakingCall', { acceptingOrders: false, reason: 'Unauthorized' }],
+    ['saveTargetCall', { ownerUid: 'callableUser', periodType: 'daily', periodStart: '2026-10-10', targetPaise: 100, active: true }],
+    ['saveAnnouncementCall', { title: 'Unauthorized', body: 'No', audience: 'all', startsOn: '2026-10-10', expiresOn: '2026-10-11', active: true }],
+    ['reviewPaymentCall', { paymentId: 'missing', decision: 'verified' }],
+    ['saveUserProfileCall', { operationId: 'admin-promotion', fullName: 'Admin', email: 'callable-admin@example.test', role: 'admin', active: true, targetUid: 'callableUser' }],
+  ]) {
+    await assert.rejects(httpsCallable(functions, name)(payload), /Access denied/);
+  }
+  assert.equal((await db.doc('users/callableUser').get()).data().role, 'user');
   await signOut(auth);
   await signInWithEmailAndPassword(auth, 'callable-account@example.test', 'LocalOnly123!');
   await httpsCallable(functions, 'adjustStockCall')({ itemId: 'sweetA', countedQty: 1500, reason: 'Count', operationId: 'accountCount' });
@@ -52,9 +64,10 @@ test('callables reject anonymous and User, then accept Admin and Account Admin',
   await signOut(auth);
   await signInWithEmailAndPassword(auth, 'callable-user@example.test', 'LocalOnly123!');
   const order = (await httpsCallable(functions, 'saveOrderDraftCall')({ newCustomer: { fullName: 'Own Customer', contact: '8887776666', address: 'Own street', area: 'Local', dateOfBirth: null, sabha: false }, assignedUserId: 'callableUser', orderDate: '2026-10-10', deliveryDate: null, notes: '', lines: [{ kind: 'item', productId: 'sweetA', quantityQty: 1000 }] })).data;
-  assert.equal((await db.doc('inventory/sweetA').get()).data().onHandQty, 1500);
+  assert.equal(order.status, 'confirmed');
+  assert.equal((await db.doc('inventory/sweetA').get()).data().onHandQty, 500);
   await httpsCallable(functions, 'createInvoiceFromOrderCall')({ orderId: order.orderId });
   assert.equal((await db.doc('inventory/sweetA').get()).data().onHandQty, 500);
-  assert.equal((await db.doc(`orders/${order.orderId}`).get()).data().status, 'in_preparation');
+  assert.equal((await db.doc(`orders/${order.orderId}`).get()).data().status, 'confirmed');
   await assert.rejects(httpsCallable(functions, 'createInvoiceFromOrderCall')({ orderId: order.orderId }), /already exists/);
 });

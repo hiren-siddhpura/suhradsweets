@@ -1,6 +1,5 @@
 import { FieldValue } from 'firebase-admin/firestore';
 
-const STAFF = new Set(['admin', 'account_admin']);
 export const MAX_QTY = 1_000_000_000; // milli-units; 1000 = one displayed unit
 export const text = (value, max) => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= max;
 export class OperationError extends Error {}
@@ -36,10 +35,10 @@ export function validateDraft(input) {
   return { quantity: quantity.trim(), unit: (input.unit || '').trim(), supplierName: input.supplierName.trim(), purchaseDate: input.purchaseDate, purchaseTypeId: input.purchaseTypeId, totalPaise: input.totalPaise, paidAmountPaise, paymentMode, paymentReference: paymentReference.trim(), paymentStatus: paidAmountPaise === 0 ? 'unpaid' : paidAmountPaise === input.totalPaise ? 'paid' : 'partial', notes: input.notes.trim(), documentUrl: validateDriveUrl(input.documentUrl || ''), schemaVersion: 3 };
 }
 
-async function staff(db, uid, tx) {
+async function staff(db, uid, tx, permission = 'operatePurchases') {
   if (!validId(uid)) fail('Sign in is required.');
   const snap = await tx.get(db.doc(`users/${uid}`));
-  if (!snap.exists || snap.data().active !== true || !STAFF.has(snap.data().role)) fail('Active Admin or Account Admin access is required.');
+  if (!snap.exists || snap.data().active !== true || !['admin', 'account_admin'].includes(snap.data().role)) fail('Active Admin or Account Admin access is required.');
   return { uid, name: snap.data().fullName || snap.data().displayName || 'Unknown user' };
 }
 
@@ -122,7 +121,7 @@ export async function adjustStock(db, uid, input) {
   if (!validId(itemId) || !qty(countedQty) || !text(reason, 500) || !validId(operationId) || expectedOnHandQty !== undefined && !qty(expectedOnHandQty)) fail('Item, counted quantity, reason and operation ID are required.');
   const op = db.doc(`stockOperations/${operationId}`);
   return db.runTransaction(async (tx) => {
-    const user = await staff(db, uid, tx);
+    const user = await staff(db, uid, tx, 'manageStock');
     const priorOp = await tx.get(op);
     if (priorOp.exists) {
       if (priorOp.data().actorUid !== uid || priorOp.data().itemId !== itemId || priorOp.data().countedQty !== countedQty || priorOp.data().reason !== reason.trim() || priorOp.data().expectedOnHandQty !== expectedOnHandQty) fail('Operation ID was already used.');
@@ -150,7 +149,7 @@ export async function setInventoryControl(db, uid, input) {
   if (!validId(itemId) || typeof sellingBlocked !== 'boolean' || !qty(lowStockThresholdQty) || !text(reason, 500) || expectedSellingBlocked !== undefined && typeof expectedSellingBlocked !== 'boolean' || expectedLowStockThresholdQty !== undefined && !qty(expectedLowStockThresholdQty)) fail('Item, selling status, threshold and reason are required.');
   const ref = db.doc(`inventory/${itemId}`);
   return db.runTransaction(async (tx) => {
-    const user = await staff(db, uid, tx);
+    const user = await staff(db, uid, tx, 'manageStock');
     const item = await tx.get(db.doc(`items/${itemId}`));
     const stock = await tx.get(ref);
     if (!item.exists) fail('Item no longer exists.');

@@ -41,9 +41,10 @@ test('item names are unique within a stock unit and reusable across units', () =
 test('required fields and staff role assignment are validated', () => {
   assert.throws(() => validateMasterInput('units', { name: ' ', symbol: 'kg', active: true }), /Name is required/);
   assert.throws(() => validateMasterInput('purchaseTypes', { name: 'Local', description: 'x'.repeat(501), active: true }), /Description/);
-  assert.throws(() => validateMasterInput('users', { displayName: 'User', role: 'admin', active: true }, { actorRole: 'account_admin' }), /Only an Admin/);
+  assert.throws(() => validateMasterInput('users', { displayName: 'User', role: 'admin', active: true }, { actorRole: 'account_admin' }), /Admin/);
   assert.equal(validateMasterInput('users', { fullName: 'User', email: 'USER@example.test', role: 'user', active: true }, { actorRole: 'account_admin' }).role, 'user');
-  assert.throws(() => validateMasterInput('users', { fullName: 'User', email: 'invalid', role: 'user', active: true }), /valid email/);
+  assert.equal(validateMasterInput('users', { fullName: 'User', email: 'USER@example.test', role: 'admin', active: true }, { actorRole: 'admin' }).role, 'admin');
+  assert.throws(() => validateMasterInput('users', { fullName: 'User', email: 'invalid', role: 'user', active: true }, { actorRole: 'admin' }), /valid email/);
 });
 
 test('User navigation and the paid action remain restricted', () => {
@@ -57,6 +58,7 @@ test('User navigation and the paid action remain restricted', () => {
   assert.equal(canAccessPage(account, 'inventory'), true);
   assert.equal(canAccessPage(account, 'targets'), true);
   assert.equal(canAccessPage(account, 'master'), true);
+  assert.equal(canAccessPage(admin, 'master'), true);
   assert.equal(canPerform(admin, 'markInvoicePaid'), false);
   assert.equal(canPerform(account, 'markInvoicePaid'), true);
   assert.equal(canPerform({ ...account, active: false }, 'manageOperations'), false);

@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { FieldValue } from 'firebase-admin/firestore';
 import { audit, fail, money, text, validId } from './operations.js';
 import { orderEvent } from './order-operations.js';
-
 const staff = (role) => role === 'admin' || role === 'account_admin';
+
 const validAmount = (value) => money(value) && value > 0;
 const referenceFor = (mode, value) => {
   if (value != null && typeof value !== 'string') fail('Transaction reference must be text.');
@@ -100,10 +100,11 @@ export async function reviewPayment(db, uid, input) {
       if (payment.amountPaise > invoiceBalance(invoice)) fail('Payment exceeds the current balance.');
       next += payment.amountPaise;
     }
-    const nextStatus = otherPending ? 'in_process' : next === invoice.totalPaise ? 'ready_to_mark_paid' : next > 0 ? 'partial' : 'unpaid';
-    tx.update(invoiceRef, { verifiedPaidPaise: next, paymentStatus: nextStatus });
+    const nextStatus = otherPending ? 'in_process' : next === invoice.totalPaise ? 'paid' : next > 0 ? 'partial' : 'unpaid';
+    tx.update(invoiceRef, { verifiedPaidPaise: next, paymentStatus: nextStatus, ...(nextStatus === 'paid' ? { paidBy: uid, paidAt: FieldValue.serverTimestamp() } : {}) });
     tx.update(paymentRef, { verificationStatus: input.decision, verifiedBy: uid, verifiedByName: identity.name, verifiedAt: FieldValue.serverTimestamp(), receivedBy: input.decision === 'verified' ? uid : null, reviewReason: input.decision === 'rejected' ? input.reason.trim() : null });
     paymentEvent(tx, db, `payment.${input.decision}`, identity, paymentRef.id, payment, { verificationStatus: { before: 'unverified', after: input.decision }, invoiceStatus: { before: invoice.paymentStatus, after: nextStatus }, verifiedPaidPaise: { before: invoice.verifiedPaidPaise, after: next } }, input.decision === 'rejected' ? input.reason.trim() : '');
+    if (nextStatus === 'paid') audit(tx, db, 'invoice.marked_paid', uid, 'invoice', invoiceRef.id, { verifiedPaidPaise: next, totalPaise: invoice.totalPaise }, identity.name);
     return { paymentId: paymentRef.id, verificationStatus: input.decision };
   });
 }

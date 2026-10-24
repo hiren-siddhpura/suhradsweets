@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { availableOrderUnits, itemUnitPrice, orderLineUnitLabel } from '../js/order-units.js';
-import { isStaff, validateProfile } from '../js/permissions.js';
+import { hasPermission, isStaff, validateProfile } from '../js/permissions.js';
 import { validateCustomerInput } from '../js/customer-validation.js';
 
 test('Orders page contains the controls required by order initialization', () => {
@@ -13,10 +13,10 @@ test('Orders page contains the controls required by order initialization', () =>
   }
 });
 
-test('new-customer choice is first; order form survives customer dialog cancel and creation', async () => {
-  const nodes = new Map(), saved = [], orderSaves = []; let stockReads = 0;
+test('searchable customer choice preserves order form through customer cancel and creation', async () => {
+  const nodes = new Map(), saved = [], orderSaves = [], toasts = []; let stockReads = 0;
   const el = (id) => {
-    if (!nodes.has(id)) nodes.set(id, { value: '', innerHTML: '', textContent: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, querySelectorAll() { return []; }, showModal() { this.open = true; }, close() { this.open = false; } });
+    if (!nodes.has(id)) nodes.set(id, { value: '', innerHTML: '', textContent: '', listeners: {}, setAttribute() {}, addEventListener(type, fn) { this.listeners[type] = fn; }, querySelectorAll() { return []; }, showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(id);
   };
   const fields = el('order-fields');
@@ -31,12 +31,12 @@ test('new-customer choice is first; order form survives customer dialog cancel a
   const values = { fullName: 'New Customer', contact: '9876543210', address: 'Road', area: 'West', dateOfBirth: '', sabha: 'false' };
   const context = {
     document: { getElementById: el, addEventListener() {}, querySelector() { return null; }, createDocumentFragment() { return { children: [], appendChild(child) { child.parent.children.splice(child.parent.children.indexOf(child), 1); child.parent = this; this.children.push(child); } }; } },
-    crypto: { randomUUID: () => 'customer-request-1' }, FormData: class { get(name) { return values[name]; } },
-    isStaff, validateProfile, validateCustomerInput, showToast() {}, customerSaveError: (error) => error.message,
+    uniqueId: () => 'customer-request-1', FormData: class { get(name) { return values[name]; } },
+    isStaff, validateProfile, hasPermission, validateCustomerInput, showToast(message) { toasts.push(message); }, customerSaveError: (error) => error.message,
     listOrders: async () => [], listCustomers: async () => [{ id: 'z', fullName: 'Zara', contact: '123' }, { id: 'a', fullName: 'Asha', contact: '456' }],
     listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'sweet', name: 'Kaju Katli', active: true, defaultSellingPrice: 1200 }] : type === 'units' ? [{ id: 'kg', name: '1 KG', active: true }, { id: 'half', name: '500 GM', active: true }, { id: 'quarter', name: '250 GM', active: true }] : [],
     listInvoices: async () => [], getOrderTaking: async () => true, listMasterRecords: async () => [],
-    callOperation: async (_fn, name, payload) => name === 'getOrderStock' ? (stockReads++, { items: [{ itemId: 'sweet', availableQty: 988000, unit: 'kg', status: 'available' }] }) : name === 'saveOrderDraft' ? (orderSaves.push(payload), { orderId: payload.orderId }) : { rows: [], hasMore: false },
+    callOperation: async (_fn, name, payload) => name === 'getOrderStock' ? (stockReads++, { items: [{ itemId: 'sweet', availableQty: 988000, unit: 'kg', status: 'available' }] }) : name === 'saveOrderDraft' ? (orderSaves.push(payload), { orderId: payload.orderId, orderNumber: 'SS-2026-000001', status: 'confirmed' }) : { rows: [], hasMore: false },
     saveCustomerDirect: async (_db, _auth, input, options) => { saved.push({ input, options }); return { customerId: options.customerId }; },
   };
   const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
@@ -48,8 +48,24 @@ test('new-customer choice is first; order form survives customer dialog cancel a
   assert.match(html, /value="kg"[^>]*>KG/);
   assert.match(html, /value="500gm"[^>]*>500 GM/);
   assert.match(html, /value="250gm"[^>]*>250 GM/);
-  assert.ok(html.indexOf('value="__new__"') < html.indexOf('value="a"'));
-  assert.ok(html.indexOf('value="a"') < html.indexOf('value="z"'));
+  assert.match(html, /name="quantity" type="text" value="1" inputmode="numeric" pattern="\[1-9\]\[0-9\]\*" title="Enter a whole number of at least 1" required/);
+  assert.match(html, /Customer \*/);
+  assert.match(html, /Search customer by name or phone number/);
+  assert.match(html, /Add New Customer/);
+  assert.doesNotMatch(html, /Enter new customer details|<option value="__new__"/);
+  el('order-customer-search').value = '456';
+  fields.listeners.input({ target: { id: 'order-customer-search' } });
+  assert.match(el('order-customer-options').innerHTML, /Asha/);
+  assert.doesNotMatch(el('order-customer-options').innerHTML, /Zara/);
+  el('order-customer-search').value = 'zArA';
+  fields.listeners.input({ target: { id: 'order-customer-search' } });
+  assert.match(el('order-customer-options').innerHTML, /Zara/);
+  assert.doesNotMatch(el('order-customer-options').innerHTML, /Asha/);
+  el('order-customer-search').value = 'missing';
+  fields.listeners.input({ target: { id: 'order-customer-search' } });
+  assert.match(el('order-customer-options').innerHTML, /No customers found.*Add New Customer/);
+  fields.listeners.click({ target: { id: '', closest: (selector) => selector === '[data-customer-id]' ? { dataset: { customerId: 'a' } } : null, matches: () => false } });
+  assert.equal(el('order-customer').value, 'a');
   assert.match(html, /Kaju Katli — ₹1,200\.00/);
   assert.match(html, /Available: 988 kg/);
   assert.doesNotMatch(html, /On hand:|Reserved:|Available: 988 kg<\/option>/);
@@ -90,22 +106,29 @@ test('new-customer choice is first; order form survives customer dialog cancel a
   fields.listeners.click({ target: { id: 'order-add-customer', matches: () => false } });
   await el('order-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
   assert.equal(saved.length, 1);
-  assert.match(el('order-add-customer').textContent, /New Customer/);
+  assert.match(el('order-customer-search').value, /New Customer/);
+  assert.equal(el('order-customer').value, '__new__');
   Object.assign(values, { customerId: '__new__', orderDate: '2026-10-10', deliveryDate: '', notes: 'Keep this note' });
-  el('order-lines').children = [{ querySelector(selector) { return { value: selector === '[name=kind]' ? 'item' : selector === '[name=productId]' ? 'sweet' : '2' }; } }];
+  let orderQuantity = '0.999';
+  el('order-lines').children = [{ querySelector(selector) { return { value: selector === '[name=kind]' ? 'item' : selector === '[name=productId]' ? 'sweet' : orderQuantity }; } }];
+  await el('order-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
+  assert.equal(orderSaves.length, 0);
+  assert.match(el('order-form-error').textContent, /whole-number quantity/);
+  orderQuantity = '2';
   await el('order-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
   assert.equal(orderSaves.length, 1);
   assert.equal(orderSaves[0].newCustomer.fullName, 'New Customer');
   assert.equal(orderSaves[0].lines[0].quantityQty, 2000);
   assert.equal(orderSaves[0].notes, 'Keep this note');
+  assert.ok(toasts.includes('Order SS-2026-000001 confirmed.'));
 });
 
 test('Admin may edit special lines; assigned User can view the saved special order', async () => {
   const nodes = new Map();
-  const el = (id) => { if (!nodes.has(id)) nodes.set(id, { value: '', innerHTML: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, querySelectorAll() { return []; }, showModal() {}, close() {} }); return nodes.get(id); };
+  const el = (id) => { if (!nodes.has(id)) nodes.set(id, { value: '', innerHTML: '', listeners: {}, setAttribute() {}, addEventListener(type, fn) { this.listeners[type] = fn; }, querySelectorAll() { return []; }, showModal() {}, close() {} }); return nodes.get(id); };
   const order = { id: 'order-1', orderNumber: 'SS-1', ownerUid: 'user-1', assignedUserId: 'user-1', customerId: 'customer-1', customerSnapshot: { fullName: 'Asha' }, status: 'draft', orderDate: '2026-10-10', lines: [{ kind: 'item', productId: 'sweet', quantityQty: 1000, orderUnitId: 'half', orderUnitName: '500 GM', itemSnapshot: { name: 'Kaju Katli', unitSymbol: 'kg' } }, { kind: 'special', productId: 'combo', quantityQty: 1000, specialSnapshot: { name: 'Gift Box' } }] };
   const context = {
-    document: { getElementById: el, addEventListener() {}, querySelector() { return null; } }, isStaff, validateProfile, showToast() {},
+    document: { getElementById: el, addEventListener() {}, querySelector() { return null; } }, isStaff, validateProfile, hasPermission, showToast() {},
     listOrders: async () => [order], listCustomers: async () => [{ id: 'customer-1', fullName: 'Asha', contact: '123' }],
     listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'sweet', name: 'Kaju Katli', active: true, defaultSellingPrice: 1200 }] : [{ id: 'combo', name: 'Gift Box', active: true, finalPricePaise: 160000, components: [{ itemId: 'sweet', quantityQty: 1000 }] }],
     listInvoices: async () => [], getOrderTaking: async () => true, listMasterRecords: async () => [],
@@ -141,6 +164,8 @@ test('Admin may edit special lines; assigned User can view the saved special ord
 
 test('order entry CSS keeps product wider and stacks fields on mobile', () => {
   const css = readFileSync(new URL('../css/styles.css', import.meta.url), 'utf8');
+  assert.match(css, /\.order-customer-choice\{grid-column:1\/-1;display:flex;flex-direction:column/);
+  assert.match(css, /@media\(max-width:480px\)\{\.order-add-customer\{width:100%/);
   assert.match(css, /\.order-dialog \.order-entry-line\{[^}]*grid-template-columns:minmax\(135px,170px\) minmax\(250px,1fr\)/);
   assert.match(css, /@media\(max-width:680px\)\{\.order-dialog \.order-entry-line\{[^}]*grid-template-areas:"type quantity" "product product"/);
 });

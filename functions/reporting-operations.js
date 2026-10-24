@@ -1,15 +1,13 @@
 import { FieldValue } from 'firebase-admin/firestore';
 import { audit, fail, money, text, validDate, validId } from './operations.js';
 
-const roles = new Set(['admin', 'account_admin', 'user']);
 const periods = new Set(['daily', 'weekly', 'monthly']);
 const trim = (value) => typeof value === 'string' ? value.trim() : '';
 
 async function actor(db, tx, uid) {
   if (!validId(uid)) fail('Sign in is required.');
   const snap = await tx.get(db.doc(`users/${uid}`));
-  if (!snap.exists || snap.data().active !== true || !roles.has(snap.data().role)) fail('Active OMS access is required.');
-  if (!['admin', 'account_admin'].includes(snap.data().role)) fail('Active Admin or Account Admin access is required.');
+  if (!snap.exists || snap.data().active !== true || !['admin', 'account_admin', 'user'].includes(snap.data().role)) fail('Active OMS access is required.');
   return snap.data().role;
 }
 
@@ -29,7 +27,7 @@ export async function saveTarget(db, uid, input) {
   const targetId = `${input.ownerUid}_${input.periodType}_${input.periodStart}`;
   const ref = db.doc(`targets/${targetId}`);
   return db.runTransaction(async (tx) => {
-    await actor(db, tx, uid);
+    if (!['admin', 'account_admin'].includes(await actor(db, tx, uid))) fail('Active Admin or Account Admin access is required.');
     const owner = await tx.get(db.doc(`users/${input.ownerUid}`));
     const old = await tx.get(ref);
     if (!owner.exists || owner.data().role !== 'user') fail('Assign a target to an existing User profile.');
@@ -47,7 +45,7 @@ export async function saveAnnouncement(db, uid, input) {
   if (!validId(announcementId)) fail('Invalid announcement ID.');
   const ref = db.doc(`announcements/${announcementId}`);
   return db.runTransaction(async (tx) => {
-    await actor(db, tx, uid);
+    if (!['admin', 'account_admin'].includes(await actor(db, tx, uid))) fail('Active Admin or Account Admin access is required.');
     const old = await tx.get(ref);
     const values = { title: trim(input.title), titleKey: trim(input.title).toLocaleLowerCase(), body: trim(input.body), audience: input.audience, active: input.active, startsOn: input.startsOn, expiresOn: input.expiresOn, updatedBy: uid, updatedAt: FieldValue.serverTimestamp() };
     if (old.exists) tx.update(ref, values);
@@ -61,13 +59,13 @@ export async function saveAnnouncement(db, uid, input) {
 }
 
 export async function saveUserProfile(db, uid, input) {
-  if (!validId(input?.targetUid) || !text(input.displayName, 80) || !roles.has(input.role) || typeof input.active !== 'boolean') fail('Existing Auth UID, name, role and status are required.');
+  if (!validId(input?.targetUid) || !text(input.displayName, 80) || !['admin', 'account_admin', 'user'].includes(input.role) || typeof input.active !== 'boolean') fail('Existing Auth UID, name, role and status are required.');
   if (input.targetUid === uid) fail('You cannot change your own profile.');
   const ref = db.doc(`users/${input.targetUid}`);
   return db.runTransaction(async (tx) => {
     const actorRole = await actor(db, tx, uid);
     const old = await tx.get(ref);
-    if (actorRole !== 'admin' && (input.role !== 'user' || old.exists && old.data().role !== 'user')) fail('Only an Admin can manage staff roles.');
+    if (!['admin', 'account_admin'].includes(actorRole) || actorRole !== 'admin' && (input.role !== 'user' || old?.data()?.role && old.data().role !== 'user')) fail('Only an Admin can manage staff roles.');
     const values = { displayName: trim(input.displayName), role: input.role, active: input.active, updatedAt: FieldValue.serverTimestamp() };
     if (old.exists) tx.update(ref, values);
     else tx.create(ref, { ...values, createdAt: FieldValue.serverTimestamp() });

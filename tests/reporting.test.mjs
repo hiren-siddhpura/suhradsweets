@@ -16,6 +16,7 @@ test.beforeEach(async () => {
   }
   await Promise.all([
     db.doc('users/adminA').set({ displayName: 'Admin', role: 'admin', active: true }),
+    db.doc('users/opsAdmin').set({ displayName: 'Operations Admin', role: 'admin', active: true }),
     db.doc('users/accountA').set({ displayName: 'Accounts', role: 'account_admin', active: true }),
     db.doc('users/userA').set({ displayName: 'User A', role: 'user', active: true }),
     db.doc('users/userB').set({ displayName: 'User B', role: 'user', active: true }),
@@ -42,7 +43,8 @@ test('target edits are stable, audited, and reject unauthorized or invalid input
   assert.equal((await db.doc(`targets/${targetId}`).get()).data().active, false);
   const edit = (await db.collection('auditLogs').where('type', '==', 'target.updated').get()).docs[0].data();
   assert.equal(edit.detail.previousTargetPaise, 50000); assert.equal(edit.detail.targetPaise, 75000);
-  await assert.rejects(saveTarget(db, 'userA', input), /access is required/);
+  await assert.rejects(saveTarget(db, 'userA', input), /Access denied/);
+  await assert.rejects(saveTarget(db, 'opsAdmin', input), /Access denied/);
   await assert.rejects(saveTarget(db, 'adminA', { ...input, ownerUid: 'adminA' }), /User profile/);
   await assert.rejects(saveTarget(db, 'adminA', { ...input, targetPaise: -1 }), /nonnegative/);
 });
@@ -54,17 +56,19 @@ test('announcements have explicit audience and expiry with audited activation', 
   const announcement = (await db.doc(`announcements/${announcementId}`).get()).data();
   assert.equal(announcement.active, false); assert.equal(announcement.titleKey, 'holiday');
   assert.equal((await db.collection('auditLogs').where('type', '==', 'announcement.updated').get()).size, 1);
-  await assert.rejects(saveAnnouncement(db, 'userA', input), /access is required/);
+  await assert.rejects(saveAnnouncement(db, 'userA', input), /Access denied/);
+  await assert.rejects(saveAnnouncement(db, 'opsAdmin', input), /Access denied/);
   await assert.rejects(saveAnnouncement(db, 'adminA', { ...input, expiresOn: '2026-10-09' }), /dates/);
 });
 
 test('profile changes require staff, protect self and staff roles, and record before/after', async () => {
-  await assert.rejects(saveUserProfile(db, 'userA', { targetUid: 'userB', displayName: 'B', role: 'user', active: true }), /access is required/);
+  await assert.rejects(saveUserProfile(db, 'userA', { targetUid: 'userB', displayName: 'B', role: 'user', active: true }), /Access denied/);
   await assert.rejects(saveUserProfile(db, 'adminA', { targetUid: 'adminA', displayName: 'A', role: 'admin', active: true }), /own profile/);
-  await assert.rejects(saveUserProfile(db, 'accountA', { targetUid: 'userB', displayName: 'B', role: 'admin', active: true }), /Only an Admin/);
-  await saveUserProfile(db, 'accountA', { targetUid: 'userB', displayName: 'New B', role: 'user', active: false });
+  await assert.rejects(saveUserProfile(db, 'accountA', { targetUid: 'userB', displayName: 'B', role: 'admin', active: true }), /Access denied/);
+  await assert.rejects(saveUserProfile(db, 'opsAdmin', { targetUid: 'userB', displayName: 'B', role: 'owner', active: true }), /valid role/);
+  await saveUserProfile(db, 'adminA', { targetUid: 'userB', displayName: 'New B', role: 'user', active: false });
   const profile = (await db.doc('users/userB').get()).data();
   assert.equal(profile.active, false); assert.equal(profile.displayName, 'New B');
   const log = (await db.collection('auditLogs').where('type', '==', 'user.updated').get()).docs[0].data();
-  assert.equal(log.actorUid, 'accountA'); assert.equal(log.detail.before.active, true); assert.equal(log.detail.after.active, false);
+  assert.equal(log.actorUid, 'adminA'); assert.equal(log.detail.before.active, true); assert.equal(log.detail.after.active, false);
 });

@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
-import {isStaff, validateProfile} from '../js/permissions.js';
+import {hasPermission, isStaff, validateProfile} from '../js/permissions.js';
 import {availableOrderUnits, itemUnitPrice, orderLineUnitLabel} from '../js/order-units.js';
 for (const role of ['admin','account_admin','user']) test(`Orders assignee controls for ${role}`, async () => {
  const nodes=new Map(); const el=id=>{if(!nodes.has(id))nodes.set(id,{value:'',innerHTML:'',listeners:{},addEventListener(e,f){this.listeners[e]=f},querySelectorAll(){return []},showModal(){},close(){}});return nodes.get(id)};
  let userReads=0; const exports=[];
  const profiles=[{id:'adminUID',fullName:'Admin Name',role:'admin',active:true},{id:'accountsUID',displayName:'Accounts',role:'account_admin',active:true},{id:'userUID',fullName:'User Name',role:'user',active:true},{id:'inactive',role:'admin',active:false},{id:'invalid',role:'invalid',active:true},{id:'userUID',fullName:'User Name',role:'user',active:true}];
- const ctx={document:{getElementById:el,addEventListener(){},querySelector(){return null}},isStaff,validateProfile,showToast(){},listOrders:async()=>[{id:'order1',orderNumber:'SO-1',assignedUserId:'userUID',ownerUid:'userUID',customerSnapshot:{fullName:'Customer'},orderDate:'2026-10-12',status:'confirmed',grandTotal:10000}],listCustomers:async()=>[],listOrderProducts:async(_db,type)=>type==='units'?[{id:'kg',name:'1 KG',active:true},{id:'half',name:'500 GM',active:true},{id:'quarter',name:'250 GM',active:true}]:[],listInvoices:async()=>[],callOperation:async()=>({items:[],rows:[]}),getOrderTaking:async()=>true,listMasterRecords:async()=>{userReads++;return profiles},downloadXlsx:async(_name,sheets)=>{exports.push(sheets)}};
+ const ctx={document:{getElementById:el,addEventListener(){},querySelector(){return null}},isStaff,validateProfile,hasPermission,showToast(){},listOrders:async()=>[{id:'order1',orderNumber:'SO-1',assignedUserId:'userUID',ownerUid:'userUID',customerSnapshot:{fullName:'Customer'},orderDate:'2026-10-12',status:'confirmed',grandTotal:10000}],listCustomers:async()=>[],listOrderProducts:async(_db,type)=>type==='units'?[{id:'kg',name:'1 KG',active:true},{id:'half',name:'500 GM',active:true},{id:'quarter',name:'250 GM',active:true}]:[],listInvoices:async()=>[],callOperation:async()=>({items:[],rows:[]}),getOrderTaking:async()=>true,listMasterRecords:async()=>{userReads++;return profiles},downloadXlsx:async(_name,sheets)=>{exports.push(sheets)}};
  const source=readFileSync(new URL('../js/order-ui.js',import.meta.url),'utf8').replace(/^import .*;\r?\n/gm,'').replace('export function initOrderUi','function initOrderUi');
  vm.runInNewContext(source+'\nthis.init=initOrderUi;',Object.assign(ctx,{availableOrderUnits,itemUnitPrice,orderLineUnitLabel}));
  ctx.init({db:{},functions:{},auth:{},mode:'emulator'}).setSession({uid:role==='user'?'userUID':'actor'},{role,active:true,fullName:role==='user'?'User Name':'Staff Name'});

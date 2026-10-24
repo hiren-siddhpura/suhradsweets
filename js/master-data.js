@@ -3,6 +3,8 @@ import { DASHBOARD_TARGET_ID, DASHBOARD_TARGET_KEY, validateTargetKg } from './d
 import { hasDuplicateItemName, MASTER_TYPES, validateMasterInput } from './master-validation.js';
 import { callOperation } from './operations-data.js';
 import { BUSINESS_DETAILS_ID, validateBusinessDetails } from './business-settings.js';
+import { uniqueId } from './unique-id.js';
+import { isStaff } from './permissions.js';
 
 function assertType(type) {
   if (!MASTER_TYPES.includes(type)) throw new Error('Unknown master-data collection.');
@@ -14,7 +16,7 @@ export async function readDashboardTarget(db) {
 }
 
 export async function saveDashboardTarget(db, input, actor) {
-  if (!actor?.uid || !['admin', 'account_admin'].includes(actor.role)) throw new Error('Staff access is required.');
+  if (!actor?.uid || !isStaff(actor.profile || { role: actor.role, active: true })) throw new Error('Access denied: staff access is required.');
   const value = validateTargetKg(input);
   const ref = doc(db, 'settings', DASHBOARD_TARGET_ID);
   await runTransaction(db, async (transaction) => {
@@ -31,7 +33,7 @@ export async function readBusinessDetails(db) {
 }
 
 export async function saveBusinessDetails(db, input, actor) {
-  if (!actor?.uid || actor.role !== 'admin') throw new Error('Only Admin may change business details.');
+  if (!actor?.uid || actor.role !== 'admin') throw new Error('Access denied: only Admin may change business details.');
   const values = validateBusinessDetails(input);
   const ref = doc(db, 'settings', BUSINESS_DETAILS_ID);
   await runTransaction(db, async (transaction) => {
@@ -55,7 +57,8 @@ async function requireActiveUnit(db, unitId) {
 
 export async function saveMasterRecord(db, type, id, input, actor, functions = null) {
   assertType(type);
-  if (!actor?.uid || !['admin', 'account_admin'].includes(actor.role)) throw new Error('Staff access is required.');
+  if (!actor?.uid || !isStaff(actor.profile || { role: actor.role, active: true })) throw new Error('Access denied: staff access is required.');
+  if (type === 'users' && !['admin', 'account_admin'].includes(actor.role)) throw new Error('Access denied: only Admin or Account Admin may manage users.');
   if (id === actor.uid && type === 'users') throw new Error('You cannot change your own profile.');
   if (type === 'settings' && (id === DASHBOARD_TARGET_ID || input.key === DASHBOARD_TARGET_KEY)) {
     await saveDashboardTarget(db, input.value, actor);
@@ -80,6 +83,14 @@ export async function saveMasterRecord(db, type, id, input, actor, functions = n
   }
 
   if (type === 'items' && !id) {
+    if (values.defaultUnitId === 'kg') {
+      const defaultUnitRef = doc(db, 'units', 'kg');
+      await runTransaction(db, async (transaction) => {
+        const unit = await transaction.get(defaultUnitRef);
+        if (!unit.exists()) transaction.set(defaultUnitRef, { name: 'Kilogram', symbol: 'kg', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+        else if (unit.data().active !== true) throw new Error('The KG stock unit is inactive. Ask an administrator to reactivate it.');
+      });
+    }
     const itemRef = doc(collection(db, 'items'));
     const codeRef = doc(db, 'itemCodes', values.itemCode);
     const unitRef = doc(db, 'units', values.defaultUnitId);
@@ -104,15 +115,15 @@ export async function saveMasterRecord(db, type, id, input, actor, functions = n
 
 export async function deactivateMasterRecord(db, type, id, actor, functions = null, operationId = null) {
   assertType(type);
-  if (!actor?.uid || !['admin', 'account_admin'].includes(actor.role)) throw new Error('Staff access is required.');
+  if (!actor?.uid || !isStaff(actor.profile || { role: actor.role, active: true })) throw new Error('Access denied: staff access is required.');
+  if (type === 'users' && !['admin', 'account_admin'].includes(actor.role)) throw new Error('Access denied: only Admin or Account Admin may manage users.');
   if (type === 'users' && id === actor.uid) throw new Error('You cannot deactivate your own profile.');
   const reference = doc(db, type, id);
   const snapshot = await getDoc(reference);
   if (!snapshot.exists()) throw new Error('This record no longer exists. Refresh the list.');
-  if (type === 'users' && actor.role === 'account_admin' && snapshot.data().role !== 'user') throw new Error('Only an Admin can change staff profiles.');
   if (type === 'users') {
     if (!functions) throw new Error('Trusted user management is unavailable.');
-    await callOperation(functions, 'saveUserProfile', { targetUid: id, displayName: snapshot.data().displayName || snapshot.data().fullName, role: snapshot.data().role, active: false, operationId: operationId || crypto.randomUUID() });
+    await callOperation(functions, 'saveUserProfile', { targetUid: id, displayName: snapshot.data().displayName || snapshot.data().fullName, email: snapshot.data().email, role: snapshot.data().role, active: false, operationId: operationId || uniqueId() });
     return;
   }
   await updateDoc(reference, { active: false, updatedAt: serverTimestamp() });

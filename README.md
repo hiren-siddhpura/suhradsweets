@@ -29,6 +29,14 @@ If access is denied, open the browser Developer Tools Console and read the `[OMS
 
 `firebase.json` supplies local emulator settings and a Hosting allowlist via its ignore rules. There is no `.firebaserc` binding this workspace to a production Firebase project. Do not run `firebase deploy` as part of local testing.
 
+## Phone access to local emulators
+
+Run the existing emulators and `node dev-server.mjs`, then open `http://<computer-LAN-IP>:8000/` on a phone on the same private Wi-Fi. The development server proxies Auth, Firestore and Functions through port 8000 to the loopback emulators. A visible **Local emulator mode** banner confirms the demo project. LAN access through this server refuses `?firebase=live`.
+
+Only port 8000 needs a Windows Firewall inbound rule, restricted to the **Private** profile and the phone's LAN address or subnet. Do not expose port 8000 on public networks. The emulators stay bound to `127.0.0.1` and need no LAN firewall rules. Keep the emulator process running to retain current in-memory data. Before a later restart, export data with `firebase emulators:export` and restart with `--import`.
+
+On this workstation, Windows currently labels Wi-Fi **Public** and has existing broad Public inbound rules for Node.js. The development server independently rejects requests outside its own LAN subnet. To enforce the same restriction at the Windows Firewall layer, review other Node apps first, switch this trusted Wi-Fi to **Private**, and replace the broad Node.js rules with a TCP 8000 rule scoped to the phone or `10.59.12.0/24`.
+
 ## Security and schema
 
 - [Complete 17-collection schema, business invariants and trusted-backend boundary](./docs/FIRESTORE_SCHEMA.md)
@@ -37,15 +45,11 @@ If access is denied, open the browser Developer Tools Console and read the `[OMS
 - [Dashboard, targets, announcements, logs, reporting queries and indexes](./docs/REPORTING.md)
 - [Customer creation and editing with the client SDK, Rules and zero-budget setup](./docs/CUSTOMERS.md)
 
-The rules default to deny. A User can read only their own orders, invoices, payments and order-linked inventory movements, plus customers assigned to their authenticated UID. Users may read active items, units and special products to enter orders. Staff manage standalone customers through a restricted Firestore transaction with matching contact reservations and audited changes. Only Admin may assign or reassign customers to active Users; unassigned legacy customers remain staff visible. Recipes, global order-taking, orders, stock changes, invoices and financial actions use trusted callables. Direct browser writes to those operational collections remain denied; client audit creation is limited to validated customer changes. Only Account Admin can execute Mark as Paid.
+The rules default to deny. A User can read only their own orders, invoices, payments and order-linked inventory movements, plus customers assigned to their authenticated UID. Users may read active items, units and special products to enter orders. Staff manage standalone customers through a restricted Firestore transaction with matching contact reservations and audited changes. Admin may assign or reassign customers to active Users; unassigned legacy customers remain staff visible. Recipes, global order-taking, orders, stock changes, invoices and financial actions use trusted callables. Direct browser writes to those operational collections remain denied; client audit creation is limited to validated customer changes. Account Admin can execute Mark as Paid.
 
 Reporting tables use server-side Firestore filters and cursor pagination; their composite indexes are declared in `firestore.indexes.json`. Regenerate that manifest with `node scripts/generate-report-indexes.mjs` after changing reporting queries. Older operational tables still load bounded or full authorized result sets for some client-side filters; see their module documentation before scaling those collections.
 
-## First Admin
-
 The former standalone customer form called an unavailable `saveCustomerCall` endpoint and could show `internal [0]` in live mode. It now uses Firestore directly with restrictive Rules. Publish the reviewed customer Rules manually before using the new form against live Firestore. Customer creation no longer requires Cloud Functions or Blaze; other trusted operational actions retain their backend requirement. See [customer setup and tests](./docs/CUSTOMERS.md).
-
-For a real Firebase project, publish reviewed restrictive rules, create the first email/password Authentication account in Firebase Console, copy its UID, and create `users/{UID}` with `role: "admin"`, `active: true`, and a string `fullName` or `displayName`. Restrict Console/IAM access to trusted maintainers. The browser has no public Admin bootstrap and contains no Admin SDK credentials. For emulator-only manual UI checks, create equivalent local records in the Emulator UI.
 
 The `js/firebase-config.js` file contains the browser web app configuration; keep private keys and service-account files out of this repository. On a non-localhost origin, the frontend uses the configured Firebase project. Review rules and tests before any production deployment.
 
@@ -59,9 +63,9 @@ Purchases are independent supplier expenses, with a manually entered total, paid
 
 ## Customers, orders and special products
 
-Staff can manage customers and set 2–4 item recipes with a manually chosen final price. Exact normalized customer contacts are reserved to prevent duplicate records; staff should review legitimate shared contacts manually. A User creates a new customer within an order draft or selects a customer assigned to their UID. New customers created by Users are assigned to them; Admin may reassign existing customers without changing their IDs. `ownerUserIds` and order links are set by the backend, never accepted from the browser. Customer Sabha and date of birth are absent from order and invoice customer snapshots.
+Staff can manage customers and set 2–4 item recipes with a manually chosen final price. Exact normalized customer contacts are reserved to prevent duplicate records; staff should review legitimate shared contacts manually. A User creates a new customer within the order form or selects a customer assigned to their UID. New customers created by Users are assigned to them; Admin may reassign existing customers without changing their IDs. `ownerUserIds` and order links are set by the backend, never accepted from the browser. Customer Sabha and date of birth are absent from order and invoice customer snapshots.
 
-Draft orders do not change stock and can be edited until an invoice exists. Invoice creation checks current product status, selling price, recipe and component balances in one transaction, deducts stock, moves the order to preparation and locks further edits. It rejects stale drafts and concurrent overselling. An active User can create one invoice for an owned regular order; staff can invoice permitted orders. Older confirmed orders remain compatible. Staff can cancel an undelivered uninvoiced order once; cancellation restores stock with reversal movements. Delivered or invoiced orders require a separate return/credit workflow, which is not implemented. Users can submit payments for their own invoices; staff can submit and review payments. Only verified, unreversed payments reduce the balance. Account Admin alone can mark a fully reconciled invoice paid. Payment corrections use explicit reversal records. Invoice PDFs use a fresh authorized Firestore read and omit Sabha. Browser PDF/XLSX exports load open-source libraries from CDNs.
+New orders are Confirmed when created. The trusted creation transaction checks product status, price, recipe and component stock, deducts stock once and writes audit and movement records. Existing Draft orders remain Draft until explicitly confirmed. Admin may edit a Confirmed order before invoicing; the edit reconciles stock in the same transaction. Admin, Account Admin and an assigned User may create one invoice from an eligible Confirmed order. Invoice creation uses saved snapshots, does not deduct stock again and locks later edits. The inventory model keeps `reservedQty` at zero, so confirmation uses immediate deduction instead of reservation. Staff can cancel an undelivered uninvoiced order once; cancellation restores stock with reversal movements. Delivered or invoiced orders require a separate return/credit workflow, which is not implemented. Users can submit payments for their own invoices; privileged staff can review payments. Only verified, unreversed payments reduce the balance. Account Admin can mark a fully reconciled invoice paid. Payment corrections use explicit reversal records. Invoice PDFs use a fresh authorized Firestore read and omit Sabha. Browser PDF/XLSX exports load open-source libraries from CDNs.
 
 Google Drive links must use `https://drive.google.com/file/d/<file-id>/view`. The app validates URL shape; Drive permissions still determine who can open the file. Share only with intended recipients in Drive, preferably named accounts. XLSX export loads open-source SheetJS CE from its CDN when clicked and requires a network connection. Exports reflect currently filtered records.
 
@@ -69,5 +73,5 @@ Google Drive links must use `https://drive.google.com/file/d/<file-id>/view`. Th
 
 Master Data > Users now accepts full name, email, role and active status without UID entry.
 The trusted backend creates Auth accounts and matching profiles with retry-safe provisioning.
-Live Add User stays disabled until the backend is explicitly configured; this work does not deploy it.
+Live Add User calls the trusted `saveUserProfileCall`; Admin may manage supported roles and Account Admin may manage User profiles. Deploy the tested Function before publishing this Hosting build. This work does not deploy it.
 See [user management and local tests](docs/USER_MANAGEMENT.md). Run `npm.cmd run test:users` with Java 21.

@@ -5,7 +5,7 @@ import { firebaseErrorCode, profileReadErrorMessage } from '../js/profile-error.
 test('profile read errors distinguish denied access and unreachable services', () => {
   assert.match(profileReadErrorMessage({ code: 'permission-denied' }, false), /published Firestore Rules/);
   assert.match(profileReadErrorMessage({ code: 'permission-denied' }, true), /emulator Rules/);
-  assert.match(profileReadErrorMessage({ code: 'unavailable' }, true), /127\.0\.0\.1:8080/);
+  assert.match(profileReadErrorMessage({ code: 'unavailable' }, true), /Firestore emulator could not be reached/);
   assert.match(profileReadErrorMessage({ code: 'unavailable' }, false), /network connection/);
 });
 

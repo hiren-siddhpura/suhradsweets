@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initializeTestEnvironment, assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
-import { collection, deleteDoc, doc, getDoc, getDocs, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { customerContactHash, customerSaveError } from '../js/customer-validation.js';
 
 const source = readFileSync(new URL('../js/customer-data.js', import.meta.url), 'utf8')
@@ -56,6 +56,35 @@ test('duplicate submission retries reuse the same customer and audit; parallel c
   assert.equal((await getDocs(collection(dbFor('admin'), 'auditLogs'))).size, 1);
   const parallel = await Promise.allSettled(['parallel-a', 'parallel-b'].map((id) => save('admin', id, { ...input, contact: '9988776655' })));
   assert.equal(parallel.filter((entry) => entry.status === 'fulfilled').length, 1);
+});
+
+test('Admin import reuses customer reservations and IDs; Account Admin and User import metadata is denied', async () => {
+  const importReference = { jobId: 'a'.repeat(64), rowNumber: 2 };
+  await saveCustomerDirect(dbFor('admin'), authFor('admin'), { ...input, assignedUserId: 'userA' }, { customerId: 'import-first', importReference });
+  assert.equal((await saveCustomerDirect(dbFor('admin'), authFor('admin'), { ...input, assignedUserId: 'userA' }, { customerId: 'import-first', importReference })).alreadySaved, true);
+  assert.equal((await getDocs(collection(dbFor('admin'), 'customers'))).size, 1);
+  assert.equal((await getDocs(collection(dbFor('admin'), 'auditLogs'))).size, 1);
+  const saved = (await getDoc(doc(dbFor('admin'), 'customers', 'import-first'))).data();
+  assert.deepEqual((await getDoc(doc(dbFor('admin'), 'auditLogs', saved.lastAuditId))).data().detail.import, importReference);
+  await assert.rejects(saveCustomerDirect(dbFor('admin'), authFor('admin'), { ...input, contact: '(987) 654-3210' }, { customerId: 'import-second', importReference: { ...importReference, rowNumber: 3 } }), /already exists/);
+  await assertFails(saveCustomerDirect(dbFor('account'), authFor('account'), { ...input, contact: '1111111111' }, { customerId: 'import-account', importReference }));
+  await assertFails(saveCustomerDirect(dbFor('userA'), authFor('userA'), { ...input, contact: '2222222222' }, { customerId: 'import-user', importReference }));
+  assert.equal((await getDocs(collection(dbFor('admin'), 'customers'))).size, 1);
+});
+
+test('Admin import summary audit records only counts and cannot alter orders or invoices', async () => {
+  await environment.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), 'orders', 'history'), { customerId: 'historical', status: 'delivered' });
+    await setDoc(doc(context.firestore(), 'invoices', 'history'), { customerId: 'historical', paymentStatus: 'paid' });
+  });
+  const summary = { type: 'customer.import_completed', actorUid: 'admin', referenceType: 'customerImport', referenceId: 'b'.repeat(64), detail: { processed: 2, imported: 1, existing: 1, duplicate: 0, invalid: 0, failed: 0 }, at: serverTimestamp() };
+  await assertSucceeds(addDoc(collection(dbFor('admin'), 'auditLogs'), summary));
+  await assertFails(addDoc(collection(dbFor('account'), 'auditLogs'), { ...summary, actorUid: 'account' }));
+  await assertFails(addDoc(collection(dbFor('userA'), 'auditLogs'), { ...summary, actorUid: 'userA' }));
+  await assertFails(addDoc(collection(dbFor('admin'), 'auditLogs'), { ...summary, detail: { ...summary.detail, processed: 9 } }));
+  await saveCustomerDirect(dbFor('admin'), authFor('admin'), input, { customerId: 'import-history', importReference: { jobId: 'b'.repeat(64), rowNumber: 2 } });
+  assert.equal((await getDoc(doc(dbFor('admin'), 'orders', 'history'))).data().customerId, 'historical');
+  assert.equal((await getDoc(doc(dbFor('admin'), 'invoices', 'history'))).data().paymentStatus, 'paid');
 });
 
 test('Admin assignment and reassignment change User visibility without changing customer ID or contact reservation', async () => {

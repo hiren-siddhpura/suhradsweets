@@ -43,6 +43,7 @@ export function showSignedOut() {
   setHidden('workspace-content', true);
   setHidden('user-summary', true);
   setHidden('sign-out-button', true);
+  setHidden('mobile-sign-out-button', true);
   applyNavigation(null);
   clearLoginError();
   setStatus('Signed out');
@@ -56,6 +57,7 @@ function showIdentity(user, profile = null) {
   byId('user-initials').textContent = name.trim().charAt(0).toUpperCase() || '?';
   setHidden('user-summary', false);
   setHidden('sign-out-button', false);
+  setHidden('mobile-sign-out-button', false);
 }
 
 export function showAccessDenied(user, reason) {
@@ -96,6 +98,13 @@ function applyNavigation(profile) {
   document.querySelectorAll('[data-page]').forEach((item) => {
     item.hidden = !canAccessPage(profile, item.dataset.page);
   });
+  document.querySelectorAll('[data-mobile-page]').forEach((item) => {
+    item.hidden = !canAccessPage(profile, item.dataset.mobilePage);
+  });
+  document.querySelectorAll('[data-dashboard-page]').forEach((item) => {
+    item.hidden = !canAccessPage(profile, item.dataset.dashboardPage);
+  });
+  byId('mobile-navigation').hidden = !profile;
   const selected = document.querySelector('[data-page].is-active');
   if (!selected || selected.hidden) {
     const dashboard = document.querySelector('[data-page="dashboard"]');
@@ -114,6 +123,25 @@ export function showToast(message, tone = '') {
 export function initUi() {
   const menu = byId('menu-button');
   const scrim = byId('mobile-scrim');
+  const mobileMore = byId('mobile-more-button');
+  const masterView = byId('master-view');
+  for (const id of ['specials-view', 'targets-view']) masterView.append(byId(id));
+  const masterTabs = [...document.querySelectorAll('.master-tab')];
+  const selectMasterTab = (tab) => {
+    const selectedPage = tab.dataset.masterPage;
+    for (const item of masterTabs) {
+      const active = item === tab;
+      item.classList.toggle('is-active', active);
+      item.setAttribute('aria-selected', String(active));
+    }
+    byId('master-records-panel').hidden = !!selectedPage;
+    byId('master-target-form').hidden = !!selectedPage;
+    byId('master-business-form').hidden = !!selectedPage || tab.dataset.masterTab !== 'settings';
+    setHidden('specials-view', selectedPage !== 'specials');
+    setHidden('targets-view', selectedPage !== 'targets');
+    if (selectedPage) document.dispatchEvent(new CustomEvent('oms:pagechange', { detail: { page: selectedPage } }));
+  };
+  for (const tab of masterTabs) tab.addEventListener('click', () => selectMasterTab(tab));
   const closeMenu = () => {
     byId('sidebar').classList.remove('is-open');
     scrim.hidden = true;
@@ -126,7 +154,14 @@ export function initUi() {
     menu.setAttribute('aria-expanded', String(open));
     menu.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
   });
+  mobileMore.addEventListener('click', () => menu.click());
   scrim.addEventListener('click', closeMenu);
+  document.querySelectorAll('[data-mobile-page]').forEach((button) => button.addEventListener('click', () => {
+    document.querySelector(`[data-page="${button.dataset.mobilePage}"]`)?.click();
+  }));
+  document.querySelectorAll('[data-dashboard-page]').forEach((button) => button.addEventListener('click', () => {
+    document.querySelector(`[data-page="${button.dataset.dashboardPage}"]`)?.click();
+  }));
   document.querySelectorAll('[data-page]').forEach((button) => button.addEventListener('click', () => {
     const page = button.dataset.page;
     const details = PAGES[page];
@@ -137,7 +172,14 @@ export function initUi() {
       if (active) item.setAttribute('aria-current', 'page');
       else item.removeAttribute('aria-current');
     });
+    document.querySelectorAll('[data-mobile-page]').forEach((item) => {
+      const active = item.dataset.mobilePage === page;
+      item.classList.toggle('is-active', active);
+      if (active) item.setAttribute('aria-current', 'page');
+      else item.removeAttribute('aria-current');
+    });
     byId('page-heading').textContent = page === 'dashboard' ? 'Welcome to Suhrad Sweets' : details.title;
+    byId('topbar-page-title').textContent = details.title;
     byId('page-description').textContent = details.description;
     setHidden('dashboard-view', page !== 'dashboard');
     setHidden('feature-view', ['dashboard', 'master', 'inventory', 'purchases', 'orders', 'customers', 'specials', 'invoices', 'payments', 'targets', 'announcements', 'loginLogs', 'auditLogs'].includes(page));
@@ -146,10 +188,9 @@ export function initUi() {
     setHidden('purchases-view', page !== 'purchases');
     setHidden('orders-view', page !== 'orders');
     setHidden('customers-view', page !== 'customers');
-    setHidden('specials-view', page !== 'specials');
+    if (page === 'master') document.querySelector('[data-master-tab="items"]').click();
     setHidden('invoices-view', page !== 'invoices');
     setHidden('payments-view', page !== 'payments');
-    setHidden('targets-view', page !== 'targets');
     setHidden('announcements-view', page !== 'announcements');
     setHidden('loginLogs-view', page !== 'loginLogs');
     setHidden('auditLogs-view', page !== 'auditLogs');

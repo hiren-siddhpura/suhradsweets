@@ -1,6 +1,8 @@
 # Master Data: schema, queries and checks
 
-The staff-only Master Data page manages `items`, `purchaseTypes`, `users` and `settings`. The Unit Master tab is removed. Existing `units` documents remain for stock-unit references and historical records. Order choices are fixed as `KG`, `500 GM` and `250 GM`; `250 GM` appears only for Admin. Staff means an active `admin` or `account_admin` profile. Permanent client deletes are denied; deactivation sets `active: false` and preserves references.
+The Master Data page is available to active Admin and Account Admin profiles. Admin manages business details, special products, and all supported user roles. Account Admin manages User profiles only. Existing `units` documents remain for stock-unit references and historical records. Order choices are fixed as `KG`, `500 GM` and `250 GM`; `250 GM` is available to Admin. Permanent client deletes are denied; deactivation sets `active: false` and preserves references.
+
+New items use KG as their stock unit automatically. The first new item creates the `units/kg` document if it is missing. Existing items retain their saved stock unit when edited.
 
 ## Storage contract
 
@@ -30,10 +32,10 @@ Search, active filtering, sorting and ten-row pagination run on the retrieved co
 
 Use the Firestore emulator or Console Rules Playground with the exact local `firestore.rules`, and use client SDK identities for direct-access tests. Privileged Console Data/Admin SDK writes bypass rules.
 
-1. As Admin, add active unit, purchase type, setting and item. Confirm server timestamps and generated IDs. As Account Admin, repeat. As User and signed-out client, attempt direct creates/updates/deletes of every collection: all must fail.
+1. As Admin, add active unit, purchase type, setting and item. Confirm server timestamps and generated IDs. As Account Admin, repeat for permitted master privileges. As User and signed-out client, attempt direct creates/updates/deletes of every master collection: all must fail.
 2. Try blank names, negative and fractional-cent prices, missing/inactive unit IDs, invalid item codes, duplicate codes, and concurrent same-code creates. All must fail. Confirm item code remains immutable through direct updates.
 3. Edit and deactivate every master type, then reactivate via Edit. Confirm permanent deletes fail. Deactivate a unit referenced by an item; the item remains intact. Changing an item's unit must require an active target unit.
-4. Create an Auth account in Firebase Console, then create its profile from the Users tab using the exact UID. Verify Account Admin can create/edit User profiles only; only Admin can assign staff roles. Neither staff account can change its own profile through the client. User direct profile writes must fail.
+4. An Admin uses the Users tab and trusted callable to create Auth accounts and matching profiles without entering a UID. Verify Account Admin can manage only User profiles and User direct profile writes fail. Staff cannot change their own profile through the client.
 5. Switch tabs, search, filter, sort and paginate with more than ten records. Confirm empty and error states. Revoke a signed-in staff profile and confirm the visible workspace closes; direct master reads/writes must then fail.
 6. Verify item creation fails if either the item or its code reservation is written alone, and that deleting a referenced item/unit is denied. No workflow or test should put credentials in `settings` or `users`.
 

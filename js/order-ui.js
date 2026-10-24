@@ -326,17 +326,17 @@ export function initOrderUi({ db, functions, auth, mode }) {
       return `<tr><th scope="row">${esc(name || 'Item unavailable')}</th><td data-label="Unit / Qty">${quantity}</td><td data-label="Rate">${rate}</td><td data-label="Amount">${amount}</td></tr>`;
     }).join('');
     const discount = Number.isSafeInteger(o.discountPaise) && o.discountPaise > 0 ? `<div><span>Discount</span><strong>−${rupees(o.discountPaise)}</strong></div>` : '';
-    return `<div class="order-view"><div class="order-view-summary"><div class="order-view-identity"><strong>${esc(o.orderNumber)}</strong>${orderStatusBadge(o.status, !!o.archivedAt)}</div><dl><div><dt>Customer</dt><dd>${esc(o.customerSnapshot?.fullName || 'Unavailable')}</dd></div><div><dt>Assigned user</dt><dd>${esc(assignedUserName(o))}</dd></div><div><dt>Order date</dt><dd>${esc(o.orderDate || 'Unavailable')}</dd></div><div><dt>Invoice</dt><dd>${invoiced ? 'Created' : 'Not created'}</dd></div></dl></div><section aria-labelledby="order-view-items-title"><h3 id="order-view-items-title">Items</h3><table class="order-view-table"><thead><tr><th scope="col">Item</th><th scope="col">Unit / Qty</th><th scope="col">Rate</th><th scope="col">Amount</th></tr></thead><tbody>${lines || '<tr><td colspan="4">No items recorded.</td></tr>'}</tbody></table></section><div class="order-view-total">${Number.isSafeInteger(o.subtotal) ? `<div><span>Subtotal</span><strong>${rupees(o.subtotal)}</strong></div>` : ''}${discount}<div class="order-view-grand"><span>Total</span><strong>${Number.isSafeInteger(o.grandTotal) ? rupees(o.grandTotal) : 'Unavailable'}</strong></div></div>${o.notes ? `<section class="order-view-notes"><h3>Notes</h3><p>${esc(o.notes)}</p></section>` : ''}</div>`;
+    return `<div class="order-view"><div class="order-view-summary"><div class="order-view-identity"><strong>${esc(o.orderNumber)}</strong>${orderStatusBadge(o.status, !!o.archivedAt)}</div><dl><div><dt>Customer</dt><dd>${esc(o.customerSnapshot?.fullName || 'Unavailable')}</dd></div><div><dt>Assigned user</dt><dd>${esc(assignedUserName(o))}</dd></div><div><dt>Order date</dt><dd>${esc(o.orderDate || 'Unavailable')}</dd></div><div><dt>Invoice</dt><dd>${invoiced ? 'Created' : 'Not created'}</dd></div></dl>${admin() ? `<div class="order-reassignment"><label class="ops-field">Assigned User<select id="order-reassign-user">${eligibleUsers().map((row) => `<option value="${esc(row.id)}" ${row.id === (o.assignedUserId || o.ownerUid) ? 'selected' : ''}>${esc(row.displayName || row.fullName || 'Unnamed user')}</option>`).join('')}</select></label><button type="button" class="button button-outline" id="order-reassign-save" data-id="${esc(o.id)}">Save assignment</button></div>` : ''}</div><section aria-labelledby="order-view-items-title"><h3 id="order-view-items-title">Items</h3><table class="order-view-table"><thead><tr><th scope="col">Item</th><th scope="col">Unit / Qty</th><th scope="col">Rate</th><th scope="col">Amount</th></tr></thead><tbody>${lines || '<tr><td colspan="4">No items recorded.</td></tr>'}</tbody></table></section><div class="order-view-total">${Number.isSafeInteger(o.subtotal) ? `<div><span>Subtotal</span><strong>${rupees(o.subtotal)}</strong></div>` : ''}${discount}<div class="order-view-grand"><span>Total</span><strong>${Number.isSafeInteger(o.grandTotal) ? rupees(o.grandTotal) : 'Unavailable'}</strong></div></div>${o.notes ? `<section class="order-view-notes"><h3>Notes</h3><p>${esc(o.notes)}</p></section>` : ''}</div>`;
   }
 
   function openDialog(nextAction, id = '') {
     if (saving) return;
     if (nextAction !== 'order' || id) stopOrderViewport();
-    $('order-dialog').classList?.toggle?.('order-create-mode', nextAction === 'order' && !id);
-    if (nextAction === 'order' && !id && mobileNavigationParent) $('order-dialog').appendChild(mobileNavigation);
+    $('order-dialog').classList?.toggle?.('order-create-mode', nextAction === 'order');
+    if (nextAction === 'order' && mobileNavigationParent) $('order-dialog').appendChild(mobileNavigation);
     if (mobileNavigation?.parentNode === $('order-dialog')) mobileNavigation.hidden = nextAction !== 'order' || !!id;
-    $('order-dialog-close').textContent = nextAction === 'order' && !id ? '←' : '×';
-    $('order-dialog-close').setAttribute?.('aria-label', nextAction === 'order' && !id ? 'Back and close order' : 'Close dialog');
+    $('order-dialog-close').textContent = nextAction === 'order' ? '←' : '×';
+    $('order-dialog-close').setAttribute?.('aria-label', nextAction === 'order' ? 'Back and close order' : 'Close dialog');
     if (nextAction === 'order' && !parkedOrder) pendingCustomerDetails = null;
     if (nextAction === 'customer') pendingCustomerId = id || uniqueId();
     action = nextAction; targetId = id; $('order-form-error').hidden = true;
@@ -365,13 +365,14 @@ export function initOrderUi({ db, functions, auth, mode }) {
     }
     if (nextAction === 'order') {
       const selectedCustomer = o?.customerId || '';
-      $('order-fields').innerHTML = `<div class="order-customer-choice"><label class="ops-field" for="order-customer-search">Customer *</label><div class="order-customer-input-wrap"><input id="order-customer-search" type="search" autocomplete="off" placeholder="Search customer by name or phone number" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="order-customer-options" ${o ? 'readonly' : ''}><div id="order-customer-options" class="order-customer-options" role="listbox" hidden></div></div><input type="hidden" name="customerId" id="order-customer" value="${esc(selectedCustomer)}"><small id="order-customer-details"></small><button id="order-add-customer" class="order-add-customer" type="button" ${o ? 'hidden' : ''}><span aria-hidden="true">+</span><span>${pendingCustomerDetails ? 'Edit new customer' : 'Add New Customer'}</span></button></div>${admin() && o ? `<label class="ops-field">Assigned User<select name="assignedUserId" required disabled aria-describedby="order-assignment-lock">${eligibleUsers().map((row) => `<option value="${esc(row.id)}" ${o?.assignedUserId === row.id ? 'selected' : ''}>${esc(row.displayName || row.fullName || row.id)}</option>`).join('')}</select><small id="order-assignment-lock" class="muted">Assignment is locked after order creation.</small></label>` : admin() ? `<input type="hidden" name="assignedUserId" value="${esc(user?.uid || '')}">` : ''}${field('Order date', 'orderDate', 'date', o?.orderDate || new Date().toISOString().slice(0, 10), 'required')}${field('Delivery date (optional)', 'deliveryDate', 'date', o?.deliveryDate || '')}<div class="ops-lines order-entry-lines"><h3>Order Lines</h3><p id="order-stock-message" class="muted"></p><div id="order-lines">${(o?.lines || [{}]).map(orderLine).join('')}</div><button id="order-add-line" class="button button-outline" type="button">+ Add Line</button><p class="muted">Prices and stock are checked when the order is confirmed.${special() ? ' Special products use whole combos.' : ''}</p></div><label class="ops-field">Notes<textarea name="notes" maxlength="1000">${esc(o?.notes || '')}</textarea></label>`;
+      $('order-fields').innerHTML = `<div class="order-customer-choice"><label class="ops-field" for="order-customer-search">Customer *</label><div class="order-customer-input-wrap"><input id="order-customer-search" type="search" autocomplete="off" placeholder="Search customer by name or phone number" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="order-customer-options" ${o ? 'readonly' : ''}><div id="order-customer-options" class="order-customer-options" role="listbox" hidden></div></div><input type="hidden" name="customerId" id="order-customer" value="${esc(selectedCustomer)}"><small id="order-customer-details"></small><button id="order-add-customer" class="order-add-customer" type="button" ${o ? 'hidden' : ''}><span aria-hidden="true">+</span><span>${pendingCustomerDetails ? 'Edit new customer' : 'Add New Customer'}</span></button></div>${admin() && o ? `<p class="muted">Assigned User: ${esc(assignedUserName(o))}. Change assignment from order details.</p>` : admin() ? `<input type="hidden" name="assignedUserId" value="${esc(user?.uid || '')}">` : ''}${field('Order date', 'orderDate', 'date', o?.orderDate || new Date().toISOString().slice(0, 10), 'required')}${field('Delivery date (optional)', 'deliveryDate', 'date', o?.deliveryDate || '')}<div class="ops-lines order-entry-lines"><h3>Order Lines</h3><p id="order-stock-message" class="muted"></p><div id="order-lines">${(o?.lines || [{}]).map(orderLine).join('')}</div><button id="order-add-line" class="button button-outline" type="button">+ Add Line</button><p class="muted">Prices and stock are checked when the order is confirmed.${special() ? ' Special products use whole combos.' : ''}</p></div><label class="ops-field">Notes<textarea name="notes" maxlength="1000">${esc(o?.notes || '')}</textarea></label>`;
       const addCustomerIcon = $('order-add-customer')?.querySelector?.('[aria-hidden="true"]');
-      if (!o) {
+      {
       $('order-fields').innerHTML = '<div class="order-flow-header"><nav class="order-stepper" aria-label="Order steps"><span data-step="1" class="is-current">Customer</span><span data-step="2">Items</span><span data-step="3">Review</span></nav><h3>1. Customer details</h3><p class="order-step-subtitle">Select a customer for this order.</p></div>' + $('order-fields').innerHTML;
       orderStep = 1;
       productCategory = '';
-      if (!o) { $('order-lines')?.replaceChildren?.(); $('order-fields').querySelector?.('.order-entry-lines')?.classList?.add?.('order-editor-source'); }
+      if (!o) $('order-lines')?.replaceChildren?.();
+      $('order-fields').querySelector?.('.order-entry-lines')?.classList?.add?.('order-editor-source');
       $('order-dialog-save').hidden = true;
       $('order-fields').insertAdjacentHTML?.('beforeend', '<div class="order-flow-actions"><button type="button" class="button button-outline" id="order-step-back" hidden>Back to Customer</button><button type="button" class="button button-primary" id="order-step-next">Continue to Items</button></div>');
       $('order-fields').querySelector?.('.order-entry-lines')?.insertAdjacentHTML?.('beforebegin', '<section class="order-product-picker" aria-label="Choose order items"><div id="order-product-filters" class="order-product-filters" role="group" aria-label="Filter sweets"></div><div id="order-product-list"></div><div class="order-added-items"><div class="order-added-heading"><button type="button" class="order-cart-toggle" aria-expanded="false" data-toggle-order-cart><span class="order-cart-label">Order Items (0)</span><strong class="order-cart-total"></strong><span class="order-cart-chevron" aria-hidden="true">⌃</span></button></div><div class="order-cart-detail" hidden><div class="order-added-list"></div><button type="button" class="ops-link" data-clear-order-items hidden>Clear all</button></div><div class="order-running-total" hidden></div></div></section>');
@@ -390,7 +391,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     if (nextAction === 'intake') $('order-fields').innerHTML = `<p>Order-taking is currently ${acceptingOrders ? 'open' : 'paused'}.</p><label class="ops-field">New status<select name="acceptingOrders"><option value="false">Pause</option><option value="true">Resume</option></select></label>${field('Reason', 'reason', 'text', '', 'required maxlength="500"')}`;
     if (nextAction === 'invoice') $('order-fields').innerHTML = `<p>Create one invoice from ${esc(o?.orderNumber)}? The invoice checks stock, locks order edits, and uses the saved customer and price snapshots. Sabha is excluded.</p>`;
     if (!$('order-dialog').open) $('order-dialog').showModal();
-    if (nextAction === 'order' && !id) startOrderViewport();
+    if (nextAction === 'order') startOrderViewport();
   }
   function renderProductPicker() {
     const list = $('order-product-list'); if (!list) return;
@@ -489,12 +490,12 @@ export function initOrderUi({ db, functions, auth, mode }) {
     } else if (review) review.remove();
     if (orderStep === 2) renderAddedItems();
     const heading = fields.querySelector('.order-flow-header h3');
-    if (heading) heading.textContent = ['1. Customer details', '2. Add sweets to order', '3. Review and create order'][orderStep - 1];
+    if (heading) heading.textContent = ['1. Customer details', '2. Add sweets to order', targetId ? '3. Review and save changes' : '3. Review and create order'][orderStep - 1];
     const subtitle = fields.querySelector('.order-step-subtitle');
     if (subtitle) subtitle.textContent = ['Select a customer for this order.', 'Select sweets with required unit and quantity.', 'Check details and confirm.'][orderStep - 1];
     fields.querySelectorAll('.order-stepper span').forEach((step, index) => { step.classList.toggle('is-current', index + 1 === orderStep); step.classList.toggle('is-complete', index + 1 < orderStep); });
     const next = fields.querySelector('#order-step-next');
-    if (next) next.textContent = orderStep === 1 ? 'Continue to Items' : orderStep === 2 ? 'Continue to Review' : 'Save Order';
+    if (next) next.textContent = orderStep === 1 ? 'Continue to Items' : orderStep === 2 ? 'Continue to Review' : targetId ? 'Save Changes' : 'Save Order';
     const back = fields.querySelector('#order-step-back');
     if (back) { back.hidden = orderStep === 1; back.textContent = orderStep === 3 ? 'Back to Items' : 'Back to Customer'; }
   }
@@ -527,7 +528,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     const button = $('order-add-customer');
     if (button?.lastElementChild) button.lastElementChild.textContent = pendingCustomerDetails ? 'Edit new customer' : 'Add New Customer';
     hideCustomerOptions();
-    if (action === 'order' && !targetId && orderStep === 1) showCustomerOptions();
+    if (action === 'order' && orderStep === 1) showCustomerOptions();
   }
   function toggleNewCustomer() { selectCustomer($('order-customer')?.value || ''); }
   function openCustomerFromOrder() {
@@ -544,7 +545,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     parkedOrder = null;
     const fields = $('order-fields'); fields.innerHTML = ''; fields.appendChild(previous.fragment);
     action = 'order'; targetId = previous.targetId;
-    $('order-dialog').classList?.toggle?.('order-create-mode', !targetId);
+    $('order-dialog').classList?.toggle?.('order-create-mode', true);
     if (mobileNavigation?.parentNode === $('order-dialog')) mobileNavigation.hidden = !!targetId;
     $('order-dialog-close').textContent = targetId ? '×' : '←';
     $('order-dialog-close').setAttribute?.('aria-label', targetId ? 'Close dialog' : 'Back and close order');
@@ -557,12 +558,12 @@ export function initOrderUi({ db, functions, auth, mode }) {
     toggleNewCustomer();
     updateStockLabels();
     renderOrderStep();
-    if (!targetId) startOrderViewport();
+    startOrderViewport();
   }
   function closeOrderDialog() {
     if (parkedOrder) restoreOrderForm();
     else if (!saving) {
-      const hasDraft = action === 'order' && !targetId && ($('order-customer')?.value || draftLines().length || $('order-fields').querySelector?.('[name=notes]')?.value?.trim());
+      const hasDraft = action === 'order' && ($('order-customer')?.value || draftLines().length || $('order-fields').querySelector?.('[name=notes]')?.value?.trim());
       if (!hasDraft || !globalThis.confirm || globalThis.confirm('Discard this order draft?')) $('order-dialog').close();
     }
   }
@@ -570,7 +571,8 @@ export function initOrderUi({ db, functions, auth, mode }) {
   async function submit(event) {
     event.preventDefault();
     if (saving || action === 'viewOrder') return;
-    if (action === 'order' && !targetId && $('order-dialog').classList?.contains?.('order-create-mode') && orderStep !== 3) return;
+    if (action === 'order' && $('order-dialog').classList?.contains?.('order-create-mode') && orderStep !== 3) return;
+    if (action === 'order' && targetId && globalThis.confirm && !globalThis.confirm('Save changes to this order?')) return;
     saving = true;
     const data = new FormData(event.currentTarget), button = $('order-dialog-save');
     button.disabled = true; $('order-form-error').hidden = true;
@@ -753,13 +755,26 @@ export function initOrderUi({ db, functions, auth, mode }) {
     if (event.key === 'Escape') { hideCustomerOptions(); event.target.blur(); }
     if (event.key === 'ArrowDown') { event.preventDefault(); $('order-customer-options')?.querySelector('button')?.focus(); }
   });
-  document.addEventListener('click', (event) => { if (action === 'order' && !targetId && orderStep === 1) return; if (!event.target.closest?.('.order-customer-choice')) hideCustomerOptions(); });
+  document.addEventListener('click', (event) => { if (action === 'order' && orderStep === 1) return; if (!event.target.closest?.('.order-customer-choice')) hideCustomerOptions(); });
   $('order-fields').addEventListener('change', (event) => {
     if (event.target.name === 'productId') refreshStock();
     if (event.target.name === 'unitId') updateStockLabels();
     if (event.target.name === 'kind') { const row = event.target.closest('.ops-line'); row.querySelector('[name=productId]').innerHTML = productOptions(event.target.value); const unit = row.querySelector('.order-line-unit'); if (unit) { unit.hidden = event.target.value !== 'item'; unit.querySelector('select').disabled = event.target.value !== 'item'; } refreshStock(); }
   });
   $('order-fields').addEventListener('click', (event) => {
+    if (event.target.closest?.('#order-reassign-save')) {
+      const button = event.target.closest('#order-reassign-save');
+      const assignedUserId = $('order-reassign-user')?.value;
+      if (!admin() || !assignedUserId || button.disabled) return;
+      button.disabled = true;
+      void callOperation(functions, 'reassignOrder', { orderId: button.dataset.id, assignedUserId }).then(async () => {
+        await refresh('orders');
+        const updated = orders.find((row) => row.id === button.dataset.id);
+        if (updated && action === 'viewOrder') $('order-fields').innerHTML = viewOrderContent(updated);
+        showToast('Assigned user updated.');
+      }).catch((error) => { showToast(cleanError(error), 'toast-error'); button.disabled = false; });
+      return;
+    }
     const category = event.target.closest?.('[data-product-category]');
     if (category) { productCategory = category.dataset.productCategory; renderProductPicker(); return; }
     if (event.target.closest?.('[data-toggle-order-cart]')) {
@@ -808,7 +823,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
   $('order-dialog-cancel').addEventListener('click', closeOrderDialog);
   $('order-dialog').addEventListener('cancel', (event) => {
     if (parkedOrder) { event.preventDefault(); restoreOrderForm(); return; }
-    if (saving || action === 'order' && !targetId && ($('order-customer')?.value || draftLines().length || $('order-fields').querySelector?.('[name=notes]')?.value?.trim()) && globalThis.confirm && !globalThis.confirm('Discard this order draft?')) event.preventDefault();
+    if (saving || action === 'order' && ($('order-customer')?.value || draftLines().length || $('order-fields').querySelector?.('[name=notes]')?.value?.trim()) && globalThis.confirm && !globalThis.confirm('Discard this order draft?')) event.preventDefault();
   });
   $('order-dialog').addEventListener('close', () => {
     stopOrderViewport(true);

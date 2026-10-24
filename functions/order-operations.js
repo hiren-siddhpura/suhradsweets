@@ -47,6 +47,24 @@ export function orderEvent(tx, db, type, user, orderId, order, changedFields = {
     detail: { changedFields, reason }, outcome: 'success', at: FieldValue.serverTimestamp(),
   });
 }
+export async function reassignOrder(db, uid, input) {
+  if (!validId(input?.orderId) || !validId(input?.assignedUserId)) fail('Choose an order and an active assigned user.');
+  return db.runTransaction(async (tx) => {
+    const administrator = await actor(db, uid, tx);
+    if (administrator.role !== 'admin') fail('Access denied: only Admin may reassign orders.');
+    const orderRef = db.doc(`orders/${input.orderId}`);
+    const assigneeRef = db.doc(`users/${input.assignedUserId}`);
+    const [orderSnap, assigneeSnap] = await Promise.all([tx.get(orderRef), tx.get(assigneeRef)]);
+    if (!orderSnap.exists) fail('Order does not exist.');
+    if (!assigneeSnap.exists || assigneeSnap.data().active !== true || !['admin', 'account_admin', 'user'].includes(assigneeSnap.data().role)) fail('Choose an active OMS account.');
+    const order = orderSnap.data();
+    const previous = order.assignedUserId || order.ownerUid;
+    if (previous === input.assignedUserId) return { orderId: input.orderId, assignedUserId: previous, unchanged: true };
+    tx.update(orderRef, { assignedUserId: input.assignedUserId, updatedAt: FieldValue.serverTimestamp(), updatedBy: uid });
+    orderEvent(tx, db, 'order.reassigned', administrator, input.orderId, order, { assignedUserId: { before: previous, after: input.assignedUserId } });
+    return { orderId: input.orderId, assignedUserId: input.assignedUserId };
+  });
+}
 async function takingOrders(db, tx) {
   const control = await tx.get(db.doc('orderControls/global'));
   if (control.exists && control.data().acceptingOrders === false) fail('Order-taking is paused.');
@@ -289,7 +307,7 @@ export async function saveOrderDraft(db, uid, input) {
       setStock(tx, part.stockRef, part.state, part.state.onHandQty - part.quantityQty, uid);
       movement(tx, db, `order_${orderId}_${part.itemId}`, part.itemId, { ...part.itemSnapshot, defaultUnitId: part.itemSnapshot.unitId }, 'order_confirm', -part.quantityQty, part.state.onHandQty, 'order', orderId, 'Order confirmed on creation', uid, ownerUid, user.name);
     }
-    const values = { orderNumber, customerId, customerSnapshot: customerSnapshot(customerData), assignedUserId: ownerUid, ownerUid, orderDate: input.orderDate, deliveryDate: input.deliveryDate || null, status: old.exists ? old.data().status : 'confirmed', lines, subtotal, grandTotal: subtotal, notes: clean(input.notes), editRevision: revision, ...(!old.exists ? { stockDeductions: initialDeductions.map(({ itemId, quantityQty, itemSnapshot }) => ({ itemId, quantityQty, itemSnapshot })), confirmedAt: FieldValue.serverTimestamp(), confirmedBy: uid } : revisedDeductions ? { stockDeductions: revisedDeductions } : {}), updatedAt: FieldValue.serverTimestamp(), updatedBy: uid };
+    const values = { orderNumber, customerId, customerSnapshot: customerSnapshot(customerData), assignedUserId: old.exists ? old.data().assignedUserId || ownerUid : ownerUid, ownerUid, orderDate: input.orderDate, deliveryDate: input.deliveryDate || null, status: old.exists ? old.data().status : 'confirmed', lines, subtotal, grandTotal: subtotal, notes: clean(input.notes), editRevision: revision, ...(!old.exists ? { stockDeductions: initialDeductions.map(({ itemId, quantityQty, itemSnapshot }) => ({ itemId, quantityQty, itemSnapshot })), confirmedAt: FieldValue.serverTimestamp(), confirmedBy: uid } : revisedDeductions ? { stockDeductions: revisedDeductions } : {}), updatedAt: FieldValue.serverTimestamp(), updatedBy: uid };
     if (old.exists) tx.update(ref, values);
     else tx.create(ref, { ...values, createdBy: uid, createdAt: FieldValue.serverTimestamp() });
     orderEvent(tx, db, old.exists ? 'order.edited' : 'order.created', user, orderId, values, orderChanges(old.exists ? old.data() : null, values));

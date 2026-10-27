@@ -26,6 +26,10 @@ async function exportRows(name, rows) {
 
 export function initFinanceUi({ db, functions }) {
   let user = null, profile = null, invoices = [], payments = [], paymentsLoaded = false, revision = 0, action = '', target = '', resolvedNames = new Map(), paymentOperationId = '', paymentPage = 1;
+  let recordLoadToken = null, activityLoadToken = null;
+  const stopRecordLoad = () => { if (recordLoadToken) globalThis.omsLoading?.stop(recordLoadToken); recordLoadToken = null; };
+  const stopActivityLoad = () => { if (activityLoadToken) globalThis.omsLoading?.stop(activityLoadToken); activityLoadToken = null; };
+  const pendingFinance = new Set();
   let previewInvoice = null, previewBlob = null, previewRevision = 0;
   const downloadBlob = (blob, filename) => {
     const url = URL.createObjectURL(blob);
@@ -93,7 +97,12 @@ export function initFinanceUi({ db, functions }) {
   async function refresh() {
     if (!user || !profile) return;
     const current = ++revision, owner = privileged() ? null : user.uid;
-    $('invoice-message').textContent = 'Loading invoices…'; $('payment-message').textContent = 'Loading payments…';
+    $('invoice-message').textContent = ''; $('payment-message').textContent = '';
+    stopRecordLoad();
+    const activePage = document.querySelector?.('[data-page].is-active')?.dataset.page;
+    const token = ['invoices', 'payments'].includes(activePage) ? globalThis.omsLoading?.start('Loading invoices and payments…') || null : null;
+    recordLoadToken = token;
+    try {
     const [invoiceResult, paymentResult] = await Promise.allSettled([listInvoices(db, owner), listPayments(db, owner)]);
     if (current !== revision) return;
     invoices = invoiceResult.status === 'fulfilled' ? invoiceResult.value : [];
@@ -113,6 +122,7 @@ export function initFinanceUi({ db, functions }) {
     $('invoice-message').textContent = invoiceResult.status === 'rejected' ? `Could not load invoices: ${message(invoiceResult.reason)}`
       : paymentResult.status === 'rejected' ? 'Could not check payment submissions. Refresh before adding a payment.' : '';
     $('payment-message').textContent = paymentResult.status === 'rejected' ? `Could not load payments: ${message(paymentResult.reason)}` : '';
+    } finally { if (recordLoadToken === token) stopRecordLoad(); }
   }
   function openDialog(kind, id) {
     action = kind; target = id; $('finance-error').hidden = true;
@@ -153,9 +163,16 @@ export function initFinanceUi({ db, functions }) {
         return;
       }
       if (['submit', 'correct', 'reject', 'reverse'].includes(kind)) { openDialog(kind, id); return; }
-      if (kind === 'paid') await callOperation(functions, 'markInvoicePaid', { invoiceId: id });
-      if (kind === 'verify') await callOperation(functions, 'reviewPayment', { paymentId: id, decision: 'verified' });
-      showToast(kind === 'paid' ? 'Invoice marked paid.' : 'Payment verified.'); await refresh(); await loadPaymentActivity();
+      if (!['paid', 'verify'].includes(kind)) return;
+      const key = `${kind}:${id}`;
+      if (pendingFinance.has(key)) return;
+      pendingFinance.add(key);
+      try {
+        if (kind === 'paid') await callOperation(functions, 'markInvoicePaid', { invoiceId: id });
+        else await callOperation(functions, 'reviewPayment', { paymentId: id, decision: 'verified' });
+        showToast(kind === 'paid' ? 'Invoice marked paid.' : 'Payment verified.');
+        await refresh(); await loadPaymentActivity();
+      } finally { pendingFinance.delete(key); }
     } catch (error) { showToast(message(error), 'toast-error'); }
   }
   ['invoice', 'payment'].forEach((kind) => {
@@ -196,7 +213,10 @@ export function initFinanceUi({ db, functions }) {
   async function loadPaymentActivity() {
     if (!activityMounted || !user || !profile) return;
     const current = ++activityRevision;
-    $('payment-activity-message').textContent = 'Loading payment activity…';
+    $('payment-activity-message').textContent = '';
+    stopActivityLoad();
+    const token = globalThis.omsLoading?.start('Loading payment activity…') || null;
+    activityLoadToken = token;
     try {
       const result = await listActivity(db, profile, user?.uid, 'payment', activityFilters(), activityCursors[activityPage - 1]);
       if (current !== activityRevision) return;
@@ -205,6 +225,7 @@ export function initFinanceUi({ db, functions }) {
       $('payment-activity-message').textContent = '';
       renderPaymentActivity();
     } catch (error) { if (current === activityRevision) $('payment-activity-message').textContent = `Could not load payment activity: ${message(error)}`; }
+    finally { if (activityLoadToken === token) stopActivityLoad(); }
   }
   if (activityMounted) {
     paymentView.insertAdjacentHTML('beforeend', `<div class="section-heading"><div><p class="eyebrow">HISTORY</p><h3>Payment Activity Log</h3></div></div><div class="card ops-panel"><div class="ops-toolbar"><input id="payment-activity-actor" type="search" placeholder="Actor" aria-label="Activity actor"><input id="payment-activity-customer" type="search" placeholder="Customer" aria-label="Activity customer"><input id="payment-activity-order" type="search" placeholder="Order" aria-label="Activity order"><input id="payment-activity-invoice" type="search" placeholder="Invoice" aria-label="Activity invoice"><select id="payment-activity-type" aria-label="Activity action"><option value="">All actions</option><option value="payment.submitted">Submitted</option><option value="payment.mode_changed">Mode changed</option><option value="payment.verified">Verified</option><option value="payment.rejected">Rejected</option><option value="payment.reversed">Reversed</option></select><input id="payment-activity-from" type="date" aria-label="Activity from"><input id="payment-activity-to" type="date" aria-label="Activity to"><button id="payment-activity-apply" type="button" class="button button-outline">Apply</button><button id="payment-activity-export" type="button" class="button button-outline">Export XLSX</button></div><p id="payment-activity-message" class="ops-message" role="status"></p><div class="table-scroll"><table><thead><tr><th>When</th><th>Action</th><th>Customer</th><th>Order</th><th>Invoice</th><th>Amount</th><th>Method</th><th>Actor</th><th>Changes / reason</th></tr></thead><tbody id="payment-activity-body"></tbody></table></div><div class="master-pagination"><button id="payment-activity-prev" type="button" class="button button-outline">Previous</button><span id="payment-activity-page">Page 1</span><button id="payment-activity-next" type="button" class="button button-outline">Next</button></div></div>`);
@@ -263,6 +284,6 @@ export function initFinanceUi({ db, functions }) {
       $('finance-dialog').close(); showToast(action === 'submit' ? 'Payment submitted for verification.' : 'Payment history updated.'); await refresh(); await loadPaymentActivity();
     } catch (error) { $('finance-error').textContent = message(error); $('finance-error').hidden = false; } finally { $('finance-save').disabled = false; $('finance-save').textContent = 'Save'; }
   });
-  document.addEventListener('oms:pagechange', (event) => { if (['invoices', 'payments'].includes(event.detail.page)) refresh(); if (event.detail.page === 'payments') loadPaymentActivity(); });
-  return { setSession(nextUser, nextProfile) { revision++; activityRevision++; user = nextUser; profile = nextProfile; invoices = []; payments = []; paymentsLoaded = false; resolvedNames = new Map(); paymentPage = 1; activityRows = []; activityPage = 1; activityCursors = [null]; if (user && profile) refresh(); else { $('invoice-body').innerHTML = ''; $('payment-body').innerHTML = ''; renderPaymentActivity(); } } };
+  document.addEventListener('oms:pagechange', (event) => { if (!['invoices', 'payments'].includes(event.detail.page)) stopRecordLoad(); if (event.detail.page !== 'payments') stopActivityLoad(); if (['invoices', 'payments'].includes(event.detail.page)) refresh(); if (event.detail.page === 'payments') loadPaymentActivity(); });
+  return { setSession(nextUser, nextProfile) { revision++; activityRevision++; stopRecordLoad(); stopActivityLoad(); user = nextUser; profile = nextProfile; invoices = []; payments = []; paymentsLoaded = false; resolvedNames = new Map(); paymentPage = 1; activityRows = []; activityPage = 1; activityCursors = [null]; if (user && profile) refresh(); else { $('invoice-body').innerHTML = ''; $('payment-body').innerHTML = ''; renderPaymentActivity(); } } };
 }

@@ -110,6 +110,11 @@ function applyNavigation(profile) {
     const dashboard = document.querySelector('[data-page="dashboard"]');
     if (!dashboard.hidden) dashboard.click();
   }
+  if (profile && window.location.hash === '#boxReq') {
+    const boxButton = document.querySelector('[data-page="boxReq"]');
+    if (!boxButton.hidden) boxButton.click();
+    else window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
 }
 
 export function showToast(message, tone = '') {
@@ -121,6 +126,12 @@ export function showToast(message, tone = '') {
 }
 
 export function initUi() {
+  window.addEventListener('hashchange', () => {
+    if (window.location.hash !== '#boxReq') return;
+    const button = document.querySelector('[data-page="boxReq"]');
+    if (!byId('workspace-content').hidden && !button.hidden) button.click();
+    else window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  });
   const menu = byId('menu-button');
   const scrim = byId('mobile-scrim');
   const masterView = byId('master-view');
@@ -164,6 +175,8 @@ export function initUi() {
     const page = button.dataset.page;
     const details = PAGES[page];
     if (!details || button.hidden) return;
+    if (page === 'boxReq' && window.location.hash !== '#boxReq') window.history.replaceState(null, '', '#boxReq');
+    else if (page !== 'boxReq' && window.location.hash === '#boxReq') window.history.replaceState(null, '', window.location.pathname + window.location.search);
     document.querySelectorAll('[data-page]').forEach((item) => {
       const active = item === button;
       item.classList.toggle('is-active', active);
@@ -180,7 +193,8 @@ export function initUi() {
     byId('topbar-page-title').textContent = details.title;
     byId('page-description').textContent = details.description;
     setHidden('dashboard-view', page !== 'dashboard');
-    setHidden('feature-view', ['dashboard', 'master', 'inventory', 'purchases', 'orders', 'customers', 'specials', 'invoices', 'payments', 'targets', 'announcements', 'loginLogs', 'auditLogs'].includes(page));
+    setHidden('feature-view', ['dashboard', 'master', 'boxReq', 'inventory', 'purchases', 'orders', 'customers', 'specials', 'invoices', 'payments', 'targets', 'announcements', 'loginLogs', 'auditLogs'].includes(page));
+    setHidden('boxReq-view', page !== 'boxReq');
     setHidden('master-view', page !== 'master');
     setHidden('inventory-view', page !== 'inventory');
     setHidden('purchases-view', page !== 'purchases');

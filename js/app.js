@@ -39,8 +39,8 @@ initPasswordVisibilityToggle();
 showLoading();
 
 try {
-  const [{ initializeFirebase }, { observeAuth, signIn, signOutUser }, { observeUserProfile, recordAuthEvent }, { initMasterData }, { initOperationsUi }, { initOrderUi }, { initFinanceUi }, { initReportingUi }, { configureOperations }, { initCustomerImport }] = await Promise.all([
-    import('./firebase-config.js'), import('./auth.js'), import('./data.js'), import('./master-ui.js'), import('./operations-ui.js'), import('./order-ui.js'), import('./finance-ui.js'), import('./reporting-ui.js'), import('./operations-data.js'), import('./customer-import-ui.js'),
+  const [{ initializeFirebase }, { observeAuth, signIn, signOutUser }, { observeUserProfile, recordAuthEvent }, { initMasterData }, { initOperationsUi }, { initOrderUi }, { initFinanceUi }, { initReportingUi }, { configureOperations }, { initCustomerImport }, { initBoxReq }] = await Promise.all([
+    import('./firebase-config.js'), import('./auth.js'), import('./data.js'), import('./master-ui.js'), import('./operations-ui.js'), import('./order-ui.js'), import('./finance-ui.js'), import('./reporting-ui.js'), import('./operations-data.js'), import('./customer-import-ui.js'), import('./box-req-ui.js'),
   ]);
   const services = initializeFirebase();
   if (!services) {
@@ -59,12 +59,17 @@ try {
     const customerImport = initCustomerImport(services);
     const finance = initFinanceUi(services);
     const reporting = initReportingUi(services);
+    const boxReq = initBoxReq(services);
     let authRevision = 0;
     let stopProfile = null;
+    let profileTimer = null;
+    const authStartupTimer = setTimeout(() => showError('Sign-in state is taking too long to load. Check your connection and reload.'), 20000);
     observeAuth(services.auth, (user) => {
+      clearTimeout(authStartupTimer);
       const revision = ++authRevision;
+      clearTimeout(profileTimer);
       if (stopProfile) { stopProfile(); stopProfile = null; }
-      if (!user) { authDiagnostic('no-authenticated-user', services); master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); customerImport.setSession(null, null); finance.setSession(null, null); reporting.setSession(null, null); showSignedOut(); return; }
+      if (!user) { authDiagnostic('no-authenticated-user', services); master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); customerImport.setSession(null, null); finance.setSession(null, null); reporting.setSession(null, null); boxReq.setSession(null, null); showSignedOut(); return; }
       if (!sameProject) {
         authDiagnostic('firebase-configuration-mismatch', services);
         showAccessDenied(user, 'Authentication and Firestore are configured for different Firebase projects. Check the web configuration.');
@@ -72,6 +77,9 @@ try {
       }
       authDiagnostic('profile-read-started', services);
       showLoading('Loading your account profile.');
+      profileTimer = setTimeout(() => {
+        if (revision === authRevision) showError('Account verification is taking too long. Check your connection and reload.');
+      }, 20000);
       stopProfile = observeUserProfile(services.db, user.uid, (profile, fromCache) => {
         if (revision !== authRevision) return;
         if (fromCache) {
@@ -81,15 +89,18 @@ try {
           customerImport.setSession(null, null);
           finance.setSession(null, null);
           reporting.setSession(null, null);
+          boxReq.setSession(null, null);
           showLoading('Verifying your account with Firestore.');
           return;
         }
+        clearTimeout(profileTimer);
         const reason = validateProfile(profile);
         if (reason) authDiagnostic(reason === 'missing' ? 'user-document-missing' : reason === 'inactive' ? 'user-account-inactive' : 'user-role-or-profile-invalid', services);
         else authDiagnostic('user-profile-verified', services);
-        if (reason) { master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); customerImport.setSession(null, null); finance.setSession(null, null); reporting.setSession(null, null); showAccessDenied(user, accessMessage(reason)); }
-        else { showSignedIn(user, profile); master.setSession(user, profile); operations.setSession(user, profile); orders.setSession(user, profile); customerImport.setSession(user, profile); finance.setSession(user, profile); reporting.setSession(user, profile); }
+        if (reason) { master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); customerImport.setSession(null, null); finance.setSession(null, null); reporting.setSession(null, null); boxReq.setSession(null, null); showAccessDenied(user, accessMessage(reason)); }
+        else { boxReq.setSession(user, profile); showSignedIn(user, profile); master.setSession(user, profile); operations.setSession(user, profile); orders.setSession(user, profile); customerImport.setSession(user, profile); finance.setSession(user, profile); reporting.setSession(user, profile); }
       }, (error) => {
+        clearTimeout(profileTimer);
         authDiagnostic(firebaseErrorCode(error) === 'permission-denied' ? 'profile-read-permission-denied' : ['unavailable', 'deadline-exceeded'].includes(firebaseErrorCode(error)) ? 'profile-read-network-error' : 'profile-read-firebase-error', services, error);
         if (revision === authRevision) {
           master.setSession(null, null);
@@ -98,15 +109,17 @@ try {
           customerImport.setSession(null, null);
           finance.setSession(null, null);
           reporting.setSession(null, null);
+          boxReq.setSession(null, null);
           showAccessDenied(user, profileReadErrorMessage(error, emulatorMode));
         }
       });
-    }, (error) => { authDiagnostic('auth-state-error', services, error); showError('Authentication could not start. Check the browser console diagnostic code and your connection.'); });
+    }, (error) => { clearTimeout(authStartupTimer); clearTimeout(profileTimer); authDiagnostic('auth-state-error', services, error); showError('Authentication could not start. Check the browser console diagnostic code and your connection.'); });
 
     document.getElementById('sign-in-form').addEventListener('submit', async (event) => {
       event.preventDefault();
       const button = document.getElementById('sign-in-button');
       const form = event.currentTarget;
+      if (button.disabled) return;
       button.disabled = true;
       const loadingToken = startLoading('Signing in…');
       button.textContent = 'Signing in…';
@@ -133,6 +146,11 @@ try {
     });
     document.getElementById('mobile-sign-out-button').addEventListener('click', () => document.getElementById('sign-out-button').click());
     document.getElementById('sign-out-button').addEventListener('click', async () => {
+      const button = document.getElementById('sign-out-button');
+      if (button.disabled) return;
+      button.disabled = true;
+      const loadingToken = startLoading('Signing out…');
+      try {
       const user = services.auth.currentUser;
       if (user) {
         authDiagnostic('logout-log-write-started', services);
@@ -144,6 +162,7 @@ try {
       }
       try { await signOutUser(services.auth); }
       catch (error) { authDiagnostic('sign-out-failed', services, error); showToast('Sign-out failed. Check your connection and try again.', 'toast-error'); }
+      } finally { stopLoading(loadingToken); button.disabled = false; }
     });
   }
 } catch (error) {

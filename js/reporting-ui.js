@@ -27,6 +27,8 @@ export function initReportingUi({ db, functions }) {
   document.querySelector('#auditLogs-view thead')?.replaceChildren(...(() => { const row = document.createElement('tr'); row.innerHTML = '<th>Date and time</th><th>Action</th><th>Actor</th><th>Record</th><th>Summary</th>'; return [row]; })());
   let user = null, profile = null, users = [], revision = 0, dashboardRun = 0, dialogKind = '', editing = null;
   const state = Object.fromEntries(['target', 'announcement', 'login', 'audit'].map((name) => [name, { page: 1, cursors: [null], rows: [], hasMore: false, busy: false }]));
+  const loadTokens = new Map(), loadRuns = new Map();
+  const stopLoad = (kind) => { const token = loadTokens.get(kind); if (token) globalThis.omsLoading?.stop(token); loadTokens.delete(kind); };
   const staff = () => isStaff(profile);
   const canManage = (kind) => hasPermission(profile, kind === 'target' ? 'manageTargets' : 'manageAnnouncements');
   const userName = (uid) => { const entry = users.find((item) => item.id === uid); return entry?.displayName || entry?.fullName || (uid === user?.uid ? profile?.displayName || profile?.fullName : '') || uid || '—'; };
@@ -44,26 +46,30 @@ export function initReportingUi({ db, functions }) {
 
   async function load(kind, reset = false) {
     if (!profile || kind === 'target' && !canManage('target') || kind === 'announcement' && !canManage('announcement') || ['login', 'audit'].includes(kind) && !staff()) return;
-    const version = revision, cursorState = state[kind];
+    const version = revision, cursorState = state[kind], run = (loadRuns.get(kind) || 0) + 1;
+    loadRuns.set(kind, run);
+    const current = () => version === revision && run === loadRuns.get(kind);
     if (reset) { cursorState.page = 1; cursorState.cursors = [null]; }
-    cursorState.busy = true; $(`${kind}-message`).textContent = 'Loading records…';
+    cursorState.busy = true; $(`${kind}-message`).textContent = '';
+    stopLoad(kind);
+    loadTokens.set(kind, globalThis.omsLoading?.start(`Loading ${kind === 'audit' ? 'audit logs' : kind === 'login' ? 'login logs' : kind === 'target' ? 'targets' : 'announcements'}…`) || null);
     try {
       const page = await reportPage(db, mapping[kind], filters(kind), ownUid(kind), cursorState.cursors[cursorState.page - 1], kind === 'target' ? 10 : 20);
-      if (version !== revision) return;
+      if (!current()) return;
       cursorState.rows = page.rows; cursorState.hasMore = page.hasMore; cursorState.nextCursor = page.cursor;
-      await render(kind, page.rows, version);
-      $(`${kind}-message`).textContent = '';
-    } catch (error) { if (version === revision) { cursorState.rows = []; $(`${kind}-message`).textContent = issue(error); await render(kind, [], version); } }
-    finally { cursorState.busy = false; }
+      await render(kind, page.rows, version, run);
+      if (current()) $(`${kind}-message`).textContent = '';
+    } catch (error) { if (current()) { cursorState.rows = []; $(`${kind}-message`).textContent = issue(error); await render(kind, [], version, run); } }
+    finally { if (current()) { cursorState.busy = false; stopLoad(kind); } }
   }
 
-  async function render(kind, rows, version) {
+  async function render(kind, rows, version, run) {
     const cursorState = state[kind];
     $(`${kind}-page`).textContent = `Page ${cursorState.page}${cursorState.hasMore ? ' · more available' : ''}`;
     $(`${kind}-prev`).disabled = cursorState.page === 1; $(`${kind}-next`).disabled = !cursorState.hasMore;
     if (kind === 'target') {
       const achieved = await Promise.all(rows.map((entry) => targetAchievement(db, entry).catch(() => null)));
-      if (version !== revision) return;
+      if (version !== revision || run !== loadRuns.get(kind)) return;
       $('target-cards').innerHTML = card('Targets on page', rows.length) + card('Active on page', rows.filter((entry) => entry.active).length) + card('Target value on page', money(rows.reduce((sum, entry) => sum + Number(entry.targetPaise || 0), 0)));
       $('target-body').innerHTML = rows.length ? rows.map((entry, index) => `<tr><td>${esc(userName(entry.ownerUid))}</td><td>${esc(entry.periodType)}</td><td>${esc(entry.periodStart)} to ${esc(entry.periodEnd)}</td><td>${esc(money(entry.targetPaise))}</td><td>${achieved[index] === null ? 'Unavailable' : esc(money(achieved[index]))}</td><td>${entry.targetPaise === 0 ? 'N/A' : achieved[index] === null ? 'Unavailable' : `${esc(((achieved[index] / entry.targetPaise) * 100).toFixed(1))}%`}</td><td>${entry.active ? 'Active' : 'Inactive'}</td><td class="ops-actions">${canManage('target') ? `<button data-report="edit" data-kind="target" data-id="${esc(entry.id)}">Edit</button>${entry.active ? `<button data-report="deactivate" data-kind="target" data-id="${esc(entry.id)}">Deactivate</button>` : ''}` : ''}</td></tr>`).join('') : empty(8, 'No targets match these filters.');
     } else if (kind === 'announcement') {
@@ -176,18 +182,21 @@ export function initReportingUi({ db, functions }) {
   document.addEventListener('oms:dashboard-targetchange', () => { if (!document.getElementById('dashboard-view').hidden) dashboard(); });
   $('report-dialog-close').onclick = $('report-cancel').onclick = () => $('report-dialog').close();
   for (const kind of ['target', 'announcement']) $(`${kind}-body`).addEventListener('click', async (event) => {
-    const button = event.target.closest('[data-report]'); if (!button || !canManage(kind)) return;
+    const button = event.target.closest('[data-report]'); if (!button || button.disabled || !canManage(kind)) return;
     const record = state[kind].rows.find((entry) => entry.id === button.dataset.id); if (!record) return;
     if (button.dataset.report === 'edit') { openDialog(kind, record); return; }
+    button.disabled = true;
     try {
       if (kind === 'target') await callOperation(functions, 'saveTarget', { ownerUid: record.ownerUid, periodType: record.periodType, periodStart: record.periodStart, targetPaise: record.targetPaise, active: false });
       else await callOperation(functions, 'saveAnnouncement', { announcementId: record.id, title: record.title, body: record.body, audience: record.audience, startsOn: record.startsOn, expiresOn: record.expiresOn, active: false });
       showToast('Record deactivated.'); await load(kind);
     } catch (error) { showToast(issue(error), 'toast-error'); }
+    finally { button.disabled = false; }
   });
   $('report-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!canManage(dialogKind)) { $('report-error').textContent = 'Access denied: a privileged OMS role is required.'; $('report-error').hidden = false; return; }
+    if ($('report-save').disabled) return;
     $('report-save').disabled = true; $('report-error').hidden = true;
     try {
       const values = new FormData(event.currentTarget);
@@ -200,13 +209,14 @@ export function initReportingUi({ db, functions }) {
     finally { $('report-save').disabled = false; }
   });
   document.addEventListener('oms:pagechange', (event) => {
+    for (const kind of loadTokens.keys()) if (mapping[kind] !== event.detail.page) stopLoad(kind);
     if (!profile) return;
     if (event.detail.page === 'dashboard') dashboard();
     const kind = Object.keys(mapping).find((key) => mapping[key] === event.detail.page);
     if (kind) load(kind, true);
   });
   return { async setSession(nextUser, nextProfile) {
-    revision++; user = nextUser; profile = nextProfile; users = [];
+    revision++; for (const kind of loadTokens.keys()) stopLoad(kind); user = nextUser; profile = nextProfile; users = [];
     $('target-new').hidden = !canManage('target'); $('target-users').hidden = !hasPermission(profile, 'manageUsers'); $('announcement-new').hidden = !canManage('announcement'); $('target-user').hidden = !canManage('target');
     if (!user || !profile) { $('dashboard-cards').innerHTML = ''; return; }
     const version = revision;

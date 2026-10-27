@@ -56,8 +56,19 @@ export function initOrderUi({ db, functions, auth, mode }) {
   const mobileNavigationNext = mobileNavigation?.nextSibling;
   let invoiceIds = new Set(), stockAvailability = new Map(), stockMessage = '';
   let activityPage = 1, activityCursors = [null], activityRows = [], activityNext = null, activityHasMore = false, activityRevision = 0;
+  let activityLoadToken = null;
+  const stopActivityLoad = () => { if (activityLoadToken) globalThis.omsLoading?.stop(activityLoadToken); activityLoadToken = null; };
   let action = '', targetId = '', pendingOrderId = '', pendingCustomerId = '', pendingCustomerDetails = null, parkedOrder = null, saving = false;
+  const pendingOrderActions = new Set();
   let sessionVersion = 0;
+  let ordersLoaded = false, orderRefreshPromise = null, orderInitialToken = null;
+  const recordLoadTokens = new Map(), recordLoadRuns = new Map();
+  const stopRecordLoad = (page) => { const token = recordLoadTokens.get(page); if (token) globalThis.omsLoading?.stop(token); recordLoadTokens.delete(page); };
+  const stopOrderInitialLoader = () => {
+    if (orderInitialToken) globalThis.omsLoading?.stop(orderInitialToken);
+    orderInitialToken = null;
+  };
+  const activeOrdersPage = () => document.querySelector('[data-page].is-active')?.dataset.page === 'orders';
   let orderViewportBaseHeight = 0, orderViewportListening = false;
   const orderVisualViewport = globalThis.visualViewport;
   function syncOrderViewport() {
@@ -106,6 +117,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
   // Special orders were administered by Admin before the temporary role change.
   const special = () => admin();
   const eligibleUsers = () => [...new Map(users.filter(row => row.id && !validateProfile(row)).map(row => [row.id, row])).values()];
+  const orderAssignees = () => [...new Map([...(user && profile && !validateProfile(profile) ? [{ ...profile, id: user.uid }] : []), ...eligibleUsers()].map((row) => [row.id, row])).values()];
   // Staff can see all customers, but assigning one to any active OMS account keeps
   // the selected account visible in customer and order ownership records.
   const customerAssignees = () => eligibleUsers();
@@ -118,17 +130,24 @@ export function initOrderUi({ db, functions, auth, mode }) {
       || order.assignedUserName || 'Unknown user';
   };
 
-  async function refresh(page) {
+  async function refreshPage(page) {
     if (!profile) return;
-    const version = sessionVersion;
+    const version = sessionVersion, run = (recordLoadRuns.get(page) || 0) + 1;
+    recordLoadRuns.set(page, run);
+    const current = () => version === sessionVersion && run === recordLoadRuns.get(page);
     const message = $(`${page === 'specials' ? 'special' : page === 'orders' ? 'order' : 'customer'}-message`);
-    message.textContent = 'Loading records\u2026';
+    message.textContent = '';
+    if (page !== 'orders') {
+      stopRecordLoad(page);
+      recordLoadTokens.set(page, globalThis.omsLoading?.start(page === 'customers' ? 'Loading customers…' : 'Loading special products…') || null);
+    }
+    if (page === 'orders') $('order-loading').hidden = false;
     try {
       const privileged = staff();
       const scopedUid = privileged ? null : user.uid;
       if (page === 'customers') {
         const [rows, userRows] = await Promise.all([listCustomers(db, scopedUid), admin() ? listMasterRecords(db, 'users') : Promise.resolve([])]);
-        if (version !== sessionVersion) return;
+        if (!current()) return;
         customers = rows; if (admin()) users = userRows;
         renderCustomers();
       } else if (page === 'orders') {
@@ -136,20 +155,38 @@ export function initOrderUi({ db, functions, auth, mode }) {
         const [customerRows, itemRows, specialRows, control, userRows, invoiceRows] = await Promise.all([
           listCustomers(db, scopedUid, scopedOrders), listOrderProducts(db, 'items', privileged), listOrderProducts(db, 'specialProducts', privileged), getOrderTaking(db), privileged ? listMasterRecords(db, 'users') : Promise.resolve([]), listInvoices(db, scopedUid),
         ]);
-        if (version !== sessionVersion) return;
+        if (!current()) return;
         orders = scopedOrders; customers = customerRows; items = itemRows; specials = specialRows; acceptingOrders = control; users = userRows;
         invoiceIds = new Set(invoiceRows.map((invoice) => invoice.orderId));
         await refreshStock();
+        if (!current()) return;
         renderOrders();
+        ordersLoaded = true;
         loadActivity(true);
       } else if (page === 'specials' && staff()) {
         const [itemRows, specialRows] = await Promise.all([listOrderProducts(db, 'items', true), listOrderProducts(db, 'specialProducts', true)]);
-        if (version !== sessionVersion) return;
+        if (!current()) return;
         items = itemRows; specials = specialRows;
         renderSpecials();
       }
-      message.textContent = '';
-    } catch (error) { if (version === sessionVersion) { console.error('Could not load orders:', error); message.textContent = `Could not load records: ${cleanError(error)}`; } }
+      if (current()) message.textContent = '';
+    } catch (error) { if (current()) { console.error('Could not load orders:', error); if (page === 'orders' && !ordersLoaded) { orders = []; $('order-body').innerHTML = ''; $('order-mobile-list').innerHTML = ''; $('order-cards').innerHTML = ''; } message.textContent = `Could not load records: ${cleanError(error)}`; } }
+    finally { if (page === 'orders' && current()) $('order-loading').hidden = true; if (page !== 'orders' && current()) stopRecordLoad(page); }
+  }
+
+  function refresh(page, opening = false) {
+    if (page !== 'orders') return refreshPage(page);
+    if (opening && !ordersLoaded && !orderInitialToken && activeOrdersPage()) orderInitialToken = globalThis.omsLoading?.start('Loading orders…') || null;
+    if (orderRefreshPromise) {
+      if (opening && activeOrdersPage()) $('order-loading').hidden = false;
+      return opening ? orderRefreshPromise : orderRefreshPromise.then(() => refresh(page));
+    }
+    const request = refreshPage(page);
+    orderRefreshPromise = request;
+    request.finally(() => {
+      if (orderRefreshPromise === request) { orderRefreshPromise = null; stopOrderInitialLoader(); }
+    });
+    return request;
   }
 
   const filteredCustomers = () => customers.filter((customer) => `${customer.fullName} ${customer.contact} ${customer.area}`.toLowerCase().includes($('customer-search').value.toLowerCase())).sort((a, b) => a.fullName.localeCompare(b.fullName));
@@ -230,7 +267,8 @@ export function initOrderUi({ db, functions, auth, mode }) {
     try {
       const ids = stockIds();
       for (let offset = 0; offset < ids.length; offset += 100) {
-        const result = await callOperation(functions, 'getOrderStock', { itemIds: ids.slice(offset, offset + 100) });
+        const readStock = () => callOperation(functions, 'getOrderStock', { itemIds: ids.slice(offset, offset + 100) });
+        const result = globalThis.omsLoading?.readTimeout ? await globalThis.omsLoading.readTimeout(readStock, 15000, 'Stock check timed out. The server will verify stock when you save.') : await readStock();
         for (const item of result?.items || []) stockAvailability.set(item.itemId, item);
       }
     } catch (error) { stockMessage = `Stock availability is unavailable: ${cleanError(error)}`; }
@@ -365,7 +403,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     }
     if (nextAction === 'order') {
       const selectedCustomer = o?.customerId || '';
-      $('order-fields').innerHTML = `<div class="order-customer-choice"><label class="ops-field" for="order-customer-search">Customer *</label><div class="order-customer-input-wrap"><input id="order-customer-search" type="search" autocomplete="off" placeholder="Search customer by name or phone number" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="order-customer-options" ${o ? 'readonly' : ''}><div id="order-customer-options" class="order-customer-options" role="listbox" hidden></div></div><input type="hidden" name="customerId" id="order-customer" value="${esc(selectedCustomer)}"><small id="order-customer-details"></small><button id="order-add-customer" class="order-add-customer" type="button" ${o ? 'hidden' : ''}><span aria-hidden="true">+</span><span>${pendingCustomerDetails ? 'Edit new customer' : 'Add New Customer'}</span></button></div>${admin() && o ? `<p class="muted">Assigned User: ${esc(assignedUserName(o))}. Change assignment from order details.</p>` : admin() ? `<input type="hidden" name="assignedUserId" value="${esc(user?.uid || '')}">` : ''}${field('Order date', 'orderDate', 'date', o?.orderDate || new Date().toISOString().slice(0, 10), 'required')}${field('Delivery date (optional)', 'deliveryDate', 'date', o?.deliveryDate || '')}<div class="ops-lines order-entry-lines"><h3>Order Lines</h3><p id="order-stock-message" class="muted"></p><div id="order-lines">${(o?.lines || [{}]).map(orderLine).join('')}</div><button id="order-add-line" class="button button-outline" type="button">+ Add Line</button><p class="muted">Prices and stock are checked when the order is confirmed.${special() ? ' Special products use whole combos.' : ''}</p></div><label class="ops-field">Notes<textarea name="notes" maxlength="1000">${esc(o?.notes || '')}</textarea></label>`;
+      $('order-fields').innerHTML = `<div class="order-customer-choice"><label class="ops-field" for="order-customer-search">Customer *</label><div class="order-customer-input-wrap"><input id="order-customer-search" type="search" autocomplete="off" placeholder="Search customer by name or phone number" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="order-customer-options" ${o ? 'readonly' : ''}><div id="order-customer-options" class="order-customer-options" role="listbox" hidden></div></div><input type="hidden" name="customerId" id="order-customer" value="${esc(selectedCustomer)}"><small id="order-customer-details"></small><button id="order-add-customer" class="order-add-customer" type="button" ${o ? 'hidden' : ''}><span aria-hidden="true">+</span><span>${pendingCustomerDetails ? 'Edit new customer' : 'Add New Customer'}</span></button></div>${admin() && o ? `<p class="muted order-assignment-choice">Assigned User: ${esc(assignedUserName(o))}. Change assignment from order details.</p>` : admin() ? `<label class="ops-field order-assignment-choice">Assigned User<select name="assignedUserId" required>${orderAssignees().map((row) => `<option value="${esc(row.id)}" ${row.id === user?.uid ? 'selected' : ''}>${esc(row.displayName || row.fullName || 'Unnamed user')}</option>`).join('')}</select></label>` : ''}${field('Order date', 'orderDate', 'date', o?.orderDate || new Date().toISOString().slice(0, 10), 'required')}${field('Delivery date (optional)', 'deliveryDate', 'date', o?.deliveryDate || '')}<div class="ops-lines order-entry-lines"><h3>Order Lines</h3><p id="order-stock-message" class="muted"></p><div id="order-lines">${(o?.lines || [{}]).map(orderLine).join('')}</div><button id="order-add-line" class="button button-outline" type="button">+ Add Line</button><p class="muted">Prices and stock are checked when the order is confirmed.${special() ? ' Special products use whole combos.' : ''}</p></div><label class="ops-field">Notes<textarea name="notes" maxlength="1000">${esc(o?.notes || '')}</textarea></label>`;
       const addCustomerIcon = $('order-add-customer')?.querySelector?.('[aria-hidden="true"]');
       {
       $('order-fields').innerHTML = '<div class="order-flow-header"><nav class="order-stepper" aria-label="Order steps"><span data-step="1" class="is-current">Customer</span><span data-step="2">Items</span><span data-step="3">Review</span></nav><h3>1. Customer details</h3><p class="order-step-subtitle">Select a customer for this order.</p></div>' + $('order-fields').innerHTML;
@@ -470,11 +508,13 @@ export function initOrderUi({ db, functions, auth, mode }) {
     const fields = $('order-fields');
     if (!fields?.querySelector) return;
     const customerPart = fields.querySelector('.order-customer-choice');
+    const assignmentPart = fields.querySelector('.order-assignment-choice');
     const dateFields = [...fields.querySelectorAll('input[name=orderDate],input[name=deliveryDate]')].map((input) => input.closest('label')).filter(Boolean);
     const notesPart = fields.querySelector('textarea[name=notes]')?.closest('label');
     const itemsPart = fields.querySelector('.order-entry-lines');
     const review = fields.querySelector('.order-review-panel');
     if (customerPart) customerPart.hidden = orderStep !== 1;
+    if (assignmentPart) assignmentPart.hidden = orderStep !== 1;
     if (notesPart) notesPart.hidden = orderStep !== 1;
     dateFields.forEach((field) => { if (field) field.hidden = true; });
     if (itemsPart) itemsPart.hidden = orderStep !== 2;
@@ -590,7 +630,8 @@ export function initOrderUi({ db, functions, auth, mode }) {
         if (duplicate) throw new Error(`A customer with this contact already exists: ${duplicate.fullName}.`);
         if (parkedOrder) {
           if (staff()) {
-            const saved = await saveCustomerDirect(db, auth, payload, { customerId: pendingCustomerId, create: true });
+            const saveNewCustomer = () => saveCustomerDirect(db, auth, payload, { customerId: pendingCustomerId, create: true });
+            const saved = globalThis.omsLoading?.withLoading ? await globalThis.omsLoading.withLoading(saveNewCustomer, 'Saving customer…') : await saveNewCustomer();
             if (!customers.some((row) => row.id === saved.customerId)) customers.push({ id: saved.customerId, ...payload });
             pendingCustomerDetails = null;
             restoreOrderForm(saved.customerId);
@@ -616,7 +657,9 @@ export function initOrderUi({ db, functions, auth, mode }) {
           const duplicate = customers.find((c) => normalize(c.contact) === normalize(payload.newCustomer.contact));
           if (duplicate) throw new Error(`A customer with this contact already exists: ${duplicate.fullName}. Select that customer.`);
         }
-        await refreshStock();
+        const stockToken = globalThis.omsLoading?.start('Checking stock…');
+        try { await refreshStock(); }
+        finally { globalThis.omsLoading?.stop(stockToken); }
         const warning = stockWarning(payload.lines, orders.find((row) => row.id === targetId));
         if (warning) throw new Error(warning);
         pendingOrderId = payload.orderId; name = 'saveOrderDraft';
@@ -626,10 +669,13 @@ export function initOrderUi({ db, functions, auth, mode }) {
       else if (action === 'cancel') { name = 'cancelOrder'; payload = { orderId: targetId, reason: data.get('reason') }; }
       else if (action === 'intake') { name = 'setOrderTaking'; payload = { acceptingOrders: data.get('acceptingOrders') === 'true', reason: data.get('reason') }; }
       else { name = 'createInvoiceFromOrder'; payload = { orderId: targetId }; }
-      if (action === 'customer') await saveCustomerDirect(db, auth, payload, { customerId: pendingCustomerId, create: !targetId });
-      else result = action === 'order' && globalThis.omsLoading?.withLoading ? await globalThis.omsLoading.withLoading(() => callOperation(functions, name, payload), 'Saving your order…') : await callOperation(functions, name, payload);
+      if (action === 'customer') {
+        if (globalThis.omsLoading?.withLoading) await globalThis.omsLoading.withLoading(() => saveCustomerDirect(db, auth, payload, { customerId: pendingCustomerId, create: !targetId }), 'Saving customer…');
+        else await saveCustomerDirect(db, auth, payload, { customerId: pendingCustomerId, create: !targetId });
+      } else result = await callOperation(functions, name, payload);
       pendingOrderId = ''; $('order-dialog').close(); showToast(action === 'order' && !targetId ? `Order ${result?.orderNumber || ''} saved.` : action === 'deleteCustomer' ? 'Customer deleted.' : action === 'invoice' ? 'Invoice created. Record payment from the Invoices page.' : 'Saved successfully.');
-      await refresh(['customer', 'deleteCustomer'].includes(action) ? 'customers' : action === 'special' ? 'specials' : 'orders');
+      try { await refresh(['customer', 'deleteCustomer'].includes(action) ? 'customers' : action === 'special' ? 'specials' : 'orders'); }
+      catch (error) { showToast(`Saved, but records could not refresh: ${cleanError(error)}`, 'toast-error'); }
       if (action === 'invoice') viewInvoice(orders.find((row) => row.id === targetId)?.orderNumber);
     } catch (error) { $('order-form-error').textContent = action === 'customer' ? customerSaveError(error) : cleanError(error); $('order-form-error').hidden = false; }
     finally { saving = false; button.disabled = false; if (flowButton) flowButton.disabled = false; }
@@ -645,6 +691,9 @@ export function initOrderUi({ db, functions, auth, mode }) {
     if (nextAction === 'requestPayment') return openDialog('request', id);
     if (nextAction === 'invoiceOrder') return openDialog('invoice', id);
     if (nextAction === 'viewInvoice') return viewInvoice(o.orderNumber);
+    const key = `${nextAction}:${id}`;
+    if (pendingOrderActions.has(key)) return;
+    pendingOrderActions.add(key);
     try {
       if (nextAction === 'confirmOrder') {
         const result = await callOperation(functions, 'confirmOrder', { orderId: id });
@@ -657,6 +706,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
       }
       showToast('Order updated.'); await refresh('orders');
     } catch (error) { showToast(cleanError(error), 'toast-error'); }
+    finally { pendingOrderActions.delete(key); }
   }
 
   const activityFilters = () => ({
@@ -670,18 +720,27 @@ export function initOrderUi({ db, functions, auth, mode }) {
     $('order-activity-prev').disabled = activityPage === 1;
     $('order-activity-next').disabled = !activityHasMore;
     $('order-activity-body').innerHTML = activityRows.length ? activityRows.map((row) => { const ref = references(row); return `<tr><td>${esc(activityDate(row.at))}</td><td>${esc(actionLabel(row.type))}</td><td>${esc(ref.order)}</td><td>${esc(ref.actor)}</td><td>${esc(ref.customer)}</td><td>${esc(activityChanges(row))}</td><td>${esc(row.outcome || 'Success')}</td></tr>`; }).join('') : empty(7, 'No order actions match these filters.');
+    $('order-activity-cards').innerHTML = activityRows.length ? activityRows.map((row) => {
+      const ref = references(row);
+      const field = (label, value, extra = '') => `<div class="order-activity-card-field ${extra}"><dt>${label}</dt><dd>${esc(value)}</dd></div>`;
+      return `<article class="order-activity-card"><dl>${field('When', activityDate(row.at), 'order-activity-card-when')}${field('Action', actionLabel(row.type), 'order-activity-card-action')}${field('Order', ref.order)}${field('Actor', ref.actor)}${ref.customer !== 'Not available' ? field('Customer', ref.customer) : ''}${field('Changes', activityChanges(row))}${field('Outcome', row.outcome || 'Success')}</dl></article>`;
+    }).join('') : '<p class="order-activity-cards-empty">No order actions match these filters.</p>';
   }
   async function loadActivity(reset = false) {
     if (!profile) return;
     const revision = ++activityRevision;
     if (reset) { activityPage = 1; activityCursors = [null]; }
-    $('order-activity-message').textContent = 'Loading order activity\u2026';
+    $('order-activity-message').textContent = '';
+    stopActivityLoad();
+    const token = globalThis.omsLoading?.start('Loading order activity…') || null;
+    activityLoadToken = token;
     try {
       const result = await listActivity(db, profile, user?.uid, 'order', activityFilters(), activityCursors[activityPage - 1]);
       if (revision !== activityRevision) return;
       activityRows = result?.rows || []; activityNext = result?.cursor || null; activityHasMore = result?.hasMore === true;
       renderActivity(); $('order-activity-message').textContent = '';
     } catch (error) { if (revision === activityRevision) { activityRows = []; activityHasMore = false; renderActivity(); $('order-activity-message').textContent = `Could not load activity: ${cleanError(error)}`; } }
+    finally { if (activityLoadToken === token) stopActivityLoad(); }
   }
   async function exportActivity() {
     $('order-activity-export').disabled = true;
@@ -700,7 +759,11 @@ export function initOrderUi({ db, functions, auth, mode }) {
     finally { $('order-activity-export').disabled = false; }
   }
 
-  document.addEventListener('oms:pagechange', (event) => { if (['customers', 'orders', 'specials'].includes(event.detail.page) && profile) refresh(event.detail.page); });
+  document.addEventListener('oms:pagechange', (event) => {
+    if (event.detail.page !== 'orders') { stopOrderInitialLoader(); stopActivityLoad(); $('order-loading').hidden = true; }
+    for (const page of recordLoadTokens.keys()) if (page !== event.detail.page) stopRecordLoad(page);
+    if (['customers', 'orders', 'specials'].includes(event.detail.page) && profile) refresh(event.detail.page, event.detail.page === 'orders');
+  });
   $('customer-new').addEventListener('click', () => openDialog('customer'));
   $('order-new').addEventListener('click', () => { pendingOrderId = ''; openDialog('order'); });
   $('special-new').addEventListener('click', () => { if (staff()) openDialog('special'); });
@@ -768,11 +831,13 @@ export function initOrderUi({ db, functions, auth, mode }) {
       if (!admin() || !assignedUserId || button.disabled) return;
       button.disabled = true;
       void callOperation(functions, 'reassignOrder', { orderId: button.dataset.id, assignedUserId }).then(async () => {
-        await refresh('orders');
-        const updated = orders.find((row) => row.id === button.dataset.id);
-        if (updated && action === 'viewOrder') $('order-fields').innerHTML = viewOrderContent(updated);
         showToast('Assigned user updated.');
-      }).catch((error) => { showToast(cleanError(error), 'toast-error'); button.disabled = false; });
+        try {
+          await refresh('orders');
+          const updated = orders.find((row) => row.id === button.dataset.id);
+          if (updated && action === 'viewOrder') $('order-fields').innerHTML = viewOrderContent(updated);
+        } catch (error) { showToast(`Assignment saved, but records could not refresh: ${cleanError(error)}`, 'toast-error'); }
+      }).catch((error) => { showToast(cleanError(error), 'toast-error'); }).finally(() => { button.disabled = false; });
       return;
     }
     const category = event.target.closest?.('[data-product-category]');
@@ -843,5 +908,5 @@ export function initOrderUi({ db, functions, auth, mode }) {
   $('order-export').addEventListener('click', () => { const rows = filteredOrders(); exportBook('orders', [['Orders', rows.map((o) => ({ OrderNumber: o.orderNumber, Customer: o.customerSnapshot?.fullName, Date: o.orderDate, DeliveryDate: o.deliveryDate, AssignedUser: assignedUserName(o), Status: displayOrderStatus(o.status), TotalRupees: (o.grandTotal || 0) / 100 }))], ['Lines', rows.flatMap((o) => o.lines?.map((l) => ({ OrderNumber: o.orderNumber, Product: l.kind === 'item' ? l.itemSnapshot?.name : l.specialSnapshot?.name, Quantity: l.quantityQty / 1000, Unit: l.kind === 'item' ? orderLineUnitLabel(l) : 'combo', UnitPriceRupees: l.unitPricePaise / 100, LineTotalRupees: l.lineTotalPaise / 100 })) || [])]]); });
   $('special-export').addEventListener('click', () => exportBook('specials', [['Special Products', filteredSpecials().map((s) => ({ Name: s.name, FinalPriceRupees: s.finalPricePaise / 100, Active: s.active, Components: s.components?.map((p) => `${p.itemSnapshot?.name}: ${qtyText(p.quantityQty)} ${p.itemSnapshot?.unitSymbol}`).join('; ') }))]]));
 
-  return { setSession(nextUser, nextProfile) { sessionVersion++; activityRevision++; user = nextUser; profile = nextProfile; orders = []; customers = []; items = []; specials = []; users = []; invoiceIds = new Set(); stockAvailability = new Map(); stockMessage = ''; activityRows = []; activityCursors = [null]; activityPage = 1; pendingOrderId = ''; pendingCustomerId = ''; pendingCustomerDetails = null; parkedOrder = null; ['customer-body', 'order-body', 'special-body', 'customer-summary', 'order-cards', 'order-activity-body'].forEach((id) => { $(id).innerHTML = ''; }); $('order-user').value = ''; $('order-user').hidden = !admin(); if (profile) { const page = document.querySelector('[data-page].is-active')?.dataset.page; if (['customers', 'orders', 'specials'].includes(page)) refresh(page); } } };
+  return { setSession(nextUser, nextProfile) { sessionVersion++; activityRevision++; stopOrderInitialLoader(); stopActivityLoad(); for (const page of recordLoadTokens.keys()) stopRecordLoad(page); $('order-loading').hidden = true; orderRefreshPromise = null; ordersLoaded = false; user = nextUser; profile = nextProfile; orders = []; customers = []; items = []; specials = []; users = []; invoiceIds = new Set(); stockAvailability = new Map(); stockMessage = ''; activityRows = []; activityCursors = [null]; activityPage = 1; pendingOrderId = ''; pendingCustomerId = ''; pendingCustomerDetails = null; parkedOrder = null; ['customer-body', 'order-body', 'special-body', 'customer-summary', 'order-cards', 'order-activity-body', 'order-activity-cards'].forEach((id) => { $(id).innerHTML = ''; }); $('order-user').value = ''; $('order-user').hidden = !admin(); if (profile) { const page = document.querySelector('[data-page].is-active')?.dataset.page; if (['customers', 'orders', 'specials'].includes(page)) refresh(page, page === 'orders'); } } };
 }

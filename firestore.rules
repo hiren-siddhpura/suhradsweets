@@ -219,6 +219,11 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Legacy manual box requirements are retired; this page reads staff-authorized orders.
+    match /boxRequirements/{itemId} {
+      allow read, write: if false;
+    }
+
     match /itemCodes/{code} {
       allow get: if isStaff();
       allow list: if false;

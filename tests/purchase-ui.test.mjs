@@ -3,6 +3,29 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
+test('Purchases uses the OMS loader while records load and releases it on failure', async () => {
+  const nodes = new Map(), active = new Set();
+  let rejectRead;
+  const el = id => { if (!nodes.has(id)) nodes.set(id, { value: '', innerHTML: '', textContent: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; } }); return nodes.get(id); };
+  const context = {
+    document: { getElementById: el, addEventListener() {}, querySelector: () => null },
+    isStaff: () => true, showToast() {}, console: { error() {} },
+    listPurchases: () => new Promise((_, reject) => { rejectRead = reject; }),
+    listMasterRecords: async () => [],
+    omsLoading: { start() { const token = Symbol(); active.add(token); return token; }, stop(token) { active.delete(token); } },
+  };
+  const source = readFileSync(new URL('../js/operations-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOperationsUi', 'function initOperationsUi');
+  vm.runInNewContext(`${source}\nthis.init = initOperationsUi;`, context);
+  context.init({ db: {}, functions: {} }).setSession({ uid: 'admin' }, { role: 'admin' });
+  const load = el('purchase-refresh').listeners.click();
+  assert.equal(active.size, 1);
+  assert.equal(el('purchase-message').textContent, '');
+  rejectRead(new Error('offline'));
+  await load;
+  assert.equal(active.size, 0);
+  assert.match(el('purchase-message').textContent, /offline/);
+});
+
 test('purchase form, loading, search and export have no item dependency', async () => {
   const elements = new Map(), reads = [], writes = [], exports = [];
   const element = id => {

@@ -14,6 +14,7 @@ export const PAGES = Object.freeze({
   loginLogs: { title: 'Login Logs', description: 'Review recorded sign-ins and application sign-outs.' },
   auditLogs: { title: 'Audit Logs', description: 'Review trusted operational and financial actions.' },
   master: { title: 'Master Data', description: 'Manage items, purchase types, user profiles and settings.' },
+  boxReq: { title: 'Box Req.', description: 'View boxes required by confirmed orders for each sweet and packaging size.' },
 });
 
 export const ROLE_LABELS = Object.freeze({

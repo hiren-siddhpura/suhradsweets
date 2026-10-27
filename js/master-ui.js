@@ -80,6 +80,8 @@ export function initMasterData({ db, functions, auth, mode }) {
   let loadRevision = 0;
   let editing = null, userOperationId = '', saving = false;
   const deactivationOperations = new Map();
+  const deactivating = new Set();
+  const withLoader = (task, message) => globalThis.omsLoading?.withLoading ? globalThis.omsLoading.withLoading(task, message) : task();
   const dialog = $('master-dialog');
 
   function message(text, error = false) {
@@ -184,10 +186,14 @@ export function initMasterData({ db, functions, auth, mode }) {
     $('master-next').disabled = page >= totalPages;
   }
 
+  let recordLoadToken = null;
+  const stopRecordLoad = () => { if (recordLoadToken) globalThis.omsLoading?.stop(recordLoadToken); recordLoadToken = null; };
   async function load() {
     if (!session || !isStaff(session.profile)) return;
     const revision = ++loadRevision;
-    message(`Loading ${titles[type].toLowerCase()}…`);
+    message('');
+    stopRecordLoad();
+    recordLoadToken = globalThis.omsLoading?.start(`Loading ${titles[type].toLowerCase()}…`) || null;
     $('master-add').disabled = true;
     readDashboardTarget(db).then((value) => { if (revision === loadRevision) $('master-target-kg').value = value; }).catch((error) => { if (revision === loadRevision) $('master-target-message').textContent = friendlyError(error); });
     if (type === 'settings') readBusinessDetails(db).then((details) => {
@@ -210,6 +216,7 @@ export function initMasterData({ db, functions, auth, mode }) {
       if (revision === loadRevision) {
         $('master-add').disabled = false;
         $('master-add').title = '';
+        stopRecordLoad();
       }
     }
   }
@@ -261,15 +268,17 @@ export function initMasterData({ db, functions, auth, mode }) {
   }
 
   async function deactivateRecord(record) {
-    if (!session || !isStaff(session.profile)) return;
+    if (!session || !isStaff(session.profile) || deactivating.has(record.id)) return;
     if (!window.confirm(`Deactivate ${MASTER_LABELS[type].toLowerCase()} “${recordName(record)}”? Existing references will be kept.`)) return;
+    deactivating.add(record.id);
     try {
       if (type === 'users' && !deactivationOperations.has(record.id)) deactivationOperations.set(record.id, uniqueId());
-      await deactivateMasterRecord(db, type, record.id, session, functions, deactivationOperations.get(record.id));
+      await withLoader(() => deactivateMasterRecord(db, type, record.id, session, functions, deactivationOperations.get(record.id)), `Deactivating ${MASTER_LABELS[type].toLowerCase()}…`);
       deactivationOperations.delete(record.id);
       showToast(`${MASTER_LABELS[type]} deactivated.`);
       await load();
     } catch (error) { message(friendlyError(error), true); }
+    finally { deactivating.delete(record.id); }
   }
 
   document.querySelectorAll('[data-master-tab]').forEach((button) => button.addEventListener('click', () => {
@@ -292,9 +301,9 @@ export function initMasterData({ db, functions, auth, mode }) {
   $('master-next').addEventListener('click', () => { page++; render(); });
   $('master-refresh').addEventListener('click', load);
   $('master-target-form').addEventListener('submit', async (event) => {
-    event.preventDefault(); $('master-target-save').disabled = true; $('master-target-message').textContent = 'Saving…';
+    event.preventDefault(); if ($('master-target-save').disabled) return; $('master-target-save').disabled = true; $('master-target-message').textContent = 'Saving…';
     try {
-      await saveDashboardTarget(db, $('master-target-kg').value, session);
+      await withLoader(() => saveDashboardTarget(db, $('master-target-kg').value, session), 'Saving sales target…');
       $('master-target-message').textContent = 'Sales target saved.'; showToast('Sales target saved.');
       document.dispatchEvent(new CustomEvent('oms:dashboard-targetchange'));
     } catch (error) { $('master-target-message').textContent = friendlyError(error); }
@@ -302,10 +311,11 @@ export function initMasterData({ db, functions, auth, mode }) {
   });
   $('master-business-form').addEventListener('submit', async (event) => {
     event.preventDefault();
+    if ($('master-business-save').disabled) return;
     $('master-business-save').disabled = true;
     $('master-business-message').textContent = 'Saving…';
     try {
-      await saveBusinessDetails(db, { address: $('master-business-address').value, contactNumber: $('master-business-contact').value, fssaiLicenseNo: $('master-business-fssai').value }, session);
+      await withLoader(() => saveBusinessDetails(db, { address: $('master-business-address').value, contactNumber: $('master-business-contact').value, fssaiLicenseNo: $('master-business-fssai').value }, session), 'Saving business details…');
       $('master-business-message').textContent = 'Business details saved.';
       showToast('Business details saved.');
       await load();
@@ -328,23 +338,24 @@ export function initMasterData({ db, functions, auth, mode }) {
     if (saving) return;
     saving = true;
     const save = $('master-save'); save.disabled = true; save.textContent = 'Saving…';
-    const form = event.currentTarget;
-    const input = Object.fromEntries(new FormData(form));
-    input.active = form.elements.namedItem('active').checked;
-    if (type === 'users') input.operationId = userOperationId;
     try {
-      await saveMasterRecord(db, type, editing?.id || null, input, session, functions);
+      const form = event.currentTarget;
+      const input = Object.fromEntries(new FormData(form));
+      input.active = form.elements.namedItem('active').checked;
+      if (type === 'users') input.operationId = userOperationId;
+      await withLoader(() => saveMasterRecord(db, type, editing?.id || null, input, session, functions), `Saving ${MASTER_LABELS[type].toLowerCase()}…`);
       dialog.close(); showToast(`${MASTER_LABELS[type]} saved.`); await load();
     } catch (error) {
       $('master-form-error').textContent = friendlyError(error); $('master-form-error').hidden = false;
     } finally { saving = false; save.disabled = false; save.textContent = 'Save'; }
   });
-  document.addEventListener('oms:pagechange', (event) => { if (event.detail.page === 'master') load(); });
+  document.addEventListener('oms:pagechange', (event) => { if (event.detail.page === 'master') load(); else stopRecordLoad(); });
 
   return {
     setSession(user, profile) {
       session = user && isStaff(profile) ? { uid: user.uid, role: profile.role, profile } : null;
       if (!session) {
+        stopRecordLoad();
         ++loadRevision; records = []; dialog.close();
       } else if (!$('master-view').hidden) load();
     },

@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '..');
 const dist = join(root, 'dist');
 const failures = [];
-const allowed = /^(index\.html|offline\.html|manifest\.webmanifest|sw\.js|css\/[^/]+\.css|js\/[^/]+\.js|logo\/[^/]+\.(png|jpg|jpeg|svg)|fonts\/[^/]+\.(ttf|txt)|icons\/icon-(192|512)\.png)$/;
+const allowed = /^(index\.html|offline\.html|manifest\.webmanifest|sw\.js|logo\.png|css\/[^/]+\.css|js\/[^/]+\.js|logo\/[^/]+\.(png|jpg|jpeg|svg)|fonts\/[^/]+\.(ttf|txt)|icons\/icon-(192|512)\.png)$/;
 
 function scan(directory) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {

@@ -17,29 +17,36 @@ export function initOperationsUi({ db, functions }) {
   let user = null, profile = null, purchases = [], stocks = [], movements = [], items = [], units = [], types = [];
   let loadedPage = '';
   let dialogAction = null, draftId = null, adjustmentId = null, stockAtOpen = null;
+  const confirmingPurchases = new Set();
   let sessionVersion = 0;
+  const loadTokens = new Map();
+  const loadRuns = new Map();
+  const stopLoad = (page) => { const token = loadTokens.get(page); if (token) globalThis.omsLoading?.stop(token); loadTokens.delete(page); };
 
   async function refresh(page) {
     if (!profile) return;
-    const version = sessionVersion;
+    const version = sessionVersion, run = (loadRuns.get(page) || 0) + 1;
+    loadRuns.set(page, run);
     const staff = isStaff(profile);
     const message = byId(page === 'purchases' ? 'purchase-message' : 'inventory-message');
-    message.textContent = 'Loading records…';
+    message.textContent = '';
+    stopLoad(page);
+    loadTokens.set(page, globalThis.omsLoading?.start(page === 'purchases' ? 'Loading purchases…' : 'Loading inventory…') || null);
     try {
       if (page === 'purchases') {
         if (!staff) return;
         const data = await Promise.all([listPurchases(db), listMasterRecords(db, 'purchaseTypes')]);
-        if (version !== sessionVersion) return;
+        if (version !== sessionVersion || run !== loadRuns.get(page)) return;
         [purchases, types] = data;
         renderPurchases();
       } else if (page === 'inventory') {
         if (staff) {
           const data = await Promise.all([listInventory(db), listMovements(db), listMasterRecords(db, 'items'), listMasterRecords(db, 'units')]);
-          if (version !== sessionVersion) return;
+          if (version !== sessionVersion || run !== loadRuns.get(page)) return;
           [stocks, movements, items, units] = data;
         } else {
           const ownMovements = await listMovements(db, user.uid);
-          if (version !== sessionVersion) return;
+          if (version !== sessionVersion || run !== loadRuns.get(page)) return;
           stocks = []; items = []; units = []; movements = ownMovements;
         }
         renderInventory();
@@ -47,8 +54,8 @@ export function initOperationsUi({ db, functions }) {
       loadedPage = page;
       message.textContent = '';
     } catch (error) {
-      if (version === sessionVersion) { console.error('Could not load operations:', error); message.textContent = `Could not load records: ${safeError(error)}`; }
-    }
+      if (version === sessionVersion && run === loadRuns.get(page)) { console.error('Could not load operations:', error); message.textContent = `Could not load records: ${safeError(error)}`; }
+    } finally { if (run === loadRuns.get(page)) stopLoad(page); }
   }
 
   const filteredPurchases = () => purchases.filter((purchase) => {
@@ -183,7 +190,7 @@ export function initOperationsUi({ db, functions }) {
     } catch { showToast('XLSX library could not load. Check your connection.', 'toast-error'); }
   }
 
-  document.addEventListener('oms:pagechange', (event) => { if (['purchases', 'inventory'].includes(event.detail.page) && profile) refresh(event.detail.page); });
+  document.addEventListener('oms:pagechange', (event) => { for (const page of loadTokens.keys()) if (page !== event.detail.page) stopLoad(page); if (['purchases', 'inventory'].includes(event.detail.page) && profile) refresh(event.detail.page); });
   byId('purchase-new').addEventListener('click', () => openDialog('draft'));
   byId('purchase-refresh').addEventListener('click', () => refresh('purchases'));
   byId('inventory-refresh').addEventListener('click', () => refresh('inventory'));
@@ -192,24 +199,26 @@ export function initOperationsUi({ db, functions }) {
   ['purchase-search', 'purchase-status', 'purchase-from', 'purchase-to'].forEach((id) => byId(id).addEventListener('input', renderPurchases));
   ['inventory-search', 'inventory-item', 'inventory-status', 'inventory-history-search', 'inventory-from', 'inventory-to'].forEach((id) => byId(id).addEventListener('input', renderInventory));
   byId('purchase-body').addEventListener('click', async (event) => {
-    const button = event.target.closest('[data-op]'); if (!button || !isStaff(profile) || ['adjust', 'block', 'unblock', 'threshold'].includes(button.dataset.op) && !hasPermission(profile, 'manageStock')) return;
+    const button = event.target.closest('[data-op]'); if (!button || button.disabled || !isStaff(profile) || ['adjust', 'block', 'unblock', 'threshold'].includes(button.dataset.op) && !hasPermission(profile, 'manageStock')) return;
     const { op, id } = button.dataset;
     if (op === 'edit') return openDialog('draft', id);
     if (op === 'cancel') return openDialog('cancel', id);
-    button.disabled = true;
+    if (confirmingPurchases.has(id)) return;
+    confirmingPurchases.add(id); button.disabled = true;
     try { await callOperation(functions, 'confirmPurchase', { purchaseId: id }); showToast('Purchase confirmed. Inventory unchanged.'); await refresh('purchases'); }
     catch (error) { showToast(safeError(error), 'toast-error'); }
-    finally { button.disabled = false; }
+    finally { confirmingPurchases.delete(id); button.disabled = false; }
   });
   byId('purchase-mobile-list').addEventListener('click', async (event) => {
-    const button = event.target.closest('[data-op]'); if (!button || !isStaff(profile)) return;
+    const button = event.target.closest('[data-op]'); if (!button || button.disabled || !isStaff(profile)) return;
     const { op, id } = button.dataset;
     if (op === 'edit') return openDialog('draft', id);
     if (op === 'cancel') return openDialog('cancel', id);
-    button.disabled = true;
+    if (confirmingPurchases.has(id)) return;
+    confirmingPurchases.add(id); button.disabled = true;
     try { await callOperation(functions, 'confirmPurchase', { purchaseId: id }); showToast('Purchase confirmed. Inventory unchanged.'); await refresh('purchases'); }
     catch (error) { showToast(safeError(error), 'toast-error'); }
-    finally { button.disabled = false; }
+    finally { confirmingPurchases.delete(id); button.disabled = false; }
   });
   function inventoryAction(event) {
     const button = event.target.closest('[data-op]'); if (!button || !isStaff(profile) || ['adjust', 'block', 'unblock', 'threshold'].includes(button.dataset.op) && !hasPermission(profile, 'manageStock')) return;
@@ -223,7 +232,7 @@ export function initOperationsUi({ db, functions }) {
   byId('ops-cancel').addEventListener('click', () => byId('ops-dialog').close());
 
   return { setSession(nextUser, nextProfile) {
-    sessionVersion++; user = nextUser; profile = nextProfile; loadedPage = ''; purchases = []; stocks = []; movements = []; items = []; units = []; types = [];
+    sessionVersion++; for (const page of loadTokens.keys()) stopLoad(page); user = nextUser; profile = nextProfile; loadedPage = ''; purchases = []; stocks = []; movements = []; items = []; units = []; types = [];
     ['purchase-body', 'purchase-mobile-list', 'purchase-summary', 'inventory-body', 'inventory-mobile-list', 'inventory-cards', 'movement-body', 'movement-summary'].forEach((id) => { byId(id).innerHTML = ''; });
     if (profile && ['purchases', 'inventory'].includes(document.querySelector('[data-page].is-active')?.dataset.page)) refresh(document.querySelector('[data-page].is-active').dataset.page);
   } };

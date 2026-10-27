@@ -15,11 +15,12 @@ test('missing live backend and stopped emulator have different actionable messag
 });
 
 test('callable failure stays rejected and diagnostics exclude customer data', async () => {
-  const diagnostics = []; let calls = 0;
+  const diagnostics = []; let calls = 0, starts = 0, stops = 0;
   const context = {
     operationErrorCode, operationErrorMessage,
     httpsCallable: () => async () => { calls++; throw { code: 'functions/internal', message: 'internal [0]' }; },
     console: { warn: (...args) => diagnostics.push(args) },
+    omsLoading: { start: () => { starts++; return 'save-token'; }, stop: (token) => { assert.equal(token, 'save-token'); stops++; } },
   };
   const source = readFileSync(new URL('../js/operations-data.js', import.meta.url), 'utf8')
     .replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '');
@@ -28,5 +29,9 @@ test('callable failure stays rejected and diagnostics exclude customer data', as
   context.configure(functions, 'live');
   await assert.rejects(context.call(functions, 'saveCustomer', { fullName: 'private-customer-name', contact: 'private-contact' }), /live backend could not be reached/);
   assert.equal(calls, 1);
+  assert.equal(starts, 1);
+  assert.equal(stops, 1);
+  await assert.rejects(context.call(functions, 'submitPayment', { invoiceId: 'invoice' }), /Check the record before submitting again/);
+  assert.equal(stops, 2);
   assert.doesNotMatch(JSON.stringify(diagnostics), /private-customer-name|private-contact/);
 });

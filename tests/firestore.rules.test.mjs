@@ -68,6 +68,15 @@ test.before(async () => {
 test.beforeEach(async () => { await environment.clearFirestore(); await seed(); });
 test.after(async () => { if (environment) await environment.cleanup(); });
 
+test('legacy manual Box Req. records cannot be read or written by any role', async () => {
+  for (const uid of ['adminA', 'accountA', 'userA', 'inactiveA', 'invalidA', null]) {
+    const db = dbFor(uid);
+    await assertFails(getDoc(record(db, 'boxRequirements/itemActive')));
+    await assertFails(getDocs(collection(db, 'boxRequirements')));
+    await assertFails(setDoc(record(db, 'boxRequirements/itemActive'), { quantities: { '250gm': 1 } }));
+  }
+});
+
 test('financial documents and reference reservations reject direct client writes', async () => {
   for (const uid of ['adminA', 'accountA', 'userA', 'userB']) {
     const db = dbFor(uid);
@@ -208,7 +217,7 @@ test('all client roles are denied order, special, invoice, counter and malformed
 test('active Admin and Account Admin can create valid customers, but User, inactive and anonymous cannot', async () => {
   const createCustomer = async (uid, id) => {
     const db = dbFor(uid);
-    const contact = '98765 43210';
+    const contact = id === 'accountCustomer' ? '98765 43211' : '98765 43210';
     const contactKey = createHash('sha256').update(contact.trim().toLowerCase().replace(/[\s()-]/g, '')).digest('hex');
     const auditId = `${id}-audit`;
     const customer = {
@@ -416,7 +425,7 @@ test('item code reservation is atomic, and User cannot write master data', async
   await assertFails(setDoc(record(db, 'items/itemB'), { itemCode: 'SW-01', name: 'Other', description: '', defaultSellingPrice: 1, defaultUnitId: 'unitA', active: true, createdBy: 'adminA', createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
   await assertFails(setDoc(record(db, 'items/itemC'), { itemCode: 'SW-02', name: 'Other', description: '', defaultSellingPrice: 1, defaultUnitId: 'unitA', active: true, createdBy: 'adminA', createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
   await assertFails(deleteDoc(record(db, 'units/unitA')));
-  await assertFails(updateDoc(record(dbFor('adminA'), 'items/itemA'), { sellingPrice500Gm: 9, updatedAt: serverTimestamp() }));
-  await assertFails(setDoc(record(dbFor('adminA'), 'units/unitB'), { name: 'Box', symbol: 'box', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
+  await assertSucceeds(updateDoc(record(dbFor('adminA'), 'items/itemA'), { sellingPrice500Gm: 9, updatedAt: serverTimestamp() }));
+  await assertSucceeds(setDoc(record(dbFor('adminA'), 'units/unitB'), { name: 'Box', symbol: 'box', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
   await assertFails(setDoc(record(dbFor('userA'), 'units/unitB'), { name: 'Box', symbol: 'box', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }));
 });

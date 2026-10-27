@@ -5,6 +5,29 @@ import vm from 'node:vm';
 import { quantityInKg, summarizeOrderKg, targetPercentage, validateTargetKg } from '../js/dashboard-metrics.js';
 import { hasPermission } from '../js/permissions.js';
 
+test('report lists show the OMS loader instead of a loading records message', async () => {
+  const nodes = new Map(), listeners = {}, active = new Set();
+  let resolvePage;
+  const el = id => { if (!nodes.has(id)) nodes.set(id, { value: '', innerHTML: '', textContent: '', disabled: false, hidden: false, addEventListener() {} }); return nodes.get(id); };
+  const context = {
+    document: { getElementById: el, querySelector: () => null, addEventListener(type, fn) { listeners[type] = fn; } },
+    isStaff: profile => profile?.role === 'admin', hasPermission, reportUsers: async () => [],
+    reportPage: () => new Promise(resolve => { resolvePage = resolve; }),
+    omsLoading: { start() { const token = Symbol(); active.add(token); return token; }, stop(token) { active.delete(token); } },
+    showToast() {},
+  };
+  const source = readFileSync(new URL('../js/reporting-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initReportingUi', 'function initReportingUi');
+  vm.runInNewContext(`${source}\nthis.init = initReportingUi;`, context);
+  await context.init({ db: {}, functions: {} }).setSession({ uid: 'admin' }, { role: 'admin', active: true });
+  listeners['oms:pagechange']({ detail: { page: 'loginLogs' } });
+  assert.equal(active.size, 1);
+  assert.equal(el('login-message').textContent, '');
+  resolvePage({ rows: [], hasMore: false, cursor: null });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(active.size, 0);
+  assert.match(el('login-body').innerHTML, /No login events/);
+});
+
 test('a missing dashboard index preserves other cards without a visible warning or link', async () => {
   const elements = new Map();
   let targetReads = 0, stockReads = 0, activityReads = 0, announcementReads = 0;

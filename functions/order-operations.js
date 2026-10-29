@@ -4,11 +4,12 @@ import { audit, fail, money, movement, qty, setStock, stockState, text, validDat
 
 const staffRole = (role) => role === 'admin' || role === 'account_admin';
 const orderUnitLabel = (unit) => {
-  if (typeof unit === 'string') return ({ kg: 'KG', '500gm': '500 GM', '250gm': '250 GM' })[unit] || null;
+  if (typeof unit === 'string') return ({ kg: 'KG', '500gm': '500 GM', '250gm': '250 GM', pcs: 'PCS' })[unit] || null;
   const name = String(unit?.name || '').trim().toUpperCase().replace(/\s+/g, ' ');
   if (['KG', '1 KG', '1KG', 'KILOGRAM'].includes(name)) return 'KG';
   if (['500 GM', '500 G', '500GM', '500G'].includes(name)) return '500 GM';
   if (['250 GM', '250 G', '250GM', '250G'].includes(name)) return '250 GM';
+  if (['PCS', 'PIECES', 'PIECE'].includes(name)) return 'PCS';
   return null;
 };
 const clean = (value) => typeof value === 'string' ? value.trim() : '';
@@ -171,10 +172,12 @@ async function buildLines(db, tx, inputs, user) {
       if (line.unitId && !selectedLabel) fail('Choose an active order unit.');
       if (selectedLabel === '250 GM' && user.role !== 'admin') fail('Only Admin may select 250 GM.');
       const item = snap.data();
+      if (item.name?.trim().toLocaleLowerCase() === 'gift packing' && selectedLabel !== 'PCS') fail('Gift Packing must use PCS.');
+      if (item.name?.trim().toLocaleLowerCase() !== 'gift packing' && selectedLabel === 'PCS') fail('PCS is reserved for Gift Packing.');
       const configuredPrice = line.unitId === '500gm' ? item.sellingPrice500Gm : line.unitId === '250gm' ? item.sellingPrice250Gm : item.defaultSellingPrice;
       if (['500gm', '250gm'].includes(line.unitId) && configuredPrice === undefined) fail('This item has no price for the selected unit.');
       const unitPricePaise = pricePaise(configuredPrice);
-      return { kind: 'item', productId: line.productId, quantityQty: line.quantityQty, ...(line.unitId ? { orderUnitId: line.unitId, orderUnitName: selectedLabel } : {}), unitPricePaise, lineTotalPaise: saleTotal(line.quantityQty, unitPricePaise), itemSnapshot: itemSnapshot(item, unitSnaps[index].data()) };
+      return { kind: 'item', productId: line.productId, quantityQty: line.quantityQty, ...(line.unitId ? { orderUnitId: line.unitId, orderUnitName: selectedLabel } : {}), unitPricePaise, lineTotalPaise: saleTotal(line.quantityQty, unitPricePaise), itemSnapshot: { ...itemSnapshot(item, unitSnaps[index].data()), ...(item.name?.trim().toLocaleLowerCase() === 'gift packing' ? { unitSymbol: 'PCS' } : {}) } };
     }
     if (!Array.isArray(snap.data().components) || snap.data().components.length < 2 || snap.data().components.length > 4 || !money(snap.data().finalPricePaise)) fail('Special product recipe or price is invalid.');
     const unitPricePaise = snap.data().finalPricePaise;

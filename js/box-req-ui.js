@@ -8,6 +8,7 @@ export function initBoxReq(services) {
   const message = $('boxReq-message');
   const body = $('boxReq-body');
   const summary = $('boxReq-summary');
+  const specials = $('boxReq-specials'), wrapping = $('boxReq-wrapping');
   const search = $('boxReq-search');
   const refreshButton = $('boxReq-refresh');
 
@@ -17,8 +18,25 @@ export function initBoxReq(services) {
     loaderToken = null;
   };
   function render() {
-    body.replaceChildren(); summary.replaceChildren();
+    body.replaceChildren(); summary.replaceChildren(); specials.replaceChildren(); wrapping.replaceChildren();
     if (!result) return;
+    const renderTable = (target, rows, emptyText, columnCount, withUnit) => {
+      if (!rows?.length) {
+        const row = document.createElement('tr'), cell = document.createElement('td');
+        cell.colSpan = columnCount; cell.className = 'empty-cell'; cell.textContent = emptyText;
+        row.append(cell); target.append(row); return;
+      }
+      for (const item of rows) {
+        const row = document.createElement('tr'), name = document.createElement('th'), quantity = document.createElement('td');
+        name.scope = 'row'; name.textContent = item.name;
+        quantity.textContent = withUnit ? String(item.quantity) : `${item.quantity} PCS`;
+        row.append(name, quantity);
+        if (withUnit) { const unit = document.createElement('td'); unit.textContent = item.unit; row.append(unit); }
+        target.append(row);
+      }
+    };
+    renderTable(specials, result.specials, 'No special items required.', 2, false);
+    renderTable(wrapping, result.wrapping, 'No gift wrapping required.', 3, true);
     for (const [id, label] of BOX_UNITS) {
       const tile = document.createElement('div'); tile.className = 'box-req-total';
       const caption = document.createElement('span'); caption.textContent = label;
@@ -52,7 +70,7 @@ export function initBoxReq(services) {
     const current = ++revision;
     refreshButton.disabled = true;
     search.disabled = true;
-    result = null; body.replaceChildren(); summary.replaceChildren(); status('');
+    result = null; render(); status('');
     loaderToken = globalThis.omsLoading?.start('Loading box requirements�') || null;
     const request = (async () => {
       try {
@@ -84,6 +102,6 @@ export function initBoxReq(services) {
     revision++; stopLoader(); pending = null; result = null;
     profile = isStaff(nextProfile) ? { ...nextProfile, uid: user?.uid } : null;
     search.value = ''; search.disabled = false; refreshButton.disabled = false;
-    body.replaceChildren(); summary.replaceChildren(); status('');
+    render(); status('');
   } };
 }

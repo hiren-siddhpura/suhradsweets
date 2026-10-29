@@ -21,6 +21,18 @@ function setup(read) {
   return { el, events, active, get reads() { return reads; } };
 }
 const data = { items: [{ id: 'kaju', name: 'Kaju Katri', quantities: { '250gm': 10, '500gm': 60, kg: 5 } }], totals: { '250gm': 10, '500gm': 60, kg: 5 }, orderCount: 1 };
+test('Box Req. renders special and wrapping table cells without a footer', async () => {
+  const app = setup(() => ({ ...data,
+    specials: [{ name: 'Kaju Katri + Anjir Cake 500g', quantity: 40, unit: 'PCS' }],
+    wrapping: [{ name: 'Kaju Katri', quantity: 28, unit: '250 GM' }, { name: 'Anjir Roll', quantity: 3, unit: 'PCS' }],
+    wrappingTotals: { '250 GM': 28, PCS: 3 },
+  }));
+  app.events['oms:pagechange']({ detail: { page: 'boxReq' } }); await tick();
+  assert.equal(app.el('boxReq-specials').children[0].tag, 'tr');
+  assert.deepEqual(app.el('boxReq-specials').children[0].children.map((cell) => cell.textContent), ['Kaju Katri + Anjir Cake 500g', '40 PCS']);
+  assert.deepEqual(app.el('boxReq-wrapping').children[0].children.map((cell) => cell.textContent), ['Kaju Katri', '28', '250 GM']);
+  assert.equal(app.el('boxReq-wrapping').children.length, 2);
+});
 test('Box Req. renders read-only table, summary and search', async () => {
   const app = setup(() => data);
   app.events['oms:pagechange']({ detail: { page: 'boxReq' } }); await tick();
@@ -36,6 +48,8 @@ test('Box Req. loader stops on empty, failure, refresh, and navigation', async (
   empty.events['oms:pagechange']({ detail: { page: 'boxReq' } }); await tick();
   assert.equal(empty.active.size, 0);
   assert.match(empty.el('boxReq-body').children[0].children[0].textContent, /No boxes required/);
+  assert.match(empty.el('boxReq-specials').children[0].children[0].textContent, /No special items/);
+  assert.match(empty.el('boxReq-wrapping').children[0].children[0].textContent, /No gift wrapping/);
   empty.el('boxReq-refresh').listeners.click(); await tick(); assert.equal(empty.active.size, 0);
   const failed = setup(() => { throw new Error('offline'); });
   failed.events['oms:pagechange']({ detail: { page: 'boxReq' } }); await tick();

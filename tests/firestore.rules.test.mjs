@@ -36,10 +36,13 @@ async function seed() {
     await setDoc(record(db, 'specialProducts/specialActive'), { name: 'Combo', finalPricePaise: 5000, active: true });
     await setDoc(record(db, 'specialProducts/specialA'), { name: 'Old combo', active: false });
     await setDoc(record(db, 'orderControls/global'), { acceptingOrders: true });
-    await setDoc(record(db, 'orders/orderA'), { ownerUid: 'userA', customerId: 'customerA', status: 'confirmed', totalPaise: 5000, lines: [{ itemName: 'Sweet', quantity: 1 }] });
-    await setDoc(record(db, 'orders/orderB'), { ownerUid: 'userB', customerId: 'customerB', status: 'draft' });
+    await setDoc(record(db, 'orders/orderA'), { ownerUid: 'userA', assignedUserId: 'userA', customerId: 'customerA', status: 'confirmed', totalPaise: 5000, lines: [{ itemName: 'Sweet', quantity: 1 }] });
+    await setDoc(record(db, 'orders/orderB'), { ownerUid: 'userB', assignedUserId: 'userB', customerId: 'customerB', status: 'draft' });
+    await setDoc(record(db, 'orders/orderLinked'), { ownerUid: 'userA', assignedUserId: 'userA', customerId: 'customerLinked', status: 'confirmed' });
+    await setDoc(record(db, 'orders/orderReassigned'), { ownerUid: 'userB', assignedUserId: 'userA', customerId: 'customerB', status: 'confirmed' });
     await setDoc(record(db, 'customers/customerA'), { name: 'Customer A', assignedUserId: 'userA', orderLinks: { userA: 'orderA' } });
     await setDoc(record(db, 'customers/customerB'), { name: 'Customer B', assignedUserId: 'userB', orderLinks: { userB: 'orderB' } });
+    await setDoc(record(db, 'customers/customerLinked'), { name: 'Linked Customer', assignedUserId: 'userB', ownerUserIds: ['userA'], orderLinks: { userA: 'orderLinked' } });
     await setDoc(record(db, 'customers/legacy'), { name: 'Legacy Customer' });
     await setDoc(record(db, 'invoices/invoiceA'), { ownerUid: 'userA', orderId: 'orderA', paymentStatus: 'unpaid', paidAt: null, paidBy: null, totalPaise: 5000 });
     await setDoc(record(db, 'invoices/invoiceB'), { ownerUid: 'userB', orderId: 'orderB', paymentStatus: 'unpaid', paidAt: null, paidBy: null, totalPaise: 2000 });
@@ -147,13 +150,13 @@ test('target achievement aggregates confirmed sales only for the owned User', as
       ['deliveredA', 'userA', 'delivered', 300],
       ['cancelledA', 'userA', 'cancelled', 9000],
       ['otherUser', 'userB', 'confirmed', 8000],
-    ]) await setDoc(record(db, `orders/${id}`), { ownerUid, status, grandTotal, confirmedAt: at });
+    ]) await setDoc(record(db, `orders/${id}`), { ownerUid, assignedUserId: ownerUid, status, grandTotal, confirmedAt: at });
   });
   const db = dbFor('userA');
-  const eligible = query(collection(db, 'orders'), where('ownerUid', '==', 'userA'), where('status', 'in', ['confirmed', 'in_preparation', 'ready', 'delivered']), where('confirmedAt', '>=', Timestamp.fromDate(new Date('2026-10-10T00:00:00+05:30'))), where('confirmedAt', '<', Timestamp.fromDate(new Date('2026-10-11T00:00:00+05:30'))));
+  const eligible = query(collection(db, 'orders'), where('assignedUserId', '==', 'userA'), where('status', 'in', ['confirmed', 'in_preparation', 'ready', 'delivered']), where('confirmedAt', '>=', Timestamp.fromDate(new Date('2026-10-10T00:00:00+05:30'))), where('confirmedAt', '<', Timestamp.fromDate(new Date('2026-10-11T00:00:00+05:30'))));
   const result = await assertSucceeds(getAggregateFromServer(eligible, { eligibleSalesPaise: sum('grandTotal') }));
   assert.equal(result.data().eligibleSalesPaise, 1500);
-  await assertFails(getAggregateFromServer(query(collection(db, 'orders'), where('ownerUid', '==', 'userB')), { sales: sum('grandTotal') }));
+  await assertFails(getAggregateFromServer(query(collection(db, 'orders'), where('assignedUserId', '==', 'userB')), { sales: sum('grandTotal') }));
 });
 
 test('reporting date and prefix queries remain permitted for their roles', async () => {
@@ -168,7 +171,7 @@ test('reporting date and prefix queries remain permitted for their roles', async
   await assertSucceeds(getDocs(query(collection(dbFor('adminA'), 'announcements'), where('titleKey', '>=', 'wel'), where('titleKey', '<=', 'wel\uf8ff'), where('startsOn', '>=', '2026-10-01'), orderBy('titleKey'))));
 });
 
-test('Users read only owned orders, invoices, payments and assigned customers', async () => {
+test('Users read only assigned orders, owned invoices and payments, and assigned customers', async () => {
   const db = dbFor('userA');
   for (const path of ['users/userA', 'orders/orderA', 'invoices/invoiceA', 'payments/paymentA', 'customers/customerA']) {
     await assertSucceeds(getDoc(record(db, path)));
@@ -176,13 +179,22 @@ test('Users read only owned orders, invoices, payments and assigned customers', 
   for (const path of ['users/userB', 'orders/orderB', 'invoices/invoiceB', 'payments/paymentB', 'customers/customerB', 'inventory/itemA']) {
     await assertFails(getDoc(record(db, path)));
   }
-  await assertSucceeds(getDocs(query(collection(db, 'orders'), where('ownerUid', '==', 'userA'))));
+  await assertSucceeds(getDoc(record(db, 'orders/orderReassigned')));
+  await assertFails(getDoc(record(dbFor('userB'), 'orders/orderReassigned')));
+  const assignedOrders = await assertSucceeds(getDocs(query(collection(db, 'orders'), where('assignedUserId', '==', 'userA'))));
+  assert.ok(assignedOrders.docs.some((item) => item.id === 'orderReassigned'));
+  await assertFails(getDocs(query(collection(db, 'orders'), where('ownerUid', '==', 'userA'))));
+  await assertFails(getDocs(query(collection(db, 'orders'), where('assignedUserId', '==', 'userB'))));
   await assertFails(getDocs(collection(db, 'orders')));
   await assertFails(getDocs(collection(db, 'customers')));
   const assigned = await assertSucceeds(getDocs(query(collection(db, 'customers'), where('assignedUserId', '==', 'userA'))));
   assert.deepEqual(assigned.docs.map((item) => item.id), ['customerA']);
+  const linked = await assertSucceeds(getDocs(query(collection(db, 'customers'), where('ownerUserIds', 'array-contains', 'userA'))));
+  assert.deepEqual(linked.docs.map((item) => item.id), ['customerLinked']);
   await assertFails(getDocs(query(collection(db, 'customers'), where('assignedUserId', '==', 'userB'))));
   await assertFails(getDoc(record(db, 'customers/legacy')));
+  await assertSucceeds(getDoc(record(db, 'customers/customerLinked')));
+  await assertFails(getDoc(record(dbFor('userB'), 'customers/customerA')));
   await assertSucceeds(getDoc(record(dbFor('adminA'), 'customers/legacy')));
   await assertSucceeds(getDoc(record(dbFor('accountA'), 'customers/legacy')));
 });
@@ -374,7 +386,7 @@ test('dashboard KG data layer returns authorized sales and item-wise sellable st
     await setDoc(record(db, 'inventory/kgItem'), { onHandQty: 12000, reservedQty: 0, sellingBlocked: false });
     await setDoc(record(db, 'inventory/gItem'), { onHandQty: 500000, reservedQty: 0, sellingBlocked: false });
     for (const [id, ownerUid, status, quantityQty] of [['mine', 'userA', 'confirmed', 2500], ['theirs', 'userB', 'confirmed', 5000], ['cancelled', 'userA', 'cancelled', 8000]]) {
-      await setDoc(record(db, `orders/${id}`), { orderDate: '2026-10-10', ownerUid, status, stockDeductions: [{ itemId: 'kgItem', quantityQty, itemSnapshot: { name: 'Sweet', unitSymbol: 'kg' } }] });
+      await setDoc(record(db, `orders/${id}`), { orderDate: '2026-10-10', ownerUid, assignedUserId: ownerUid, status, stockDeductions: [{ itemId: 'kgItem', quantityQty, itemSnapshot: { name: 'Sweet', unitSymbol: 'kg' } }] });
     }
   });
   const user = dbFor('userA'), admin = dbFor('adminA');

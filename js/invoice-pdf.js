@@ -10,7 +10,7 @@ export function invoicePdfModel(invoice, business = {}, payments = null) {
   const lines = (invoice.lines || []).map((line) => ({
     description: String(line.description || line.itemSnapshot?.name || line.specialSnapshot?.name || ''),
     quantityQty: Number(line.quantityQty || 0),
-    unit: String(line.unit || line.itemSnapshot?.unitSymbol || (line.kind === 'special' ? 'combo' : '')),
+    unit: String(String(line.description || line.itemSnapshot?.name || '').trim().toLocaleLowerCase() === 'gift packing' ? 'PCS' : line.unit || line.itemSnapshot?.unitSymbol || (line.kind === 'special' ? 'combo' : '')),
     unitPricePaise: Number(line.unitPricePaise || 0),
     lineTotalPaise: Number(line.lineTotalPaise || 0),
   }));

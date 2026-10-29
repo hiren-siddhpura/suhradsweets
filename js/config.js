@@ -1,6 +1,7 @@
 export const APP_NAME = 'Suhrad Sweets OMS';
 
 export const PAGES = Object.freeze({
+  orderAnalytics: { title: 'Order Analytics', description: 'Item quantities by user and customer.' },
   dashboard: { title: 'Dashboard', description: 'He Hari ! Bas Ek Tu Raji Tha' },
   orders: { title: 'Orders', description: 'Create, confirm and track customer orders.' },
   specials: { title: 'Special Products', description: 'Set combination recipes and final selling prices.' },

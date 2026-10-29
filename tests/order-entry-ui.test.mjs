@@ -40,7 +40,7 @@ test('searchable customer choice preserves order form through customer cancel an
     uniqueId: () => 'customer-request-1', FormData: class { get(name) { return values[name]; } },
     isStaff, validateProfile, hasPermission, validateCustomerInput, showToast(message) { toasts.push(message); }, customerSaveError: (error) => error.message,
     listOrders: async () => [], listCustomers: async () => [{ id: 'z', fullName: 'Zara', contact: '123' }, { id: 'a', fullName: 'Asha', contact: '456' }, { id: 'unicode', fullName: 'આશા Élodie', contact: '789' }],
-    listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'sweet', name: 'Kaju Katli', active: true, defaultSellingPrice: 1200, sellingPrice500Gm: 600 }] : type === 'units' ? [{ id: 'kg', name: '1 KG', active: true }, { id: 'half', name: '500 GM', active: true }, { id: 'quarter', name: '250 GM', active: true }] : [],
+    listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'sweet', name: 'Kaju Katri', active: true, defaultSellingPrice: 1200, sellingPrice500Gm: 600 }] : type === 'units' ? [{ id: 'kg', name: '1 KG', active: true }, { id: 'half', name: '500 GM', active: true }, { id: 'quarter', name: '250 GM', active: true }] : [],
     listInvoices: async () => [], getOrderTaking: async () => true, listMasterRecords: async () => [],
     callOperation: async (_fn, name, payload) => name === 'getOrderStock' ? (stockReads++, { items: [{ itemId: 'sweet', availableQty: 988000, unit: 'kg', status: 'available' }] }) : name === 'saveOrderDraft' ? (orderSaves.push(payload), { orderId: payload.orderId, orderNumber: 'SS-2026-000001', status: 'confirmed' }) : { rows: [], hasMore: false },
     saveCustomerDirect: async (_db, _auth, input, options) => { saved.push({ input, options }); return { customerId: options.customerId }; },
@@ -63,7 +63,7 @@ test('searchable customer choice preserves order form through customer cancel an
   assert.match(el('order-product-list').innerHTML, /data-unit-id="500gm"/);
   assert.match(el('order-product-list').innerHTML, /data-unit-id="kg"/);
   assert.doesNotMatch(el('order-product-list').innerHTML, /Add Item|data-add-product/);
-  assert.match(el('order-product-filters').innerHTML, /data-product-category="kaju"/);
+  assert.match(el('order-product-filters').innerHTML, /data-product-category="sweet"[^>]*>Kaju<\/button>/);
   let addedMarkup = '', pendingUnit = 'kg';
   const lineRows = [];
   el('order-lines').children = lineRows;
@@ -154,7 +154,7 @@ test('searchable customer choice preserves order form through customer cancel an
   assert.equal(orderSaves.length, 0);
   delete fields.querySelector;
   lineRows.length = 0;
-  assert.match(html, /Kaju Katli — ₹1,200\.00/);
+  assert.match(html, /Kaju Katri — ₹1,200\.00/);
   assert.match(html, /Available: 988 kg/);
   assert.doesNotMatch(html, /On hand:|Reserved:|Available: 988 kg<\/option>/);
   const readsBeforeChange = stockReads;
@@ -179,7 +179,7 @@ test('searchable customer choice preserves order form through customer cancel an
   el('order-lines').insertAdjacentHTML = (_position, html) => added.push(html);
   fields.listeners.click({ target: { id: 'order-add-line', matches: () => false } });
   assert.equal(added.length, 1);
-  assert.match(added[0], /Kaju Katli — ₹1,200\.00/);
+  assert.match(added[0], /Kaju Katri — ₹1,200\.00/);
 
   // A normal User's modal stores details locally; the trusted order save creates
   // customer and order together, without a standalone customer write.

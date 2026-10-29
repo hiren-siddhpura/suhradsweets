@@ -6,7 +6,7 @@ export const ROLES = Object.freeze({
 
 const validRoles = new Set(Object.values(ROLES));
 const staffRoles = new Set([ROLES.ADMIN, ROLES.ACCOUNT_ADMIN]);
-const userPages = new Set(['dashboard', 'orders', 'customers', 'invoices', 'payments']);
+const userPages = new Set(['dashboard', 'orders', 'orderAnalytics', 'customers', 'invoices', 'payments']);
 const staffPermissions = new Set(['manageMaster', 'manageStock', 'manageTargets', 'manageAnnouncements', 'manageUsers', 'verifyPayments', 'systemSettings', 'specialOrders']);
 
 export function validateProfile(profile) {

@@ -193,7 +193,8 @@ export function initUi() {
     byId('topbar-page-title').textContent = details.title;
     byId('page-description').textContent = details.description;
     setHidden('dashboard-view', page !== 'dashboard');
-    setHidden('feature-view', ['dashboard', 'master', 'boxReq', 'inventory', 'purchases', 'orders', 'customers', 'specials', 'invoices', 'payments', 'targets', 'announcements', 'loginLogs', 'auditLogs'].includes(page));
+    setHidden('feature-view', ['dashboard', 'master', 'boxReq', 'inventory', 'purchases', 'orders', 'orderAnalytics', 'customers', 'specials', 'invoices', 'payments', 'targets', 'announcements', 'loginLogs', 'auditLogs'].includes(page));
+    setHidden('orderAnalytics-view', page !== 'orderAnalytics');
     setHidden('boxReq-view', page !== 'boxReq');
     setHidden('master-view', page !== 'master');
     setHidden('inventory-view', page !== 'inventory');

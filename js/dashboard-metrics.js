@@ -24,6 +24,7 @@ export function summarizeOrderKg(orders) {
       return [];
     });
     for (const part of parts) {
+      if (String(part.itemSnapshot?.name || '').trim().toLocaleLowerCase() === 'gift packing') continue;
       const kg = quantityInKg(part.quantityQty, part.itemSnapshot?.unitSymbol);
       if (kg === null) { excludedQuantities++; continue; }
       const previous = items.get(part.itemId) || { itemId: part.itemId, name: part.itemSnapshot?.name || part.itemId, kg: 0 };

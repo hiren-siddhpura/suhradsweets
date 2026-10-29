@@ -71,7 +71,8 @@ test('failed initial Orders load releases loader, clears records and allows retr
   assert.equal(app.active.size, 0);
   assert.equal(app.el('order-loading').hidden, true);
   assert.match(app.el('order-message').textContent, /network unavailable/);
-  assert.equal(app.el('order-body').innerHTML, '');
+  assert.match(app.el('order-body').innerHTML, /Orders could not be loaded/);
+  assert.equal(app.el('order-retry').hidden, false);
   app.navigate('dashboard'); app.navigate('orders');
   assert.equal(app.active.size, 1);
   app.pending[1].resolve([]);

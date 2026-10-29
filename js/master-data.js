@@ -69,6 +69,7 @@ export async function saveMasterRecord(db, type, id, input, actor, functions = n
   if (reference && !existingSnapshot.exists()) throw new Error('This record no longer exists. Refresh the list.');
   const existing = existingSnapshot?.data() || null;
   const values = validateMasterInput(type, input, { existing, actorRole: actor.role });
+  if (type === 'items' && values.name.trim().toLocaleLowerCase() === 'gift packing') values.defaultUnitId = existing?.defaultUnitId || 'pcs';
 
   if (type === 'items') {
     const sameUnit = await getDocs(query(collection(db, 'items'), where('defaultUnitId', '==', values.defaultUnitId)));
@@ -83,6 +84,14 @@ export async function saveMasterRecord(db, type, id, input, actor, functions = n
   }
 
   if (type === 'items' && !id) {
+    if (values.defaultUnitId === 'pcs') {
+      const pcsRef = doc(db, 'units', 'pcs');
+      await runTransaction(db, async (transaction) => {
+        const unit = await transaction.get(pcsRef);
+        if (!unit.exists()) transaction.set(pcsRef, { name: 'Pieces', symbol: 'PCS', active: true, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+        else if (unit.data().active !== true || unit.data().symbol !== 'PCS') throw new Error('The PCS stock unit must be active with symbol PCS.');
+      });
+    }
     if (values.defaultUnitId === 'kg') {
       const defaultUnitRef = doc(db, 'units', 'kg');
       await runTransaction(db, async (transaction) => {
@@ -103,6 +112,10 @@ export async function saveMasterRecord(db, type, id, input, actor, functions = n
       transaction.set(codeRef, { itemId: itemRef.id, createdAt: serverTimestamp() });
     });
     return itemRef.id;
+  }
+  if (type === 'items' && values.defaultUnitId === 'pcs') {
+    const unit = await getDoc(doc(db, 'units', 'pcs'));
+    if (!unit.exists() || unit.data().active !== true || unit.data().symbol !== 'PCS') throw new Error('The PCS stock unit must be active with symbol PCS.');
   }
   if (type === 'items' && (!existing || values.defaultUnitId !== existing.defaultUnitId)) await requireActiveUnit(db, values.defaultUnitId);
   if (reference) {

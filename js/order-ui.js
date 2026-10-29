@@ -62,6 +62,11 @@ export function initOrderUi({ db, functions, auth, mode }) {
   const pendingOrderActions = new Set();
   let sessionVersion = 0;
   let ordersLoaded = false, orderRefreshPromise = null, orderInitialToken = null;
+  const blankOrderFilters = () => ({ search: '', user: '', status: '', archive: '', from: '', to: '' });
+  let appliedOrderFilters = blankOrderFilters();
+  const orderFilterIds = { search: 'order-search', user: 'order-user', status: 'order-status', archive: 'order-archive', from: 'order-from', to: 'order-to' };
+  const readOrderFilters = () => Object.fromEntries(Object.entries(orderFilterIds).map(([key, id]) => [key, $(id).value.trim()]));
+  const writeOrderFilters = (filters) => { for (const [key, id] of Object.entries(orderFilterIds)) $(id).value = filters[key] || ''; };
   const recordLoadTokens = new Map(), recordLoadRuns = new Map();
   const stopRecordLoad = (page) => { const token = recordLoadTokens.get(page); if (token) globalThis.omsLoading?.stop(token); recordLoadTokens.delete(page); };
   const stopOrderInitialLoader = () => {
@@ -141,7 +146,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
       stopRecordLoad(page);
       recordLoadTokens.set(page, globalThis.omsLoading?.start(page === 'customers' ? 'Loading customers…' : 'Loading special products…') || null);
     }
-    if (page === 'orders') $('order-loading').hidden = false;
+    if (page === 'orders') { $('order-loading').hidden = false; $('order-table-scroll').hidden = true; $('order-export').disabled = true; $('order-retry').hidden = true; }
     try {
       const privileged = staff();
       const scopedUid = privileged ? null : user.uid;
@@ -162,6 +167,8 @@ export function initOrderUi({ db, functions, auth, mode }) {
         if (!current()) return;
         renderOrders();
         ordersLoaded = true;
+        $('order-table-scroll').hidden = false;
+        $('order-export').disabled = false;
         loadActivity(true);
       } else if (page === 'specials' && staff()) {
         const [itemRows, specialRows] = await Promise.all([listOrderProducts(db, 'items', true), listOrderProducts(db, 'specialProducts', true)]);
@@ -170,7 +177,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
         renderSpecials();
       }
       if (current()) message.textContent = '';
-    } catch (error) { if (current()) { console.error('Could not load orders:', error); if (page === 'orders' && !ordersLoaded) { orders = []; $('order-body').innerHTML = ''; $('order-mobile-list').innerHTML = ''; $('order-cards').innerHTML = ''; } message.textContent = `Could not load records: ${cleanError(error)}`; } }
+    } catch (error) { if (current()) { console.error('Could not load orders:', error); if (page === 'orders') { ordersLoaded = false; orders = []; $('order-body').innerHTML = ''; $('order-mobile-list').innerHTML = ''; $('order-cards').innerHTML = ''; $('order-table-scroll').hidden = false; $('order-body').innerHTML = empty(7, 'Orders could not be loaded. Please retry.'); $('order-retry').hidden = false; } message.textContent = `Could not load records: ${cleanError(error)}`; } }
     finally { if (page === 'orders' && current()) $('order-loading').hidden = true; if (page !== 'orders' && current()) stopRecordLoad(page); }
   }
 
@@ -191,14 +198,39 @@ export function initOrderUi({ db, functions, auth, mode }) {
 
   const filteredCustomers = () => customers.filter((customer) => `${customer.fullName} ${customer.contact} ${customer.area}`.toLowerCase().includes($('customer-search').value.toLowerCase())).sort((a, b) => a.fullName.localeCompare(b.fullName));
   const filteredOrders = () => orders.filter((order) => {
-    const search = $('order-search').value.toLowerCase();
-    return (!search || `${order.orderNumber} ${order.customerSnapshot?.fullName} ${order.customerSnapshot?.contact}`.toLowerCase().includes(search))
-      && (!$('order-status').value || order.status === $('order-status').value || order.status === 'confirmed' && $('order-status').value === 'in_preparation')
-      && (!$('order-archive').value || (order.archivedAt ? 'archived' : 'active') === $('order-archive').value)
-      && (!admin() || !$('order-user').value || order.assignedUserId === $('order-user').value)
-      && (!$('order-from').value || order.orderDate >= $('order-from').value)
-      && (!$('order-to').value || order.orderDate <= $('order-to').value);
+    const filters = appliedOrderFilters;
+    const search = filters.search.toLocaleLowerCase();
+    return (!search || `${order.orderNumber || ''} ${order.customerSnapshot?.fullName || ''} ${order.customerSnapshot?.contact || ''} ${assignedUserName(order)}`.toLocaleLowerCase().includes(search))
+      && (!filters.status || order.status === filters.status)
+      && (!filters.archive || (order.archivedAt ? 'archived' : 'active') === filters.archive)
+      && (!staff() || !filters.user || (order.assignedUserId || order.ownerUid) === filters.user)
+      && (!filters.from || order.orderDate >= filters.from)
+      && (!filters.to || order.orderDate <= filters.to);
   }).sort((a, b) => b.orderDate.localeCompare(a.orderDate) || b.orderNumber.localeCompare(a.orderNumber));
+  function renderOrderFilterChips() {
+    const filters = appliedOrderFilters;
+    const userName = users.find((row) => row.id === filters.user);
+    const labels = [
+      ['search', filters.search && `Search: ${filters.search}`],
+      ['user', staff() && filters.user && `User: ${userName?.displayName || userName?.fullName || filters.user}`],
+      ['status', filters.status && `Status: ${$('order-status').querySelector?.(`option[value="${filters.status}"]`)?.textContent || displayOrderStatus(filters.status)}`],
+      ['archive', filters.archive && `Archive: ${filters.archive === 'active' ? 'Active' : 'Archived'}`],
+      ['dates', (filters.from || filters.to) && `Date: ${filters.from || 'Any'} – ${filters.to || 'Any'}`],
+    ].filter(([, label]) => label);
+    $('order-active-filters').hidden = !labels.length;
+    $('order-active-filters').innerHTML = labels.map(([key, label]) => `<button type="button" class="order-filter-chip" data-filter="${key}" aria-label="Remove ${esc(label)} filter">${esc(label)} <span aria-hidden="true">×</span></button>`).join('');
+  }
+  function applyOrderFilters(filters = readOrderFilters()) {
+    if (filters.from && filters.to && filters.from > filters.to) {
+      $('order-message').textContent = 'From Date must be on or before To Date.';
+      return;
+    }
+    appliedOrderFilters = { ...blankOrderFilters(), ...filters, user: staff() ? filters.user : '' };
+    writeOrderFilters(appliedOrderFilters);
+    $('order-filter-pending').hidden = true;
+    $('order-message').textContent = '';
+    renderOrders();
+  }
   const filteredSpecials = () => specials.filter((special) => {
     const search = $('special-search').value.toLowerCase();
     const status = $('special-status').value;
@@ -216,10 +248,13 @@ export function initOrderUi({ db, functions, auth, mode }) {
     $('order-intake').hidden = !hasPermission(profile, 'systemSettings');
     $('order-intake').textContent = acceptingOrders ? 'Order-taking: open' : 'Order-taking: paused';
     $('order-new').disabled = !acceptingOrders;
-    $('order-user').hidden = !admin();
+    $('order-user').hidden = !staff();
+    $('order-user-field').hidden = !staff();
     const selectedUser = $('order-user').value;
-    $('order-user').innerHTML = '<option value="">All users</option>' + eligibleUsers().map((u) => `<option value="${esc(u.id)}">${esc(u.displayName || u.fullName || u.id)}</option>`).join('');
+    const orderUsers = [...new Map([...eligibleUsers(), ...orders.map((order) => ({ id: order.assignedUserId || order.ownerUid, displayName: assignedUserName(order) }))].filter((row) => row.id).map((row) => [row.id, row])).values()];
+    $('order-user').innerHTML = '<option value="">All users</option>' + orderUsers.map((u) => `<option value="${esc(u.id)}">${esc(u.displayName || u.fullName || u.id)}</option>`).join('');
     $('order-user').value = selectedUser;
+    renderOrderFilterChips();
     const rows = filteredOrders();
     $('order-cards').innerHTML = `<div class="card ops-stat"><span>Visible orders</span><strong>${rows.length}</strong></div><div class="card ops-stat"><span>Open orders</span><strong>${rows.filter((o) => !['cancelled', 'delivered'].includes(o.status)).length}</strong></div><div class="card ops-stat"><span>Processed value</span><strong>${rupees(rows.filter((o) => !['draft', 'cancelled'].includes(o.status)).reduce((sum, o) => sum + (o.grandTotal || 0), 0))}</strong></div>`;
     const orderActions = (o) => {
@@ -236,7 +271,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
         editableStatus && (staff() || o.status === 'draft' && manageable && !specialOrder) ? button('cancelOrder', 'Cancel', invoiceIds.has(o.id) || o.invoiceId || o.editLockedAt || o.paymentRequestedAt ? 'A financial lock prevents cancellation.' : '') : '',
         staff() && ['confirmed', 'in_preparation', 'ready'].includes(o.status) ? button('advanceOrder', 'Next status', o.archivedAt ? 'Restore this order first.' : '') : '',
         manageable && o.status === 'confirmed' && !invoiceIds.has(o.id) && !o.invoiceId ? button('invoiceOrder', 'Create invoice', o.archivedAt ? 'Restore this order first.' : '') : '',
-        invoiceIds.has(o.id) || o.invoiceId ? button('viewInvoice', 'View invoice') : '',
+        manageable && (invoiceIds.has(o.id) || o.invoiceId) ? button('viewInvoice', 'View invoice') : '',
         ].filter(Boolean).join('');
     };
     $('order-body').innerHTML = rows.length ? rows.map((o) => {
@@ -336,7 +371,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     const product = items.find((item) => item.id === productId);
     const thumbnail = kind === 'item' && productImage(product?.name || line.itemSnapshot?.name) ? `<img class="order-product-thumb" src="${productImage(product?.name || line.itemSnapshot?.name)}" alt="" loading="lazy" onerror="this.hidden=true">` : '<span class="order-product-thumb order-product-placeholder" aria-hidden="true">🍬</span>';
     const notice = stockNotice(kind, productId);
-    const choices = availableOrderUnits(profile?.role);
+    const choices = availableOrderUnits(profile?.role).filter((unit) => (product?.name || line.itemSnapshot?.name || '').trim().toLocaleLowerCase() === 'gift packing' ? unit.id === 'pcs' : unit.id !== 'pcs');
     const legacy = kind === 'item' && line.productId && !line.orderUnitId;
     const selectedUnit = legacy ? '__legacy__' : line.orderUnitId || choices[0].id;
     const legacyOption = legacy ? `<option value="__legacy__" selected>Current: ${esc(line.itemSnapshot?.unitSymbol || 'item unit')}</option>` : '';
@@ -393,7 +428,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
       const specialOrder = o.lines?.some((line) => line.kind === 'special');
       const canEdit = !invoiced && !o.archivedAt && !o.editLockedAt && !o.paymentRequestedAt && (o.status === 'draft' && own && (!specialOrder || special()) || o.status === 'confirmed' && admin() && (!specialOrder || special()));
       const canInvoice = own && o.status === 'confirmed' && !invoiced && !o.archivedAt;
-      actions.innerHTML = `${canEdit ? '<button type="button" class="button button-outline" data-view-action="editOrder"><span aria-hidden="true">✎</span> Edit</button>' : ''}${canInvoice ? '<button type="button" class="button button-primary" data-view-action="invoiceOrder"><span aria-hidden="true">＋</span> Create Invoice</button>' : ''}${invoiced ? '<button type="button" class="button button-primary" data-view-action="viewInvoice"><span aria-hidden="true">▣</span> View Invoice</button>' : ''}`;
+      actions.innerHTML = `${canEdit ? '<button type="button" class="button button-outline" data-view-action="editOrder"><span aria-hidden="true">✎</span> Edit</button>' : ''}${canInvoice ? '<button type="button" class="button button-primary" data-view-action="invoiceOrder"><span aria-hidden="true">＋</span> Create Invoice</button>' : ''}${own && invoiced ? '<button type="button" class="button button-primary" data-view-action="viewInvoice"><span aria-hidden="true">▣</span> View Invoice</button>' : ''}`;
     }
     if (nextAction === 'customer') $('order-fields').innerHTML = customerFields(c || (parkedOrder ? pendingCustomerDetails || {} : {}));
     if (nextAction === 'deleteCustomer') {
@@ -434,13 +469,10 @@ export function initOrderUi({ db, functions, auth, mode }) {
   function renderProductPicker() {
     const list = $('order-product-list'); if (!list) return;
     const filterBar = $('order-product-filters');
-    const names = items.filter((item) => item.active).map((item) => String(item.name || '').toLowerCase());
-    const preferred = ['Kesar', 'Kaju', 'Anjir', 'Dryfruit', 'Mohanthal', 'Barfi'];
-    const categoryNames = preferred.filter((name) => names.some((value) => value.split(/\s+/).includes(name.toLowerCase())));
-    const isOther = (item) => !preferred.some((name) => String(item.name || '').toLowerCase().split(/\s+/).includes(name.toLowerCase()));
-    if (items.some((item) => item.active && isOther(item))) categoryNames.push('Others');
-    if (filterBar) filterBar.innerHTML = `<button type="button" data-product-category="" aria-pressed="${!productCategory}">All</button>${categoryNames.map((name) => `<button type="button" data-product-category="${esc(name.toLowerCase())}" aria-pressed="${productCategory === name.toLowerCase()}">${esc(name)}</button>`).join('')}`;
-    const categoryMatches = (item) => !productCategory || (productCategory === 'others' ? isOther(item) : String(item.name || '').toLowerCase().split(/\s+/).includes(productCategory));
+    const shortcuts = [['Kaju', 'Kaju Katri'], ['Kesar', 'Kesar Kaju Katri'], ['Roll', 'Anjir Roll'], ['Cake', 'Anjir Cake'], ['Bar', 'Dryfruit Bar'], ['Mohanthal', 'Mohanthal']];
+    const shortcutProducts = shortcuts.map(([label, name]) => ({ label, product: items.find((item) => item.active && String(item.name || '').trim().toLocaleLowerCase() === name.toLocaleLowerCase()) }));
+    if (filterBar) filterBar.innerHTML = `<button type="button" data-product-category="" aria-pressed="${!productCategory}">All</button>${shortcutProducts.map(({ label, product }) => { const id = product?.id || `missing:${label}`; return `<button type="button" data-product-category="${esc(id)}" aria-pressed="${productCategory === id}">${esc(label)}</button>`; }).join('')}`;
+    const categoryMatches = (item) => !productCategory || item.id === productCategory;
     const matches = [
       ...items.filter((item) => item.active && categoryMatches(item)).map((item) => ({ ...item, kind: 'item' })),
       ...(special() ? specials.filter((item) => item.active && categoryMatches(item)).map((item) => ({ ...item, kind: 'special' })) : []),
@@ -448,7 +480,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     const selectedLines = draftLines();
     list.innerHTML = matches.length ? matches.map((item) => {
       const image = item.kind === 'item' ? productImage(item.name) : '';
-      const units = item.kind === 'item' ? availableOrderUnits(profile?.role).filter((unit) => { try { const price = itemUnitPrice(item, unit.id); return price !== null && price !== undefined && price !== '' && Number.isSafeInteger(toPaise(price)); } catch { return false; } }).sort((a, b) => ({ '500gm': 0, kg: 1, '250gm': 2 }[a.id] ?? 3) - ({ '500gm': 0, kg: 1, '250gm': 2 }[b.id] ?? 3)) : Number.isSafeInteger(item.finalPricePaise) && item.finalPricePaise >= 0 ? [{ id: 'combo', label: 'Combo' }] : [];
+      const units = item.kind === 'item' ? availableOrderUnits(profile?.role).filter((unit) => (item.name || '').trim().toLocaleLowerCase() === 'gift packing' ? unit.id === 'pcs' : unit.id !== 'pcs').filter((unit) => { try { const price = itemUnitPrice(item, unit.id); return price !== null && price !== undefined && price !== '' && Number.isSafeInteger(toPaise(price)); } catch { return false; } }).sort((a, b) => ({ '500gm': 0, kg: 1, '250gm': 2 }[a.id] ?? 3) - ({ '500gm': 0, kg: 1, '250gm': 2 }[b.id] ?? 3)) : Number.isSafeInteger(item.finalPricePaise) && item.finalPricePaise >= 0 ? [{ id: 'combo', label: 'Combo' }] : [];
       const unitChoices = units.map((unit) => {
         const price = item.kind === 'special' ? item.finalPricePaise : toPaise(itemUnitPrice(item, unit.id));
         const quantity = selectedLines.find((line) => line.kind === item.kind && line.productId === item.id && line.unitId === unit.id)?.quantity || 0;
@@ -772,9 +804,23 @@ export function initOrderUi({ db, functions, auth, mode }) {
   $('order-activity-export').addEventListener('click', exportActivity);
   $('order-activity-prev').addEventListener('click', () => { if (activityPage > 1) { activityPage--; loadActivity(); } });
   $('order-activity-next').addEventListener('click', () => { if (activityHasMore && activityNext) { activityCursors[activityPage] = activityNext; activityPage++; loadActivity(); } });
-  ['customers', 'orders', 'specials'].forEach((page) => $(page === 'specials' ? 'special-refresh' : page.slice(0, -1) + '-refresh').addEventListener('click', () => refresh(page)));
+  ['customers', 'specials'].forEach((page) => $(page === 'specials' ? 'special-refresh' : 'customer-refresh').addEventListener('click', () => refresh(page)));
+  $('order-refresh').addEventListener('click', () => refresh('orders'));
+  $('order-retry').addEventListener('click', () => refresh('orders'));
   ['customer-search'].forEach((id) => $(id).addEventListener('input', renderCustomers));
-  ['order-search', 'order-status', 'order-archive', 'order-user', 'order-from', 'order-to'].forEach((id) => $(id).addEventListener('input', renderOrders));
+  $('order-filters').addEventListener('submit', (event) => { event.preventDefault(); applyOrderFilters(); });
+  const markOrderFiltersPending = () => { $('order-filter-pending').hidden = Object.entries(orderFilterIds).every(([key, id]) => ($(id).value || '').trim() === (appliedOrderFilters[key] || '')); };
+  $('order-filters').addEventListener('input', markOrderFiltersPending);
+  $('order-filters').addEventListener('change', markOrderFiltersPending);
+  $('order-clear').addEventListener('click', () => applyOrderFilters(blankOrderFilters()));
+  $('order-active-filters').addEventListener('click', (event) => {
+    const button = event.target.closest?.('[data-filter]');
+    if (!button) return;
+    const filters = { ...appliedOrderFilters };
+    if (button.dataset.filter === 'dates') { filters.from = ''; filters.to = ''; }
+    else filters[button.dataset.filter] = '';
+    applyOrderFilters(filters);
+  });
   ['special-search', 'special-status'].forEach((id) => $(id).addEventListener('input', renderSpecials));
   $('customer-body').addEventListener('click', (event) => { const button = event.target.closest('[data-action]'); if (button && staff()) openDialog(button.dataset.action === 'deleteCustomer' ? 'deleteCustomer' : 'customer', button.dataset.id); });
   $('customer-mobile-list').addEventListener('click', (event) => { const button = event.target.closest('[data-action]'); if (button && staff()) openDialog(button.dataset.action === 'deleteCustomer' ? 'deleteCustomer' : 'customer', button.dataset.id); });
@@ -905,8 +951,20 @@ export function initOrderUi({ db, functions, auth, mode }) {
     $('order-dialog').close();
   }, true);
   $('customer-export').addEventListener('click', () => exportBook('customers', [['Customers', filteredCustomers().map((c) => ({ Name: c.fullName, Contact: c.contact, Address: c.address, Area: c.area, ...(staff() ? { DateOfBirth: c.dateOfBirth, Sabha: c.sabha } : {}) }))]]));
-  $('order-export').addEventListener('click', () => { const rows = filteredOrders(); exportBook('orders', [['Orders', rows.map((o) => ({ OrderNumber: o.orderNumber, Customer: o.customerSnapshot?.fullName, Date: o.orderDate, DeliveryDate: o.deliveryDate, AssignedUser: assignedUserName(o), Status: displayOrderStatus(o.status), TotalRupees: (o.grandTotal || 0) / 100 }))], ['Lines', rows.flatMap((o) => o.lines?.map((l) => ({ OrderNumber: o.orderNumber, Product: l.kind === 'item' ? l.itemSnapshot?.name : l.specialSnapshot?.name, Quantity: l.quantityQty / 1000, Unit: l.kind === 'item' ? orderLineUnitLabel(l) : 'combo', UnitPriceRupees: l.unitPricePaise / 100, LineTotalRupees: l.lineTotalPaise / 100 })) || [])]]); });
+  $('order-export').addEventListener('click', () => {
+    if (!ordersLoaded || !$('order-loading').hidden) return;
+    const headers = ['Order', 'Customer', 'Date', 'Delivery date', 'Assigned user', 'Status', 'Archive', 'Total (INR)'];
+    const values = filteredOrders().map((o) => [o.orderNumber, o.customerSnapshot?.fullName, o.orderDate, o.deliveryDate, assignedUserName(o), displayOrderStatus(o.status), o.archivedAt ? 'Archived' : 'Active', ((o.grandTotal || 0) / 100).toFixed(2)]);
+    const cell = (value) => {
+      const safe = String(value ?? '').replace(/^[\s\uFEFF]*[=+\-@]/, (match) => `'${match}`);
+      return `"${safe.replace(/"/g, '""')}"`;
+    };
+    const csv = `\uFEFF${[headers, ...values].map((row) => row.map(cell).join(',')).join('\r\n')}\r\n`;
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a'); link.href = url; link.download = `orders-${new Date().toISOString().slice(0, 10)}.csv`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
   $('special-export').addEventListener('click', () => exportBook('specials', [['Special Products', filteredSpecials().map((s) => ({ Name: s.name, FinalPriceRupees: s.finalPricePaise / 100, Active: s.active, Components: s.components?.map((p) => `${p.itemSnapshot?.name}: ${qtyText(p.quantityQty)} ${p.itemSnapshot?.unitSymbol}`).join('; ') }))]]));
 
-  return { setSession(nextUser, nextProfile) { sessionVersion++; activityRevision++; stopOrderInitialLoader(); stopActivityLoad(); for (const page of recordLoadTokens.keys()) stopRecordLoad(page); $('order-loading').hidden = true; orderRefreshPromise = null; ordersLoaded = false; user = nextUser; profile = nextProfile; orders = []; customers = []; items = []; specials = []; users = []; invoiceIds = new Set(); stockAvailability = new Map(); stockMessage = ''; activityRows = []; activityCursors = [null]; activityPage = 1; pendingOrderId = ''; pendingCustomerId = ''; pendingCustomerDetails = null; parkedOrder = null; ['customer-body', 'order-body', 'special-body', 'customer-summary', 'order-cards', 'order-activity-body', 'order-activity-cards'].forEach((id) => { $(id).innerHTML = ''; }); $('order-user').value = ''; $('order-user').hidden = !admin(); if (profile) { const page = document.querySelector('[data-page].is-active')?.dataset.page; if (['customers', 'orders', 'specials'].includes(page)) refresh(page, page === 'orders'); } } };
+  return { setSession(nextUser, nextProfile) { sessionVersion++; activityRevision++; stopOrderInitialLoader(); stopActivityLoad(); for (const page of recordLoadTokens.keys()) stopRecordLoad(page); $('order-loading').hidden = true; orderRefreshPromise = null; ordersLoaded = false; user = nextUser; profile = nextProfile; orders = []; customers = []; items = []; specials = []; users = []; invoiceIds = new Set(); stockAvailability = new Map(); stockMessage = ''; activityRows = []; activityCursors = [null]; activityPage = 1; pendingOrderId = ''; pendingCustomerId = ''; pendingCustomerDetails = null; parkedOrder = null; appliedOrderFilters = blankOrderFilters(); writeOrderFilters(appliedOrderFilters); ['customer-body', 'order-body', 'special-body', 'customer-summary', 'order-cards', 'order-activity-body', 'order-activity-cards'].forEach((id) => { $(id).innerHTML = ''; }); $('order-user').hidden = !staff(); $('order-user-field').hidden = !staff(); $('order-active-filters').hidden = true; $('order-active-filters').innerHTML = ''; $('order-filter-pending').hidden = true; $('order-retry').hidden = true; $('order-export').disabled = true; if (profile) { const page = document.querySelector('[data-page].is-active')?.dataset.page; if (['customers', 'orders', 'specials'].includes(page)) refresh(page, page === 'orders'); } } };
 }

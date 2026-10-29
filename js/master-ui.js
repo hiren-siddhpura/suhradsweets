@@ -157,7 +157,7 @@ export function initMasterData({ db, functions, auth, mode }) {
         const cell = document.createElement('td');
         let value = record[key] ?? (key === 'displayName' ? record.fullName : undefined);
         if (['defaultSellingPrice', 'sellingPrice500Gm', 'sellingPrice250Gm'].includes(key) && value !== undefined) value = `₹${Number(value).toFixed(2)}`;
-        if (key === 'defaultUnitId') value = unitNames.get(value) || value || '—';
+        if (key === 'defaultUnitId') value = String(record.name || '').trim().toLocaleLowerCase() === 'gift packing' ? 'Pieces (PCS)' : unitNames.get(value) || value || '—';
         if (key === 'role') value = ({ admin: 'Admin', account_admin: 'Account Admin', user: 'User' })[value] || value;
         cell.textContent = String(value ?? '—'); row.append(cell);
       }

@@ -8,10 +8,11 @@ import { saveTarget, saveAnnouncement, saveUserProfile } from './reporting-opera
 import { deleteCustomer } from './customer-operations.js';
 import { manageUser, sendUserSetupLink } from './user-operations.js';
 import { getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity } from './order-reads.js';
+import { getOrderAnalytics } from './order-analytics.js';
 
 initializeApp();
 const db = getFirestore();
-const operations = { savePurchaseDraft, confirmPurchase, cancelPurchase, adjustStock, setInventoryControl, saveCustomer, saveSpecialProduct, saveOrderDraft, reassignOrder, confirmOrder, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment, getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity, submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid, saveTarget, saveAnnouncement, saveUserProfile };
+const operations = { savePurchaseDraft, confirmPurchase, cancelPurchase, adjustStock, setInventoryControl, saveCustomer, saveSpecialProduct, saveOrderDraft, reassignOrder, confirmOrder, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment, getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity, getOrderAnalytics, submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid, saveTarget, saveAnnouncement, saveUserProfile };
 
 function callable(name) {
   return onCall({ region: 'us-central1', maxInstances: 3, cors: true }, async (request) => {
@@ -21,7 +22,7 @@ function callable(name) {
       if (name === 'saveUserProfile') return await manageUser(db, request.auth.uid, data);
       if (name === 'sendUserSetupLink') return await sendUserSetupLink(db, request.auth.uid, data);
       if (name === 'deleteCustomer') return await deleteCustomer(db, request.auth.uid, data);
-      if (['savePurchaseDraft', 'adjustStock', 'setInventoryControl', 'saveCustomer', 'saveSpecialProduct', 'saveOrderDraft', 'reassignOrder', 'archiveOrder', 'restoreOrder', 'requestOrderPayment', 'getOrderStock', 'getPaymentNames', 'listOrderActivity', 'listPaymentActivity', 'submitPayment', 'reviewPayment', 'changePaymentMode', 'reversePayment', 'markInvoicePaid', 'saveTarget', 'saveAnnouncement', 'saveUserProfile'].includes(name)) return await operations[name](db, request.auth.uid, data);
+      if (['savePurchaseDraft', 'adjustStock', 'setInventoryControl', 'saveCustomer', 'saveSpecialProduct', 'saveOrderDraft', 'reassignOrder', 'archiveOrder', 'restoreOrder', 'requestOrderPayment', 'getOrderStock', 'getPaymentNames', 'listOrderActivity', 'listPaymentActivity', 'getOrderAnalytics', 'submitPayment', 'reviewPayment', 'changePaymentMode', 'reversePayment', 'markInvoicePaid', 'saveTarget', 'saveAnnouncement', 'saveUserProfile'].includes(name)) return await operations[name](db, request.auth.uid, data);
       if (name === 'cancelPurchase') return await operations[name](db, request.auth.uid, data.purchaseId, data.reason);
       if (name === 'createInvoiceFromOrder') return await operations[name](db, request.auth.uid, data.orderId);
       if (name === 'confirmOrder') return await operations[name](db, request.auth.uid, data.orderId);
@@ -55,6 +56,7 @@ export const archiveOrderCall = callable('archiveOrder');
 export const restoreOrderCall = callable('restoreOrder');
 export const requestOrderPaymentCall = callable('requestOrderPayment');
 export const getOrderStockCall = callable('getOrderStock');
+export const getOrderAnalyticsCall = callable('getOrderAnalytics');
 export const getPaymentNamesCall = callable('getPaymentNames');
 export const listOrderActivityCall = callable('listOrderActivity');
 export const listPaymentActivityCall = callable('listPaymentActivity');

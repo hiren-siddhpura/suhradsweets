@@ -9,7 +9,7 @@ export async function dashboardOrderKg(db, role, uid, from, to) {
   const terms = [];
   if (from) terms.push(where('orderDate', '>=', from));
   if (to) terms.push(where('orderDate', '<=', to));
-  if (role === 'user') terms.push(where('ownerUid', '==', uid));
+  if (role === 'user') terms.push(where('assignedUserId', '==', uid));
   const rows = []; let cursor = null;
   do {
     const result = await getDocs(query(collection(db, 'orders'), ...terms, orderBy('orderDate'), ...(cursor ? [startAfter(cursor)] : []), limit(100)));
@@ -40,6 +40,7 @@ export async function dashboardStockKg(db, role = 'admin') {
       const stockDoc = ownableStock ? await getDoc(doc(db, 'inventory', entry.id)) : entry;
       const stock = stockDoc.exists() ? stockDoc.data() : { onHandQty: 0, reservedQty: 0, sellingBlocked: false };
       const data = item.data();
+      if (String(data.name || '').trim().toLocaleLowerCase() === 'gift packing') return { skip: true };
       if (!data.defaultUnitId) return null;
       if (!unitCache.has(data.defaultUnitId)) unitCache.set(data.defaultUnitId, getDoc(doc(db, 'units', data.defaultUnitId)));
       const unit = await unitCache.get(data.defaultUnitId);
@@ -48,7 +49,7 @@ export async function dashboardStockKg(db, role = 'admin') {
       const kg = quantityInKg(available, unit.data().symbol);
       return kg === null ? null : { itemId: entry.id, name: data.name || entry.id, kg, blocked: stock.sellingBlocked === true || data.active !== true };
     }));
-    for (const item of page) { if (item) { items.push(item); totalKg += item.kg; } else excludedQuantities++; }
+    for (const item of page) { if (item?.skip) continue; if (item) { items.push(item); totalKg += item.kg; } else excludedQuantities++; }
     cursor = result.docs.length === 100 ? result.docs.at(-1) : null;
   } while (cursor);
   return { totalKg, items: items.sort((a, b) => a.name.localeCompare(b.name)), excludedQuantities };
@@ -120,14 +121,15 @@ export async function currentTargets(db, ownerUid, today) {
 }
 
 export async function targetAchievement(db, target) {
-  const orders = query(collection(db, 'orders'), where('ownerUid', '==', target.ownerUid), where('status', 'in', ['confirmed', 'in_preparation', 'ready', 'delivered']), where('confirmedAt', '>=', dayStart(target.periodStart)), where('confirmedAt', '<', dayStart(nextDay(target.periodEnd))));
+  const orders = query(collection(db, 'orders'), where('assignedUserId', '==', target.ownerUid), where('status', 'in', ['confirmed', 'in_preparation', 'ready', 'delivered']), where('confirmedAt', '>=', dayStart(target.periodStart)), where('confirmedAt', '<', dayStart(nextDay(target.periodEnd))));
   const result = await getAggregateFromServer(orders, { eligibleSalesPaise: sum('grandTotal') });
   return Number(result.data().eligibleSalesPaise || 0);
 }
 
 export async function dashboardTotals(db, role, uid, from, to) {
   const own = role === 'user' ? [where('ownerUid', '==', uid)] : [];
-  const orderTerms = [...own, where('orderDate', '>=', from), where('orderDate', '<=', to)];
+  const assigned = role === 'user' ? [where('assignedUserId', '==', uid)] : [];
+  const orderTerms = [...assigned, where('orderDate', '>=', from), where('orderDate', '<=', to)];
   const orders = query(collection(db, 'orders'), ...orderTerms);
   const invoices = query(collection(db, 'invoices'), ...own);
   const pending = query(collection(db, 'payments'), ...own, where('verificationStatus', '==', 'unverified'));
@@ -150,7 +152,7 @@ export async function dashboardTotals(db, role, uid, from, to) {
 
 export async function todayOrderCount(db, role, uid, today) {
   const terms = [where('orderDate', '==', today)];
-  if (role === 'user') terms.push(where('ownerUid', '==', uid));
+  if (role === 'user') terms.push(where('assignedUserId', '==', uid));
   return (await getCountFromServer(query(collection(db, 'orders'), ...terms))).data().count;
 }
 
@@ -173,7 +175,7 @@ export async function inventorySummary(db) {
 
 export async function recentActivity(db, role, uid) {
   if (role === 'user') {
-    const snap = await getDocs(query(collection(db, 'orders'), where('ownerUid', '==', uid), orderBy('createdAt', 'desc'), limit(8)));
+    const snap = await getDocs(query(collection(db, 'orders'), where('assignedUserId', '==', uid), orderBy('createdAt', 'desc'), limit(8)));
     return snap.docs.map((entry) => ({ id: entry.id, type: `order.${entry.data().status}`, actorUid: uid, referenceType: 'order', referenceId: entry.id, at: entry.data().updatedAt || entry.data().createdAt }));
   }
   const snap = await getDocs(query(collection(db, 'auditLogs'), orderBy('at', 'desc'), limit(8)));

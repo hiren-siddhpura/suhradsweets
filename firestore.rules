@@ -31,6 +31,10 @@ service cloud.firestore {
       return activeProfile() && resource.data.ownerUid == request.auth.uid;
     }
 
+    function assignedOrder() {
+      return activeProfile() && resource.data.get('assignedUserId', null) == request.auth.uid;
+    }
+
     function validCustomerAssignment(data) {
       let uid = data.get('assignedUserId', null);
       return uid == null || (uid is string && uid.size() > 0 && uid.size() <= 128
@@ -275,7 +279,7 @@ service cloud.firestore {
     }
 
     match /orders/{orderId} {
-      allow get, list: if isStaff() || ownsRecord();
+      allow get, list: if isStaff() || assignedOrder();
       // Creation, confirmation, Admin edits, invoicing locks and stock snapshots require trusted operations.
       allow create, update, delete: if false;
     }
@@ -301,8 +305,8 @@ service cloud.firestore {
     }
 
     match /customers/{customerId} {
-      allow get, list: if isStaff() || (activeProfile() && resource.data.get('assignedUserId', null) == request.auth.uid);
-      // User queries must constrain assignedUserId to their authenticated UID.
+      allow get, list: if isStaff() || (activeProfile() && (resource.data.get('assignedUserId', null) == request.auth.uid || resource.data.get('ownerUserIds', []).hasAny([request.auth.uid])));
+      // User queries must constrain assignedUserId or ownerUserIds to their authenticated UID.
       allow create: if isStaff()
         && request.resource.data.keys().hasOnly(['fullName', 'contact', 'address', 'area', 'dateOfBirth', 'sabha', 'contactKey', 'assignedUserId', 'ownerUserIds', 'orderLinks', 'createdBy', 'createdAt', 'updatedBy', 'updatedAt', 'lastAuditId'])
         && validCustomerFields(request.resource.data)

@@ -4,9 +4,9 @@ import { availableOrderUnits, itemUnitPrice, orderLineUnitLabel } from '../js/or
 import { itemStockQuantity, requiredStock, validateDistinctOrderLines, validateOrderInput } from '../functions/order-operations.js';
 
 test('order choices are fixed and item prices are independent', () => {
-  assert.deepEqual(availableOrderUnits('admin').map((unit) => unit.id), ['kg', '500gm', '250gm']);
-  assert.deepEqual(availableOrderUnits('account_admin').map((unit) => unit.id), ['kg', '500gm']);
-  assert.deepEqual(availableOrderUnits('user').map((unit) => unit.id), ['kg', '500gm']);
+  assert.deepEqual(availableOrderUnits('admin').map((unit) => unit.id), ['kg', '500gm', '250gm', 'pcs']);
+  assert.deepEqual(availableOrderUnits('account_admin').map((unit) => unit.id), ['kg', '500gm', 'pcs']);
+  assert.deepEqual(availableOrderUnits('user').map((unit) => unit.id), ['kg', '500gm', 'pcs']);
   const item = { defaultSellingPrice: 100, sellingPrice500Gm: 60, sellingPrice250Gm: 35 };
   assert.equal(itemUnitPrice(item, 'kg'), 100);
   assert.equal(itemUnitPrice(item, '500gm'), 60);

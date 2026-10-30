@@ -1,6 +1,26 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+    match /purchaseReceipts/{uid}/{purchaseId}/{fileName} {
+      allow read, update, delete: if false;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && purchaseId.matches('^[A-Za-z0-9_-]{1,128}$')
+        && fileName.matches('^[A-Za-z0-9_-]{1,128}[.](jpg|png|pdf)$')
+        && request.resource.size > 0 && request.resource.size <= 5 * 1024 * 1024
+        && ((fileName.matches('.*[.]jpg') && request.resource.contentType == 'image/jpeg')
+          || (fileName.matches('.*[.]png') && request.resource.contentType == 'image/png')
+          || (fileName.matches('.*[.]pdf') && request.resource.contentType == 'application/pdf'))
+        && request.resource.metadata.ownerUid == uid
+        && request.resource.metadata.purchaseId == purchaseId
+        && request.resource.metadata.originalName is string
+        && request.resource.metadata.originalName.size() > 0
+        && request.resource.metadata.originalName.size() <= 150
+        && firestore.exists(/databases/(default)/documents/users/$(uid))
+        && firestore.get(/databases/(default)/documents/users/$(uid)).data.active == true
+        && firestore.get(/databases/(default)/documents/users/$(uid)).data.role in ['admin', 'account_admin']
+        && (!firestore.exists(/databases/(default)/documents/purchases/$(purchaseId))
+          || firestore.get(/databases/(default)/documents/purchases/$(purchaseId)).data.status == 'draft');
+    }
     match /paymentReceipts/{uid}/{fileName} {
       allow read, update, delete: if false;
       allow create: if request.auth != null && request.auth.uid == uid

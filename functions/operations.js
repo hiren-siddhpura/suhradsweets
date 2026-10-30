@@ -1,4 +1,5 @@
 import { FieldValue } from 'firebase-admin/firestore';
+import { getStorage } from 'firebase-admin/storage';
 
 export const MAX_QTY = 1_000_000_000; // milli-units; 1000 = one displayed unit
 export const text = (value, max) => typeof value === 'string' && value.trim().length > 0 && value.trim().length <= max;
@@ -81,10 +82,53 @@ export async function savePurchaseDraft(db, uid, input) {
     const type = await tx.get(db.doc(`purchaseTypes/${values.purchaseTypeId}`));
     if (existing.exists && existing.data().status !== 'draft') fail('Only draft purchases can be edited.');
     if (!type.exists || type.data().active !== true) fail('Choose an active purchase type.');
+    if (input.attachment != null) values.attachment = await checkedPurchaseAttachment(uid, purchaseId, input.attachment);
     tx.set(ref, { ...values, purchaseTypeSnapshot: type.data().name, status: 'draft', createdBy: existing.exists ? existing.data().createdBy : uid, createdAt: existing.exists ? existing.data().createdAt : FieldValue.serverTimestamp(), updatedBy: uid, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
     audit(tx, db, existing.exists ? 'purchase.draft_updated' : 'purchase.draft_created', uid, 'purchase', purchaseId, { totalPaise: values.totalPaise, previousTotalPaise: existing.exists ? existing.data().totalPaise : null, paidAmountPaise: values.paidAmountPaise, paymentStatus: values.paymentStatus });
     return { purchaseId };
   });
+}
+
+const purchaseBucket = () => getStorage().bucket(process.env.PAYMENT_RECEIPTS_BUCKET || `${process.env.GCLOUD_PROJECT || process.env.GCP_PROJECT}.firebasestorage.app`);
+
+export function validatePurchaseAttachment(bytes, metadata, uid, purchaseId, extension) {
+  const size = Number(metadata.size), mime = metadata.contentType;
+  if (!Number.isSafeInteger(size) || size < 1 || size > 5 * 1024 * 1024) fail('Purchase attachment must be nonempty and at most 5 MB.');
+  const types = { 'image/jpeg': 'jpg', 'image/png': 'png', 'application/pdf': 'pdf' };
+  const signature = mime === 'image/jpeg' ? bytes[0] === 0xff && bytes[1] === 0xd8 && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9
+    : mime === 'image/png' ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    : mime === 'application/pdf' ? bytes.subarray(0, 5).toString() === '%PDF-' : false;
+  const originalName = metadata.metadata?.originalName;
+  if (!signature || !types[mime] || types[mime] !== extension || bytes.length !== size || !text(originalName, 150)
+    || !new RegExp(`\\.${extension === 'jpg' ? 'jpe?g' : extension}$`, 'i').test(originalName)) fail('Choose a valid JPG, JPEG, PNG or PDF purchase attachment.');
+  if (metadata.metadata?.ownerUid !== uid || metadata.metadata?.purchaseId !== purchaseId) fail('Attachment does not belong to this purchase.');
+  return { name: originalName, size, contentType: mime };
+}
+
+async function checkedPurchaseAttachment(uid, purchaseId, attachment) {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(attachment?.uploadId || '') || !['jpg', 'png', 'pdf'].includes(attachment?.extension)) fail('Choose a valid JPG, JPEG, PNG or PDF purchase attachment.');
+  const path = `purchaseReceipts/${uid}/${purchaseId}/${attachment.uploadId}.${attachment.extension}`;
+  try {
+    const file = purchaseBucket().file(path), [metadata] = await file.getMetadata();
+    if (!Number.isSafeInteger(Number(metadata.size)) || Number(metadata.size) < 1 || Number(metadata.size) > 5 * 1024 * 1024) fail('Purchase attachment must be nonempty and at most 5 MB.');
+    const [bytes] = await file.download();
+    return { path, ...validatePurchaseAttachment(bytes, metadata, uid, purchaseId, attachment.extension) };
+  } catch (error) {
+    if (error instanceof OperationError) throw error;
+    fail('Purchase attachment upload is missing or unavailable. Please retry.');
+  }
+}
+
+export async function readPurchaseReceipt(db, uid, input) {
+  if (!validId(input?.purchaseId)) fail('Invalid purchase.');
+  await staff(db, uid, { get: (ref) => ref.get() });
+  const snap = await db.doc(`purchases/${input.purchaseId}`).get();
+  const attachment = snap.exists && snap.data().attachment;
+  if (!attachment?.path || !/^purchaseReceipts\/[^/]+\/[^/]+\/[A-Za-z0-9_-]+\.(jpg|png|pdf)$/.test(attachment.path) || attachment.path.split('/')[2] !== input.purchaseId) fail('No attachment is available for this purchase.');
+  const file = purchaseBucket().file(attachment.path), [metadata] = await file.getMetadata();
+  if (Number(metadata.size) < 1 || Number(metadata.size) > 5 * 1024 * 1024) fail('Invalid purchase attachment size.');
+  const [bytes] = await file.download();
+  return { name: attachment.name, contentType: attachment.contentType, base64: bytes.toString('base64') };
 }
 
 export async function confirmPurchase(db, uid, purchaseId) {

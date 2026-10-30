@@ -4,6 +4,8 @@ import { listMasterRecords } from './master-data.js';
 import { callOperation, listInventory, listMovements, listPurchases } from './operations-data.js';
 import { downloadXlsx } from './xlsx-export.js';
 import { uniqueId } from './unique-id.js';
+import { getStorage, ref as storageRef, uploadBytesResumable } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-storage.js';
+import { validateAttachmentFile } from './attachment-validation.js';
 
 const byId = (id) => document.getElementById(id);
 const escaped = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -17,6 +19,7 @@ export function initOperationsUi({ db, functions }) {
   let user = null, profile = null, purchases = [], stocks = [], movements = [], items = [], units = [], types = [];
   let loadedPage = '';
   let dialogAction = null, draftId = null, adjustmentId = null, stockAtOpen = null;
+  let purchaseUpload = null;
   const confirmingPurchases = new Set();
   let sessionVersion = 0;
   const loadTokens = new Map();
@@ -69,8 +72,8 @@ export function initOperationsUi({ db, functions }) {
   function renderPurchases() {
     const data = filteredPurchases();
     byId('purchase-summary').textContent = `${data.length} purchases · ${data.filter((p) => p.status === 'draft').length} drafts · ${data.filter((p) => p.status === 'confirmed').length} confirmed · ₹${(data.filter((p) => p.status === 'confirmed').reduce((sum, p) => sum + (p.totalPaise || 0), 0) / 100).toLocaleString('en-IN')}`;
-    byId('purchase-body').innerHTML = data.length ? data.map((p) => `<tr><td>${escaped(p.purchaseDate)}</td><td>${escaped(p.supplierName)}${/^https:\/\/drive\.google\.com\/file\/d\/[A-Za-z0-9_-]{10,}\/view\/?$/.test(p.documentUrl || '') ? ` <a href="${escaped(p.documentUrl)}" target="_blank" rel="noopener noreferrer">Document</a>` : ''}</td><td>${escaped(p.purchaseTypeSnapshot)}</td><td>${p.quantity == null || p.quantity === '' ? 'Not recorded' : escaped(p.quantity)}</td><td>${p.unit ? escaped(p.unit) : 'Not recorded'}</td><td>${((p.totalPaise || 0) / 100).toLocaleString('en-IN')}</td><td>${escaped(p.paymentStatus || 'Not recorded')}</td><td>${escaped(p.status)}</td><td class="ops-actions">${p.status === 'draft' ? `<button type="button" data-op="edit" data-id="${escaped(p.id)}">Edit</button><button type="button" data-op="confirm" data-id="${escaped(p.id)}">Confirm</button>` : ''}${p.status !== 'cancelled' ? `<button type="button" data-op="cancel" data-id="${escaped(p.id)}">Cancel</button>` : ''}</td></tr>`).join('') : empty(9, 'No purchases match the filters.');
-    byId('purchase-mobile-list').innerHTML = data.length ? data.map((p) => `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${escaped(p.supplierName)}</strong><span class="mobile-status">${escaped(p.status)}</span></div><p>${escaped(p.purchaseDate)} · ${escaped(p.purchaseTypeSnapshot)}<small>${p.quantity == null || p.quantity === '' ? 'Quantity not recorded' : `${escaped(p.quantity)} ${escaped(p.unit || '')}`}</small></p><div class="mobile-record-bottom"><b>₹${((p.totalPaise || 0) / 100).toLocaleString('en-IN')}</b><div class="mobile-record-actions">${p.status === 'draft' ? `<button type="button" data-op="edit" data-id="${escaped(p.id)}">Edit</button><button type="button" data-op="confirm" data-id="${escaped(p.id)}">Confirm</button>` : ''}${p.status !== 'cancelled' ? `<button type="button" data-op="cancel" data-id="${escaped(p.id)}">Cancel</button>` : ''}</div></div></article>`).join('') : '<p class="mobile-record-empty">No purchases match the current filters.</p>';
+    byId('purchase-body').innerHTML = data.length ? data.map((p) => `<tr><td>${escaped(p.purchaseDate)}</td><td>${escaped(p.supplierName)}${/^https:\/\/drive\.google\.com\/file\/d\/[A-Za-z0-9_-]{10,}\/view\/?$/.test(p.documentUrl || '') ? ` <a href="${escaped(p.documentUrl)}" target="_blank" rel="noopener noreferrer">Document</a>` : ''}</td><td>${escaped(p.purchaseTypeSnapshot)}</td><td>${p.quantity == null || p.quantity === '' ? 'Not recorded' : escaped(p.quantity)}</td><td>${p.unit ? escaped(p.unit) : 'Not recorded'}</td><td>${((p.totalPaise || 0) / 100).toLocaleString('en-IN')}</td><td>${escaped(p.paymentStatus || 'Not recorded')}</td><td>${escaped(p.status)}</td><td class="ops-actions">${p.attachment ? `<button type="button" data-op="receipt" data-id="${escaped(p.id)}">Attachment</button>` : ''}${p.status === 'draft' ? `<button type="button" data-op="edit" data-id="${escaped(p.id)}">Edit</button><button type="button" data-op="confirm" data-id="${escaped(p.id)}">Confirm</button>` : ''}${p.status !== 'cancelled' ? `<button type="button" data-op="cancel" data-id="${escaped(p.id)}">Cancel</button>` : ''}</td></tr>`).join('') : empty(9, 'No purchases match the filters.');
+    byId('purchase-mobile-list').innerHTML = data.length ? data.map((p) => `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${escaped(p.supplierName)}</strong><span class="mobile-status">${escaped(p.status)}</span></div><p>${escaped(p.purchaseDate)} · ${escaped(p.purchaseTypeSnapshot)}<small>${p.quantity == null || p.quantity === '' ? 'Quantity not recorded' : `${escaped(p.quantity)} ${escaped(p.unit || '')}`}</small></p><div class="mobile-record-bottom"><b>₹${((p.totalPaise || 0) / 100).toLocaleString('en-IN')}</b><div class="mobile-record-actions">${p.attachment ? `<button type="button" data-op="receipt" data-id="${escaped(p.id)}">Attachment</button>` : ''}${p.status === 'draft' ? `<button type="button" data-op="edit" data-id="${escaped(p.id)}">Edit</button><button type="button" data-op="confirm" data-id="${escaped(p.id)}">Confirm</button>` : ''}${p.status !== 'cancelled' ? `<button type="button" data-op="cancel" data-id="${escaped(p.id)}">Cancel</button>` : ''}</div></div></article>`).join('') : '<p class="mobile-record-empty">No purchases match the current filters.</p>';
   }
 
   const selectedMovements = () => movements.filter((m) => {
@@ -128,6 +131,7 @@ export function initOperationsUi({ db, functions }) {
 
   function field(label, name, type = 'text', value = '', extra = '') { return `<label class="ops-field">${label}<input name="${name}" type="${type}" value="${escaped(value)}" ${extra}></label>`; }
   function openDialog(action, id = null) {
+    purchaseUpload = null;
     dialogAction = action; draftId = id; adjustmentId = action === 'adjust' ? uniqueId() : null;
     const purchase = purchases.find((p) => p.id === id);
     const item = items.find((i) => i.id === id);
@@ -137,6 +141,7 @@ export function initOperationsUi({ db, functions }) {
     byId('ops-dialog-title').textContent = ({ draft: purchase ? 'Edit purchase draft' : 'New purchase draft', cancel: 'Cancel purchase', adjust: 'Physical stock count', block: 'Block item from selling', unblock: 'Unblock item for selling', threshold: 'Low-stock threshold' })[action];
     byId('ops-save').textContent = ({ adjust: 'Confirm stock count', block: 'Block item', unblock: 'Unblock item', threshold: 'Save threshold' })[action] || 'Save';
     if (action === 'draft') byId('ops-fields').innerHTML = `${field('Supplier name', 'supplierName', 'text', purchase?.supplierName, 'required maxlength="120"')}${field('Purchase date', 'purchaseDate', 'date', purchase?.purchaseDate || new Date().toISOString().slice(0, 10), 'required')}<label class="ops-field">Purchase type<select name="purchaseTypeId" required>${types.filter((t) => t.active).map((t) => `<option value="${escaped(t.id)}" ${purchase?.purchaseTypeId === t.id ? 'selected' : ''}>${escaped(t.name)}</option>`).join('')}</select></label><div class="purchase-measure-fields">${field('Quantity', 'quantity', 'text', purchase?.quantity ?? '', 'required maxlength="120"')}${field('Unit', 'unit', 'text', purchase?.unit ?? '', 'maxlength="80"')}</div>${field('Total amount (\u20b9)', 'total', 'number', purchase ? purchase.totalPaise / 100 : '', 'min="0" step="0.01" required')}${field('Paid amount (\u20b9)', 'paid', 'number', (purchase?.paidAmountPaise || 0) / 100, 'min="0" step="0.01" required')}<label class="ops-field">Payment mode<select name="paymentMode"><option value="cash" ${purchase?.paymentMode === 'cash' ? 'selected' : ''}>Cash</option><option value="upi" ${purchase?.paymentMode === 'upi' ? 'selected' : ''}>UPI</option><option value="bank_transfer" ${purchase?.paymentMode === 'bank_transfer' ? 'selected' : ''}>Bank transfer</option></select></label>${field('Payment reference (required for online payments)', 'paymentReference', 'text', purchase?.paymentReference || '', 'maxlength="100"')}<p class="muted">Payment status is calculated from the entered paid amount. Purchases do not change stock.</p>${field('Google Drive file view URL', 'documentUrl', 'url', purchase?.documentUrl || '')}<p class="muted">Drive access is controlled in Google Drive. Verify recipients before sharing.</p><label class="ops-field">Notes<textarea name="notes" maxlength="1000">${escaped(purchase?.notes || '')}</textarea></label>`;
+    if (action === 'draft') byId('ops-fields').innerHTML += `<label class="ops-field">Attachment (optional)<input name="attachment" type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"><small>One JPG, JPEG, PNG or PDF, maximum 5 MB.</small>${purchase?.attachment ? `<small>Saved: ${escaped(purchase.attachment.name)}. Choose a file to replace it.</small>` : ''}</label>`;
     if (action === 'cancel') byId('ops-fields').innerHTML = `<p>Cancel ${escaped(purchase?.supplierName)}? Cancellation changes this purchase record only. Inventory and historical stock movements will not change.</p>${field('Reason', 'reason', 'text', '', 'required maxlength="500"')}`;
     if (action === 'adjust') byId('ops-fields').innerHTML = `<p><strong>${escaped(item?.name)}</strong><br>Current stock: ${shownQty(stock?.onHandQty)} ${escaped(unitFor(item))}</p>${field(`Counted physical quantity (${unitFor(item)})`, 'counted', 'number', stock?.onHandQty == null ? 0 : stock.onHandQty / 1000, 'min="0" step="0.001" required')}${field('Reason', 'reason', 'text', '', 'required maxlength="500"')}<p class="muted">Enter the absolute physical count. The difference will be recorded as a stock movement.</p>`;
     if (action === 'block') byId('ops-fields').innerHTML = `<p>Block <strong>${escaped(item?.name)}</strong> from new order confirmations? Existing confirmed orders and stock history remain unchanged.</p>${field('Reason for blocking', 'reason', 'text', '', 'required maxlength="500"')}`;
@@ -165,6 +170,20 @@ export function initOperationsUi({ db, functions }) {
         if (unit.length > 80) throw new Error('Unit must be 80 characters or fewer.');
         payload = { quantity, unit, purchaseId: draftId || undefined, supplierName: data.get('supplierName'), purchaseDate: data.get('purchaseDate'), purchaseTypeId: data.get('purchaseTypeId'), notes: data.get('notes'), documentUrl: data.get('documentUrl'), totalPaise: toPaise(data.get('total')), paidAmountPaise: toPaise(data.get('paid')), paymentMode: data.get('paymentMode'), paymentReference: data.get('paymentReference') };
         name = 'savePurchaseDraft';
+        const file = data.get('attachment');
+        if (file?.name) {
+          const extension = validateAttachmentFile(file);
+          draftId ||= uniqueId(); payload.purchaseId = draftId;
+          if (!purchaseUpload || purchaseUpload.file !== file) {
+            const uploadId = uniqueId();
+            const path = `purchaseReceipts/${user.uid}/${draftId}/${uploadId}.${extension}`;
+            const originalName = file.name.length > 150 ? `${file.name.slice(0, 140)}.${extension}` : file.name;
+            const task = uploadBytesResumable(storageRef(getStorage(db.app), path), file, { contentType: file.type, customMetadata: { ownerUid: user.uid, purchaseId: draftId, originalName } });
+            await new Promise((resolve, reject) => task.on('state_changed', (snapshot) => { byId('ops-save').textContent = `Uploading ${Math.round(snapshot.bytesTransferred / snapshot.totalBytes * 100)}%`; }, reject, resolve));
+            purchaseUpload = { file, attachment: { uploadId, extension } };
+          }
+          payload.attachment = purchaseUpload.attachment;
+        }
       } else if (dialogAction === 'cancel') { name = 'cancelPurchase'; payload = { purchaseId: draftId, reason: data.get('reason') }; }
       else if (dialogAction === 'adjust') { name = 'adjustStock'; payload = { itemId: draftId, countedQty: toMilli(data.get('counted')), expectedOnHandQty: stockAtOpen?.onHandQty || 0, reason: String(data.get('reason') || '').trim(), operationId: adjustmentId }; if (!payload.reason) throw new Error('Enter a reason for the stock count.'); }
       else if (['block', 'unblock', 'threshold'].includes(dialogAction)) {
@@ -176,7 +195,17 @@ export function initOperationsUi({ db, functions }) {
       await callOperation(functions, name, payload);
       byId('ops-dialog').close(); showToast('Operation saved.'); await refresh(name.includes('Purchase') ? 'purchases' : 'inventory');
     } catch (error) { byId('ops-error').textContent = safeError(error); byId('ops-error').hidden = false; }
-    finally { button.disabled = false; }
+    finally { button.disabled = false; if (dialogAction === 'draft') button.textContent = 'Save'; }
+  }
+
+  async function downloadPurchaseReceipt(id) {
+    try {
+      const result = await callOperation(functions, 'readPurchaseReceipt', { purchaseId: id });
+      const bytes = Uint8Array.from(atob(result.base64), (char) => char.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: result.contentType }));
+      const link = document.createElement('a'); link.href = url; link.download = result.name; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) { showToast(safeError(error), 'toast-error'); }
   }
 
   async function exportXlsx(kind) {
@@ -192,6 +221,15 @@ export function initOperationsUi({ db, functions }) {
 
   document.addEventListener('oms:pagechange', (event) => { for (const page of loadTokens.keys()) if (page !== event.detail.page) stopLoad(page); if (['purchases', 'inventory'].includes(event.detail.page) && profile) refresh(event.detail.page); });
   byId('purchase-new').addEventListener('click', () => openDialog('draft'));
+  byId('ops-fields').addEventListener('change', (event) => {
+    if (event.target.name !== 'attachment') return;
+    purchaseUpload = null;
+    byId('ops-error').hidden = true;
+    try {
+      if (event.target.files.length > 1) throw new Error('Choose one attachment per purchase.');
+      if (event.target.files[0]) validateAttachmentFile(event.target.files[0]);
+    } catch (error) { byId('ops-error').textContent = error.message; byId('ops-error').hidden = false; }
+  });
   byId('purchase-refresh').addEventListener('click', () => refresh('purchases'));
   byId('inventory-refresh').addEventListener('click', () => refresh('inventory'));
   byId('purchase-export').addEventListener('click', () => exportXlsx('purchases'));
@@ -201,6 +239,7 @@ export function initOperationsUi({ db, functions }) {
   byId('purchase-body').addEventListener('click', async (event) => {
     const button = event.target.closest('[data-op]'); if (!button || button.disabled || !isStaff(profile) || ['adjust', 'block', 'unblock', 'threshold'].includes(button.dataset.op) && !hasPermission(profile, 'manageStock')) return;
     const { op, id } = button.dataset;
+    if (op === 'receipt') { button.disabled = true; try { await downloadPurchaseReceipt(id); } finally { button.disabled = false; } return; }
     if (op === 'edit') return openDialog('draft', id);
     if (op === 'cancel') return openDialog('cancel', id);
     if (confirmingPurchases.has(id)) return;
@@ -212,6 +251,7 @@ export function initOperationsUi({ db, functions }) {
   byId('purchase-mobile-list').addEventListener('click', async (event) => {
     const button = event.target.closest('[data-op]'); if (!button || button.disabled || !isStaff(profile)) return;
     const { op, id } = button.dataset;
+    if (op === 'receipt') { button.disabled = true; try { await downloadPurchaseReceipt(id); } finally { button.disabled = false; } return; }
     if (op === 'edit') return openDialog('draft', id);
     if (op === 'cancel') return openDialog('cancel', id);
     if (confirmingPurchases.has(id)) return;

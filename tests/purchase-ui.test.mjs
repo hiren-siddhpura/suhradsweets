@@ -2,6 +2,36 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { validateAttachmentFile } from '../js/attachment-validation.js';
+import { validatePurchaseAttachment, readPurchaseReceipt } from '../functions/operations.js';
+
+test('purchase file validation accepts JPG/JPEG/PNG/PDF through 5 MB and rejects invalid uploads', () => {
+  for (const [name, type, extension] of [['bill.JPG', 'image/jpeg', 'jpg'], ['bill.jpeg', 'image/jpeg', 'jpg'], ['bill.png', 'image/png', 'png'], ['bill.pdf', 'application/pdf', 'pdf']]) {
+    assert.equal(validateAttachmentFile({ name, type, size: 5 * 1024 * 1024 }), extension);
+    assert.throws(() => validateAttachmentFile({ name, type, size: 5 * 1024 * 1024 + 1 }), /exceeds 5 MB/);
+  }
+  assert.throws(() => validateAttachmentFile({ name: 'bill.pdf', type: 'application/pdf', size: 0 }), /empty/);
+  assert.throws(() => validateAttachmentFile({ name: 'bill.exe', type: 'application/pdf', size: 10 }), /JPG/);
+  assert.throws(() => validateAttachmentFile({ name: 'bill.svg', type: 'image/svg+xml', size: 10 }), /JPG/);
+});
+
+test('trusted purchase validation checks actual bytes, MIME, ownership and size', () => {
+  const bytes = Buffer.alloc(5 * 1024 * 1024); bytes.write('%PDF-');
+  const metadata = { size: bytes.length, contentType: 'application/pdf', metadata: { originalName: 'bill.pdf', ownerUid: 'staff', purchaseId: 'purchase' } };
+  assert.equal(validatePurchaseAttachment(bytes, metadata, 'staff', 'purchase', 'pdf').size, bytes.length);
+  assert.throws(() => validatePurchaseAttachment(bytes, { ...metadata, size: bytes.length + 1 }, 'staff', 'purchase', 'pdf'), /5 MB/);
+  assert.throws(() => validatePurchaseAttachment(Buffer.from('wrong'), { ...metadata, size: 5 }, 'staff', 'purchase', 'pdf'), /valid JPG/);
+  assert.throws(() => validatePurchaseAttachment(bytes, metadata, 'other', 'purchase', 'pdf'), /belong/);
+  assert.throws(() => validatePurchaseAttachment(bytes, metadata, 'staff', 'other', 'pdf'), /belong/);
+  assert.throws(() => validatePurchaseAttachment(bytes, metadata, 'staff', 'purchase', 'jpg'), /valid JPG/);
+});
+
+test('purchase attachments cannot be read by ordinary or inactive users', async () => {
+  for (const profile of [{ role: 'user', active: true }, { role: 'admin', active: false }]) {
+    const db = { doc: (path) => { assert.equal(path, 'users/viewer'); return { get: async () => ({ exists: true, data: () => profile }) }; } };
+    await assert.rejects(readPurchaseReceipt(db, 'viewer', { purchaseId: 'purchase' }), /access is required/);
+  }
+});
 
 test('Purchases uses the OMS loader while records load and releases it on failure', async () => {
   const nodes = new Map(), active = new Set();
@@ -27,7 +57,7 @@ test('Purchases uses the OMS loader while records load and releases it on failur
 });
 
 test('purchase form, loading, search and export have no item dependency', async () => {
-  const elements = new Map(), reads = [], writes = [], exports = [];
+  const elements = new Map(), reads = [], writes = [], exports = [], uploads = [];
   const element = id => {
     if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, showModal() {}, close() {} });
     return elements.get(id);
@@ -40,6 +70,8 @@ test('purchase form, loading, search and export have no item dependency', async 
     listMasterRecords: async (_db, type) => { reads.push(type); assert.equal(type, 'purchaseTypes'); return [{ id: 'type', name: 'Donation', active: true }]; },
     callOperation: async (_fn, name, payload) => { writes.push({ name, payload }); },
     downloadXlsx: async (_name, sheets) => { exports.push(sheets); },
+    validateAttachmentFile, uniqueId: () => 'upload-id', getStorage: () => ({}), storageRef: (_, path) => path,
+    uploadBytesResumable: (path, file, metadata) => { uploads.push({ path, file, metadata }); return { on: (_, progress, reject, resolve) => { progress({ bytesTransferred: file.size, totalBytes: file.size }); resolve(); } }; },
     FormData: class { get(key) { return values[key]; } },
   };
   const source = readFileSync(new URL('../js/operations-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOperationsUi', 'function initOperationsUi');
@@ -80,4 +112,16 @@ test('purchase form, loading, search and export have no item dependency', async 
   values.quantity = '0'; await element('ops-form').listeners.submit({preventDefault(){},currentTarget:{}});
   assert.match(element('ops-error').textContent, /greater than zero/);
   assert.equal(writes.length, 1);
+  values.quantity = '1';
+  values.attachment = { name: 'bill.pdf', type: 'application/pdf', size: 5 * 1024 * 1024 + 1 };
+  await element('ops-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
+  assert.match(element('ops-error').textContent, /exceeds 5 MB/);
+  assert.equal(uploads.length, 0);
+  assert.equal(writes.length, 1);
+  values.attachment = { name: 'bill.pdf', type: 'application/pdf', size: 5 * 1024 * 1024 };
+  await element('ops-form').listeners.submit({ preventDefault() {}, currentTarget: {} });
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].path, 'purchaseReceipts/admin/upload-id/upload-id.pdf');
+  assert.equal(writes[1].payload.attachment.extension, 'pdf');
+  assert.equal(writes[1].payload.purchaseId, 'upload-id');
 });

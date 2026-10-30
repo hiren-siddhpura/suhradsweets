@@ -30,3 +30,15 @@ export async function downloadXlsx(name, sheets) {
   }
   XLSX.writeFile(book, `suhrad-${name}-${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
+
+export async function downloadAnalyticsXlsx(workbook) {
+  const XLSX = await loadSheetJs();
+  const book = XLSX.utils.book_new();
+  const rows = [workbook.headers, ...workbook.rows].map((row) => row.map(safeSpreadsheetValue));
+  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  sheet['!cols'] = workbook.headers.map((header, index) => ({ wch: index === 1 || index === 6 ? 25 : Math.max(16, Math.min(32, header.length + 2)) }));
+  sheet['!autofilter'] = { ref: `A1:${XLSX.utils.encode_cell({ r: Math.max(1, rows.length - 2), c: workbook.headers.length - 1 })}` };
+  sheet['!freeze'] = { xSplit: 0, ySplit: 1 };
+  XLSX.utils.book_append_sheet(book, sheet, 'User Orders');
+  XLSX.writeFile(book, workbook.filename);
+}

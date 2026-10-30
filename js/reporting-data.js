@@ -9,7 +9,12 @@ export async function dashboardOrderKg(db, role, uid, from, to) {
   const terms = [];
   if (from) terms.push(where('orderDate', '>=', from));
   if (to) terms.push(where('orderDate', '<=', to));
-  if (role === 'user') terms.push(where('assignedUserId', '==', uid));
+  if (role === 'user') {
+    // Match the Regular User orders list: every assigned order counts, regardless of status.
+    const result = await getDocs(query(collection(db, 'orders'), where('assignedUserId', '==', uid), ...terms));
+    const orders = result.docs.map(row);
+    return { ...summarizeOrderKg(orders), orderCount: orders.length };
+  }
   const rows = []; let cursor = null;
   do {
     const result = await getDocs(query(collection(db, 'orders'), ...terms, orderBy('orderDate'), ...(cursor ? [startAfter(cursor)] : []), limit(100)));

@@ -9,6 +9,7 @@ import { downloadXlsx } from './xlsx-export.js';
 import { actionLabel, activityDate, changeSummary, references } from './activity-format.js';
 import { listActivity } from './activity-data.js';
 import { uniqueId } from './unique-id.js';
+import { getStorage, ref as storageRef, uploadBytesResumable } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-storage.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -31,6 +32,15 @@ export function initFinanceUi({ db, functions }) {
   const stopActivityLoad = () => { if (activityLoadToken) globalThis.omsLoading?.stop(activityLoadToken); activityLoadToken = null; };
   const pendingFinance = new Set();
   let previewInvoice = null, previewBlob = null, previewRevision = 0;
+  let receiptFile = null, receiptUrl = null, receiptUpload = null, uploadedReceipt = null;
+  const clearReceipt = () => { receiptUpload?.cancel(); receiptUpload = null; receiptFile = null; uploadedReceipt = null; if (receiptUrl) URL.revokeObjectURL(receiptUrl); receiptUrl = null; };
+  const receiptExtension = (file) => ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'application/pdf': 'pdf' })[file?.type];
+  const validReceipt = (file) => {
+    const extension = receiptExtension(file);
+    if (!extension || !new RegExp(`\\.${extension === 'jpg' ? 'jpe?g' : extension}$`, 'i').test(file.name)) throw new Error('Choose a JPG, JPEG, PNG or PDF receipt.');
+    if (!file.size || file.size > 5 * 1024 * 1024) throw new Error('Receipt must be at most 5 MB.');
+    return extension;
+  };
   const downloadBlob = (blob, filename) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a'); link.href = url; link.download = filename; link.click();
@@ -84,14 +94,24 @@ export function initFinanceUi({ db, functions }) {
     const visibleRows = rows.slice((paymentPage - 1) * 25, paymentPage * 25);
     const collected = rows.filter((row) => row.verificationStatus === 'verified' && !row.reversalId);
     $('payment-cards').innerHTML = stat('Submissions', rows.length) + stat('Awaiting review', rows.filter((row) => row.verificationStatus === 'unverified').length) + stat('Online collection (verified)', cash(collected.filter((row) => row.mode === 'upi' || row.mode === 'bank_transfer').reduce((sum, row) => sum + row.amountPaise, 0))) + stat('Cash collection (verified)', cash(collected.filter((row) => row.mode === 'cash').reduce((sum, row) => sum + row.amountPaise, 0)));
-    $('payment-body').innerHTML = visibleRows.length ? visibleRows.map((row) => `<tr><td>${esc(date(row.submittedAt))}</td><td>${esc(customerName(row))}</td><td>${esc(row.customerSnapshot?.contact)}</td><td><button type="button" class="ops-link" data-finance="order" data-id="${esc(row.orderNumber)}">${esc(row.orderNumber)}</button></td><td>${esc(row.invoiceNumber)}</td><td>${esc(cash(row.amountPaise))}</td><td>${esc(row.mode)}</td><td>${esc(row.transactionNumber)}</td><td>${esc(paymentName(row, 'submittedBy'))}</td><td>${esc(row.reversalId ? 'reversed' : row.verificationStatus)}</td><td>${esc(paymentName(row, 'verifiedBy'))}${row.receivedBy ? `<small>Received: ${esc(paymentName(row, 'receivedBy'))}</small>` : ''}</td><td class="ops-actions">${canVerify() && row.verificationStatus === 'unverified' ? `<button type="button" data-finance="verify" data-id="${esc(row.id)}">Verify</button><button type="button" data-finance="reject" data-id="${esc(row.id)}">Reject</button>` : ''}${canVerify() && row.verificationStatus === 'verified' && !row.reversalId ? `<button type="button" data-finance="reverse" data-id="${esc(row.id)}">Reverse</button>` : ''}</td></tr>`).join('') : '<tr><td colspan="13" class="empty-cell">No payments match your access or filters.</td></tr>';
+    $('payment-body').innerHTML = visibleRows.length ? visibleRows.map((row) => `<tr><td>${esc(date(row.submittedAt))}</td><td>${esc(customerName(row))}</td><td>${esc(row.customerSnapshot?.contact)}</td><td><button type="button" class="ops-link" data-finance="order" data-id="${esc(row.orderNumber)}">${esc(row.orderNumber)}</button></td><td>${esc(row.invoiceNumber)}</td><td>${esc(cash(row.amountPaise))}</td><td>${esc(row.mode)}</td><td>${esc(row.transactionNumber)}</td><td>${esc(paymentName(row, 'submittedBy'))}</td><td>${esc(row.reversalId ? 'reversed' : row.verificationStatus)}</td><td>${esc(paymentName(row, 'verifiedBy'))}${row.receivedBy ? `<small>Received: ${esc(paymentName(row, 'receivedBy'))}</small>` : ''}</td><td class="ops-actions">${row.attachment ? `<button type="button" data-finance="receipt" data-id="${esc(row.id)}">Receipt</button>` : ''}${canVerify() && row.verificationStatus === 'unverified' ? `<button type="button" data-finance="verify" data-id="${esc(row.id)}">Verify</button><button type="button" data-finance="reject" data-id="${esc(row.id)}">Reject</button>` : ''}${canVerify() && row.verificationStatus === 'verified' && !row.reversalId && !row.collectionId ? `<button type="button" data-finance="reverse" data-id="${esc(row.id)}">Reverse</button>` : ''}</td></tr>`).join('') : '<tr><td colspan="13" class="empty-cell">No payments match your access or filters.</td></tr>';
     if (!rows.length && !payments.length) $('payment-body').innerHTML = '<tr><td colspan="13" class="empty-cell">No payment has been submitted yet. Open an invoice and select Add payment.</td></tr>';
     $('payment-body').querySelectorAll?.('tr').forEach((tr, index) => {
       if (!visibleRows[index]) { tr.querySelector('td')?.setAttribute('colspan', '13'); return; }
       tr.querySelector('td:last-child')?.insertAdjacentHTML('beforebegin', `<td>${esc(date(visibleRows[index].verifiedAt))}</td>`);
     });
     if (canVerify()) $('payment-body').querySelectorAll?.('[data-finance="verify"]').forEach((button) => button.insertAdjacentHTML('beforebegin', `<button type="button" data-finance="correct" data-id="${esc(button.dataset.id)}">Correct mode</button>`));
-    $('payment-mobile-list').innerHTML = visibleRows.length ? visibleRows.map((row) => `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${esc(row.transactionNumber || row.invoiceNumber || 'Payment')}</strong><span class="mobile-status">${esc(row.reversalId ? 'reversed' : row.verificationStatus)}</span></div><p>${esc(customerName(row))}<small>${esc(date(row.submittedAt))} · ${esc(row.mode)}</small></p><div class="mobile-record-bottom"><b>${esc(cash(row.amountPaise))}</b><div class="mobile-record-actions">${canVerify() && row.verificationStatus === 'unverified' ? `<button type="button" data-finance="verify" data-id="${esc(row.id)}">Verify</button><button type="button" data-finance="reject" data-id="${esc(row.id)}">Reject</button>` : ''}${canVerify() && row.verificationStatus === 'verified' && !row.reversalId ? `<button type="button" data-finance="reverse" data-id="${esc(row.id)}">Reverse</button>` : ''}</div></div></article>`).join('') : '<p class="mobile-record-empty">No payments match the current filters.</p>';
+    $('payment-mobile-list').innerHTML = visibleRows.length ? visibleRows.map((row) => `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${esc(row.transactionNumber || row.invoiceNumber || 'Payment')}</strong><span class="mobile-status">${esc(row.reversalId ? 'reversed' : row.verificationStatus)}</span></div><p>${esc(customerName(row))}<small>${esc(date(row.submittedAt))} · ${esc(row.mode)}</small></p><div class="mobile-record-bottom"><b>${esc(cash(row.amountPaise))}</b><div class="mobile-record-actions">${row.attachment ? `<button type="button" data-finance="receipt" data-id="${esc(row.id)}">Receipt</button>` : ''}${canVerify() && row.verificationStatus === 'unverified' ? `<button type="button" data-finance="verify" data-id="${esc(row.id)}">Verify</button><button type="button" data-finance="reject" data-id="${esc(row.id)}">Reject</button>` : ''}${canVerify() && row.verificationStatus === 'verified' && !row.reversalId && !row.collectionId ? `<button type="button" data-finance="reverse" data-id="${esc(row.id)}">Reverse</button>` : ''}</div></div></article>`).join('') : '<p class="mobile-record-empty">No payments match the current filters.</p>';
+    visibleRows.forEach((row, index) => {
+      if (row.collectionNumber) {
+        $('payment-body').querySelectorAll('tr')[index]?.querySelectorAll('td')[4]?.insertAdjacentHTML('beforeend', `<small>Collection: ${esc(row.collectionNumber)}</small>`);
+        $('payment-mobile-list').querySelectorAll('.mobile-record-card')[index]?.insertAdjacentHTML('beforeend', `<p>Collection: ${esc(row.collectionNumber)}</p>`);
+      }
+      if (row.reviewReason) {
+        $('payment-body').querySelectorAll('tr')[index]?.querySelectorAll('td')[9]?.insertAdjacentHTML('beforeend', `<small>${esc(row.reviewReason)}</small>`);
+        $('payment-mobile-list').querySelectorAll('.mobile-record-card')[index]?.insertAdjacentHTML('beforeend', `<p>Rejection reason: ${esc(row.reviewReason)}</p>`);
+      }
+    });
     if ($('payment-page')) { $('payment-page').textContent = `Page ${paymentPage} of ${pageCount}`; $('payment-prev').disabled = paymentPage === 1; $('payment-next').disabled = paymentPage >= pageCount; }
   }
   async function refresh() {
@@ -125,6 +145,7 @@ export function initFinanceUi({ db, functions }) {
     } finally { if (recordLoadToken === token) stopRecordLoad(); }
   }
   function openDialog(kind, id) {
+    clearReceipt();
     action = kind; target = id; $('finance-error').hidden = true;
     const invoice = invoices.find((row) => row.id === id);
     if (kind === 'submit') paymentOperationId = uniqueId();
@@ -133,11 +154,45 @@ export function initFinanceUi({ db, functions }) {
     $('finance-dialog-title').textContent = ({ submit: 'Submit payment', correct: 'Correct payment mode', reject: 'Reject payment', reverse: 'Reverse verified payment' })[kind];
     $('finance-fields').innerHTML = kind === 'submit' ? `<p>Outstanding: <strong>${esc(cash(invoice.totalPaise - invoice.verifiedPaidPaise))}</strong>. Submissions count only after staff verification.</p><label class="ops-field">Amount (₹)<input name="amount" type="number" min="0.01" step="0.01" max="${outstanding.toFixed(2)}" value="${outstanding.toFixed(2)}" required></label><label class="ops-field">Mode<select name="mode"><option value="cash">Cash</option><option value="upi">UPI</option><option value="bank_transfer">Bank transfer</option></select></label><label class="ops-field">Transaction reference<input name="reference" maxlength="100" placeholder="Cash uses -"></label>` : kind === 'correct' ? `<p>Current mode: ${esc(payment?.mode)} · Reference: ${esc(payment?.transactionNumber)}</p><label class="ops-field">New mode<select name="mode"><option value="cash">Cash</option><option value="upi">UPI</option><option value="bank_transfer">Bank transfer</option></select></label><label class="ops-field">New transaction reference<input name="reference" maxlength="100" placeholder="Cash uses -"></label><label class="ops-field">Reason<textarea name="reason" maxlength="500" required></textarea></label>` : '<label class="ops-field">Reason<textarea name="reason" maxlength="500" required></textarea></label>';
     $('finance-dialog').showModal();
+    if (kind === 'submit') {
+      $('finance-fields').insertAdjacentHTML('beforeend', '<label class="ops-field">Payment proof (JPG, JPEG, PNG or PDF; max 5 MB)<input id="payment-proof" type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"></label><div id="payment-proof-info" class="payment-proof-info" role="status"></div><div id="payment-proof-preview"></div><button id="payment-proof-remove" class="button button-outline" type="button" hidden>Remove</button>');
+      $('payment-proof').onchange = (event) => {
+        if (uploadedReceipt) paymentOperationId = uniqueId();
+        clearReceipt();
+        const file = event.target.files?.[0];
+        if (!file) return;
+        try {
+          validReceipt(file); receiptFile = file; receiptUrl = URL.createObjectURL(file);
+          $('payment-proof-info').textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(2)} MB`;
+          $('payment-proof-preview').innerHTML = file.type === 'application/pdf' ? `<iframe title="Receipt preview" src="${receiptUrl}"></iframe>` : `<img alt="Receipt preview" src="${receiptUrl}">`;
+          $('payment-proof-remove').hidden = false;
+        } catch (error) { $('payment-proof-info').textContent = error.message; event.target.value = ''; }
+      };
+      $('payment-proof-remove').onclick = () => { if (uploadedReceipt) paymentOperationId = uniqueId(); clearReceipt(); $('payment-proof').value = ''; $('payment-proof-info').textContent = ''; $('payment-proof-preview').replaceChildren(); $('payment-proof-remove').hidden = true; };
+      const mode = $('finance-fields').querySelector('[name="mode"]');
+      const updateRequirement = () => { $('payment-proof').required = mode.value !== 'cash'; };
+      mode.addEventListener('change', updateRequirement); updateRequirement();
+    }
   }
   async function act(kind, id) {
     try {
       if (['verify', 'reject', 'reverse', 'correct'].includes(kind) && !canVerify()) throw new Error('Access denied: payment review requires a privileged OMS role.');
       if (kind === 'order') { document.querySelector('[data-page="orders"]')?.click(); $('order-search').value = id; $('order-search').dispatchEvent(new Event('input')); return; }
+      if (kind === 'receipt') {
+        const row = payments.find((payment) => payment.id === id);
+        if (!row?.attachment) throw new Error('No receipt is attached.');
+        const result = await callOperation(functions, 'readPaymentReceipt', { paymentId: id });
+        const binary = atob(result.base64), bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const url = URL.createObjectURL(new Blob([bytes], { type: result.contentType }));
+        const dialog = document.createElement('dialog'); dialog.className = 'app-dialog receipt-dialog';
+        const title = document.createElement('h2'); title.textContent = 'Payment receipt'; dialog.append(title);
+        const details = document.createElement('p'); details.textContent = `${row.invoiceNumber} · ${customerName(row)} · ${cash(row.amountPaise)} · ${row.transactionNumber} · ${row.attachment.name}`; dialog.append(details);
+        const preview = document.createElement(result.contentType === 'application/pdf' ? 'iframe' : 'img'); preview.src = url; preview.title = 'Receipt preview'; preview.alt = 'Receipt preview'; dialog.append(preview);
+        const link = document.createElement('a'); link.className = 'button button-primary'; link.href = url; link.download = result.name || 'receipt'; link.textContent = 'Download'; dialog.append(link);
+        const close = document.createElement('button'); close.type = 'button'; close.className = 'button button-outline'; close.textContent = 'Close'; close.onclick = () => dialog.close(); dialog.append(close);
+        dialog.onclose = () => { URL.revokeObjectURL(url); dialog.remove(); }; document.body.append(dialog); dialog.showModal(); return;
+      }
       if (kind === 'pdf' || kind === 'preview' || kind === 'share') {
         const invoice = await getFreshInvoice(db, id);
         if (!privileged() && invoice.ownerUid !== user.uid) throw new Error('Invoice access denied.');
@@ -179,7 +234,7 @@ export function initFinanceUi({ db, functions }) {
     ['search', 'status', 'from', 'to'].forEach((field) => $(`${kind}-${field}`).addEventListener('input', () => { if (kind === 'invoice') renderInvoices(); else { paymentPage = 1; renderPayments(); } }));
     $(`${kind}-body`).addEventListener('click', (event) => { const button = event.target.closest('[data-finance]'); if (button) act(button.dataset.finance, button.dataset.id); });
     $(`${kind}-mobile-list`).addEventListener('click', (event) => { const button = event.target.closest('[data-finance]'); if (button) act(button.dataset.finance, button.dataset.id); });
-    $(`${kind}-export`).addEventListener('click', () => exportRows(kind === 'invoice' ? 'Invoices' : 'Payments', matching(kind).map((row) => kind === 'invoice' ? { Invoice: row.invoiceNumber, Order: row.orderNumber, Customer: row.customerSnapshot?.fullName, Date: date(row.issuedAt), Total: row.totalPaise / 100, Verified: row.verifiedPaidPaise / 100, Balance: (row.totalPaise - row.verifiedPaidPaise) / 100, Status: statusLabel(invoiceStatus(row)) } : { Submitted: date(row.submittedAt), Customer: customerName(row), Contact: row.customerSnapshot?.contact, Order: row.orderNumber, Invoice: row.invoiceNumber, Amount: row.amountPaise / 100, Mode: row.mode, Reference: row.transactionNumber, SubmittedBy: paymentName(row, 'submittedBy'), Status: row.reversalId ? 'reversed' : row.verificationStatus, Verifier: paymentName(row, 'verifiedBy'), VerifiedAt: date(row.verifiedAt) })));
+    $(`${kind}-export`).addEventListener('click', () => exportRows(kind === 'invoice' ? 'Invoices' : 'Payments', matching(kind).map((row) => kind === 'invoice' ? { Invoice: row.invoiceNumber, Order: row.orderNumber, Customer: row.customerSnapshot?.fullName, Date: date(row.issuedAt), Total: row.totalPaise / 100, Verified: row.verifiedPaidPaise / 100, Balance: (row.totalPaise - row.verifiedPaidPaise) / 100, Status: statusLabel(invoiceStatus(row)) } : { Submitted: date(row.submittedAt), Customer: customerName(row), Contact: row.customerSnapshot?.contact, Order: row.orderNumber, Invoice: row.invoiceNumber, Collection: row.collectionNumber || '', Amount: row.amountPaise / 100, Mode: row.mode, Reference: row.transactionNumber, SubmittedBy: paymentName(row, 'submittedBy'), Status: row.reversalId ? 'reversed' : row.verificationStatus, Verifier: paymentName(row, 'verifiedBy'), VerifiedAt: date(row.verifiedAt), Attachment: row.attachment?.path || '', AttachmentName: row.attachment?.name || '', RejectionReason: row.reviewReason || '' })));
   });
   const paymentToolbar = $('payment-search').parentElement;
   const invoiceToolbar = $('invoice-search').parentElement;
@@ -272,7 +327,20 @@ export function initFinanceUi({ db, functions }) {
         const invoice = invoices.find((row) => row.id === target);
         if (!invoice || Math.round(amount * 100) > invoice.totalPaise - invoice.verifiedPaidPaise) throw new Error('Payment exceeds the current outstanding balance. Refresh the invoice and try again.');
         if (fields.get('mode') !== 'cash' && !String(fields.get('reference') || '').trim()) throw new Error('UPI and bank transfers require a transaction reference.');
-        await callOperation(functions, 'submitPayment', { invoiceId: target, amountPaise: Math.round(amount * 100), mode: fields.get('mode'), transactionNumber: fields.get('mode') === 'cash' ? '-' : fields.get('reference'), operationId: paymentOperationId });
+        if (fields.get('mode') !== 'cash' && !receiptFile) throw new Error('Payment proof is required for UPI and bank transfers.');
+        let attachment = null;
+        if (receiptFile && !uploadedReceipt) {
+          const extension = validReceipt(receiptFile);
+          const path = `paymentReceipts/${user.uid}/${paymentOperationId}.${extension}`;
+          const token = globalThis.omsLoading?.start('Uploading payment proof…');
+          try {
+            receiptUpload = uploadBytesResumable(storageRef(getStorage(db.app), path), receiptFile, { contentType: receiptFile.type, customMetadata: { ownerUid: user.uid, invoiceId: target, originalName: receiptFile.name.slice(0, 150) } });
+            await new Promise((resolve, reject) => receiptUpload.on('state_changed', (snap) => { $('payment-proof-info').textContent = `${receiptFile.name} · ${(receiptFile.size / 1024 / 1024).toFixed(2)} MB · ${Math.round(snap.bytesTransferred / snap.totalBytes * 100)}%`; }, reject, resolve));
+            uploadedReceipt = { extension };
+          } finally { globalThis.omsLoading?.stop(token); receiptUpload = null; }
+        }
+        attachment = uploadedReceipt;
+        await callOperation(functions, 'submitPayment', { invoiceId: target, amountPaise: Math.round(amount * 100), mode: fields.get('mode'), transactionNumber: fields.get('mode') === 'cash' ? '-' : fields.get('reference'), operationId: paymentOperationId, attachment });
         invoice.paymentStatus = 'in_process';
         renderInvoices();
       } else if (action === 'correct') {
@@ -281,6 +349,7 @@ export function initFinanceUi({ db, functions }) {
       }
       else await callOperation(functions, action === 'reject' ? 'reviewPayment' : 'reversePayment', action === 'reject' ? { paymentId: target, decision: 'rejected', reason: fields.get('reason') } : { paymentId: target, reason: fields.get('reason') });
       paymentOperationId = '';
+      clearReceipt();
       $('finance-dialog').close(); showToast(action === 'submit' ? 'Payment submitted for verification.' : 'Payment history updated.'); await refresh(); await loadPaymentActivity();
     } catch (error) { $('finance-error').textContent = message(error); $('finance-error').hidden = false; } finally { $('finance-save').disabled = false; $('finance-save').textContent = 'Save'; }
   });

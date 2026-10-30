@@ -42,6 +42,7 @@ function emulatorPort(path) {
   if (path.startsWith('/identitytoolkit.googleapis.com/') || path.startsWith('/securetoken.googleapis.com/')) return 9099;
   if (path.startsWith('/google.firestore.v1.Firestore/') || path.startsWith('/v1/projects/demo-suh-oms/databases/')) return 8080;
   if (path.startsWith('/demo-suh-oms/us-central1/')) return 5001;
+  if (path.startsWith('/v0/b/')) return 9199;
   return null;
 }
 
@@ -84,7 +85,7 @@ createServer(async (request, response) => {
   }
   try {
     let content = await readFile(file);
-    if (path === '/' || path === '/index.html') content = Buffer.from(content.toString().replace('</head>', '<script>window.__OMS_LOCAL_EMULATOR_PROXY__ = true;window.__OMS_LOCAL_EMULATOR_CONFIG__ = {apiKey:"demo-local-key",authDomain:"demo-suh-oms.firebaseapp.com",projectId:"demo-suh-oms",appId:"demo-local-app"};</script></head>'));
+    if (path === '/' || path === '/index.html') content = Buffer.from(content.toString().replace('</head>', '<script>window.__OMS_LOCAL_EMULATOR_PROXY__ = true;window.__OMS_LOCAL_EMULATOR_CONFIG__ = {apiKey:"demo-local-key",authDomain:"demo-suh-oms.firebaseapp.com",projectId:"demo-suh-oms",storageBucket:"demo-suh-oms.firebasestorage.app",appId:"demo-local-app"};</script></head>'));
     response.writeHead(200, { 'Content-Type': types[extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-store' });
     response.end(request.method === 'HEAD' ? undefined : content);
   } catch {

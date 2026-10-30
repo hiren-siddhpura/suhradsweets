@@ -57,6 +57,9 @@ async function seed() {
     await setDoc(record(db, 'auditLogs/orderActivityA'), { actorUid: 'adminA', actorName: 'Admin A', ownerUid: 'userA', referenceType: 'order', referenceId: 'orderA', orderNumber: 'SS-1', customerName: 'Customer A', type: 'order.confirmed', at: Timestamp.fromDate(new Date('2026-10-10T08:00:00Z')) });
     await setDoc(record(db, 'auditLogs/orderActivityB'), { actorUid: 'adminA', actorName: 'Admin A', ownerUid: 'userB', referenceType: 'order', referenceId: 'orderB', orderNumber: 'SS-2', customerName: 'Customer B', type: 'order.confirmed', at: Timestamp.fromDate(new Date('2026-10-10T09:00:00Z')) });
     await setDoc(record(db, 'auditLogs/paymentActivityA'), { actorUid: 'userA', actorName: 'User A', ownerUid: 'userA', referenceType: 'payment', referenceId: 'paymentA', paymentId: 'paymentA', invoiceId: 'invoiceA', type: 'payment.submitted', at: Timestamp.fromDate(new Date('2026-10-10T10:00:00Z')) });
+    await setDoc(record(db, 'collections/collectionA'), { ownerUid: 'userA', status: 'pending', totalPaise: 1000 });
+    await setDoc(record(db, 'collections/collectionB'), { ownerUid: 'userB', status: 'pending', totalPaise: 2000 });
+    await setDoc(record(db, 'auditLogs/collectionActivityA'), { actorUid: 'userA', ownerUid: 'userA', referenceType: 'collection', referenceId: 'collectionA', type: 'collection.submitted', at: Timestamp.fromDate(new Date('2026-10-10T11:00:00Z')) });
     await setDoc(record(db, 'targets/targetA'), { ownerUid: 'userA', periodType: 'daily', active: true });
     await setDoc(record(db, 'targets/targetB'), { ownerUid: 'userB', periodType: 'weekly', active: true });
     await setDoc(record(db, 'announcements/annA'), { title: 'Welcome', audience: 'all', active: true });
@@ -67,6 +70,18 @@ async function seed() {
 
 test.before(async () => {
   environment = await initializeTestEnvironment({ projectId, firestore: { rules } });
+});
+test('collections and their audit events are owner or staff read-only', async () => {
+  await assertSucceeds(getDoc(record(dbFor('userA'), 'collections/collectionA')));
+  await assertSucceeds(getDocs(query(collection(dbFor('userA'), 'collections'), where('ownerUid', '==', 'userA'))));
+  await assertSucceeds(getDocs(query(collection(dbFor('userA'), 'customers'), where('ownerUserIds', 'array-contains', 'userA'))));
+  await assertFails(getDocs(collection(dbFor('userA'), 'collections')));
+  await assertFails(getDoc(record(dbFor('userA'), 'collections/collectionB')));
+  await assertSucceeds(getDoc(record(dbFor('adminA'), 'collections/collectionB')));
+  await assertFails(setDoc(record(dbFor('userA'), 'collections/newCollection'), { ownerUid: 'userA', status: 'verified' }));
+  await assertFails(updateDoc(record(dbFor('userA'), 'collections/collectionA'), { status: 'verified' }));
+  await assertSucceeds(getDoc(record(dbFor('userA'), 'auditLogs/collectionActivityA')));
+  await assertSucceeds(getDocs(query(collection(dbFor('userA'), 'auditLogs'), where('ownerUid', '==', 'userA'), where('referenceType', '==', 'collection'), where('referenceId', '==', 'collectionA'))));
 });
 test.beforeEach(async () => { await environment.clearFirestore(); await seed(); });
 test.after(async () => { if (environment) await environment.cleanup(); });

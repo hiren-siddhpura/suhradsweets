@@ -294,6 +294,10 @@ service cloud.firestore {
       allow get, list: if isStaff() || ownsRecord();
       allow create, update, delete: if false;
     }
+    match /collections/{collectionId} {
+      allow get, list: if isStaff() || ownsRecord();
+      allow create, update, delete: if false;
+    }
 
     match /paymentReferences/{referenceId} {
       allow read, write: if false;
@@ -397,7 +401,7 @@ service cloud.firestore {
       // these fields remain staff-only rather than becoming broadly readable.
       allow get, list: if isStaff() || (activeProfile()
         && resource.data.ownerUid == request.auth.uid
-        && resource.data.referenceType in ['order', 'payment']);
+        && resource.data.referenceType in ['order', 'payment', 'collection']);
       // Client audit creation is restricted to a matching atomic customer change.
       allow create: if isStaff() && ((get(profilePath()).data.role == 'admin'
           && request.resource.data.keys().hasOnly(['type', 'actorUid', 'referenceType', 'referenceId', 'detail', 'at'])

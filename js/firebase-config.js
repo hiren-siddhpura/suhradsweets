@@ -2,6 +2,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/fireba
 import { connectAuthEmulator, getAuth } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
 import { connectFirestoreEmulator, initializeFirestore } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 import { connectFunctionsEmulator, getFunctions } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-functions.js';
+import { connectStorageEmulator, getStorage } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-storage.js';
 
 // Browser-only Firebase web app configuration. Never add service-account credentials here.
 const firebaseConfig = {
@@ -45,11 +46,13 @@ export function initializeFirebase() {
     experimentalForceLongPolling: true,
   });
   const functions = getFunctions(app, 'us-central1');
+  const storage = getStorage(app);
   if (useEmulators) {
     const emulatorHost = window.location.hostname;
     connectAuthEmulator(auth, `http://${emulatorHost}:${window.location.port}`);
     connectFirestoreEmulator(db, emulatorHost, Number(window.location.port));
     connectFunctionsEmulator(functions, emulatorHost, Number(window.location.port));
+    connectStorageEmulator(storage, emulatorHost, Number(window.location.port));
   }
   return { app, auth, db, functions, mode: useEmulators ? 'emulator' : 'live' };
 }

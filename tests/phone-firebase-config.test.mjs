@@ -17,9 +17,11 @@ function initialize(hostname, port, search, proxy) {
     getFirestore: app => ({ app }),
     initializeFirestore: app => ({ app }),
     getFunctions: app => ({ app }),
+    getStorage: app => ({ app }),
     connectAuthEmulator: (_auth, url) => connections.push(['auth', url]),
     connectFirestoreEmulator: (_db, host, number) => connections.push(['firestore', host, number]),
     connectFunctionsEmulator: (_functions, host, number) => connections.push(['functions', host, number]),
+    connectStorageEmulator: (_storage, host, number) => connections.push(['storage', host, number]),
   };
   vm.runInNewContext(`${source}\nthis.start = initializeFirebase;`, context);
   return { start: context.start, connections };
@@ -34,6 +36,7 @@ test('LAN development server routes all Firebase services through the local prox
     ['auth', 'http://10.59.12.206:8000'],
     ['firestore', '10.59.12.206', 8000],
     ['functions', '10.59.12.206', 8000],
+    ['storage', '10.59.12.206', 8000],
   ]);
 });
 

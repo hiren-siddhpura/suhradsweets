@@ -1,5 +1,7 @@
 import { callOperation } from './operations-data.js';
 import { analyticsColumns, analyticsCsv, matchingOrders, quantities, quantityText, sortAnalyticsRows, statusSortValue, totalText } from './order-analytics-data.js';
+import { userOrderWorkbook } from './order-analytics-export.js';
+import { downloadAnalyticsXlsx } from './xlsx-export.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -9,7 +11,7 @@ const FETCH_TIMEOUT_MS = 20000;
 
 export function initOrderAnalytics({ functions }) {
   let session = null, data = null, detailUid = '', loaded = false, fetching = false;
-  let requestId = 0, filterRevision = 0, filterTimer = null, currentCsv = '';
+  let requestId = 0, filterRevision = 0, filterTimer = null, currentCsv = '', exportingUid = '';
   let detailHistoryEntry = false, summaryScrollLeft = 0, summaryScrollTop = 0, restoreSummaryScroll = false;
   const defaultSort = () => ({ summary: { key: 'user', direction: 'asc' }, detail: { key: 'customer', direction: 'asc' } });
   let sortState = defaultSort();
@@ -64,7 +66,7 @@ export function initOrderAnalytics({ functions }) {
       const direction = active ? activeSort.direction : '';
       const hint = col.key === 'status' ? ' title="Status order: Draft, Confirmed, In preparation, Ready, Delivered. Payment order: Unpaid, Payment in process, Partially paid, Paid."' : col.key === 'total' ? ' title="Sort total by KG, then PCS"' : '';
       return `<th scope="col" aria-sort="${active ? direction === 'asc' ? 'ascending' : 'descending' : 'none'}" class="${active ? 'is-sorted' : ''}"><button type="button" class="analytics-sort-button" data-sort-key="${esc(col.key)}" aria-label="Sort by ${esc(col.label)}${active ? `, currently ${direction === 'asc' ? 'ascending' : 'descending'}` : ''}"${hint}><span>${esc(col.label)}</span><span class="analytics-sort-icon" aria-hidden="true">${active ? direction === 'asc' ? '↑' : '↓' : '↕'}</span></button></th>`;
-    }).join('')}</tr>`;
+    }).join('')}${detailUid ? '' : '<th scope="col" class="analytics-export-cell analytics-export-head">Export</th>'}</tr>`;
     const rows = [];
     if (detailUid) {
       for (const order of orders) {
@@ -84,10 +86,10 @@ export function initOrderAnalytics({ functions }) {
       }
     }
     const sortedRows = sortAnalyticsRows(rows, activeSort);
-    $('analytics-body').innerHTML = sortedRows.length ? sortedRows.map((row) => `<tr data-analytics-row="${esc(row.id)}">${row.cells.map((value, index) => `<td>${index === 0 && !detailUid ? `<button type="button" data-analytics-user="${esc(row.id)}" aria-label="View ${esc(value)} customer orders">${esc(value)}</button>` : esc(value)}</td>`).join('')}</tr>`).join('') : `<tr><td colspan="${headers.length}">No orders match these filters.</td></tr>`;
+    $('analytics-body').innerHTML = sortedRows.length ? sortedRows.map((row) => `<tr data-analytics-row="${esc(row.id)}">${row.cells.map((value, index) => `<td>${index === 0 && !detailUid ? `<button type="button" data-analytics-user="${esc(row.id)}" aria-label="View ${esc(value)} customer orders">${esc(value)}</button>` : esc(value)}</td>`).join('')}${detailUid ? '' : `<td class="analytics-export-cell"><button type="button" class="analytics-row-export" data-analytics-export="${esc(row.id)}" title="Export Excel" aria-label="Export Excel for ${esc(row.cells[0])}" ${exportingUid ? 'disabled' : ''}>${exportingUid === row.id ? '…' : '⇩'}</button></td>`}</tr>`).join('') : `<tr><td colspan="${headers.length + (detailUid ? 0 : 1)}">No orders match these filters.</td></tr>`;
     const totals = quantities(orders, cols);
     const footer = detailUid ? ['Total', '', '', '', '', ...cols.map((col) => quantityText(totals[col.key], col.unit)), '', totalText(totals, cols)] : ['Total', ...cols.map((col) => quantityText(totals[col.key], col.unit)), totalText(totals, cols)];
-    $('analytics-foot').innerHTML = `<tr>${footer.map((value) => `<th>${esc(value)}</th>`).join('')}</tr>`;
+    $('analytics-foot').innerHTML = `<tr>${footer.map((value) => `<th>${esc(value)}</th>`).join('')}${detailUid ? '' : '<th class="analytics-export-cell"></th>'}</tr>`;
     $('analytics-message').textContent = `${rows.length} ${detailUid ? 'orders' : 'users'} shown`;
     currentCsv = analyticsCsv(headers, sortedRows.map((row) => row.cells), footer);
     setViewState('table');
@@ -171,7 +173,28 @@ export function initOrderAnalytics({ functions }) {
     sortState[view] = { key, direction: sortState[view].key === key && sortState[view].direction === 'asc' ? 'desc' : 'asc' };
     renderTable();
   });
-  $('analytics-body').addEventListener('click', (event) => {
+  $('analytics-body').addEventListener('click', async (event) => {
+    const exportButton = event.target.closest('[data-analytics-export]');
+    if (exportButton?.dataset.analyticsExport !== undefined) {
+      const uid = exportButton.dataset.analyticsExport;
+      if (exportingUid || !data || !session || detailUid || !data.users.some((entry) => entry.id === uid) || !data.staff && uid !== session.uid) return;
+      exportingUid = uid;
+      exportButton.disabled = true;
+      exportButton.textContent = '…';
+      exportButton.setAttribute('aria-busy', 'true');
+      let exportError = '';
+      try {
+        const workbook = userOrderWorkbook(data, filters(), uid, displayStatus);
+        await downloadAnalyticsXlsx(workbook);
+      } catch (error) {
+        exportError = `Excel export failed: ${error.message || 'Please retry.'}`;
+      } finally {
+        exportingUid = '';
+        if (session && data) renderTable();
+        if (exportError) $('analytics-message').textContent = exportError;
+      }
+      return;
+    }
     const button = event.target.closest('[data-analytics-user]');
     if (!button || !data?.users.some((entry) => entry.id === button.dataset.analyticsUser) || !data.staff && button.dataset.analyticsUser !== session?.uid) return;
     summaryScrollLeft = $('analytics-table-wrap').scrollLeft;
@@ -202,7 +225,7 @@ export function initOrderAnalytics({ functions }) {
       ++filterRevision;
       if (filterTimer) { clearTimeout(filterTimer); filterTimer = null; }
       session = user && profile?.active ? { uid: user.uid } : null;
-      data = null; detailUid = ''; loaded = false; fetching = false; currentCsv = ''; detailHistoryEntry = false; sortState = defaultSort();
+      data = null; detailUid = ''; loaded = false; fetching = false; currentCsv = ''; exportingUid = ''; detailHistoryEntry = false; sortState = defaultSort();
       for (const id of FILTER_IDS) $(id).value = '';
       $('analytics-head').innerHTML = '';
       $('analytics-body').innerHTML = '';

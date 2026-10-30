@@ -1,0 +1,13 @@
+# Karyakarta collections
+
+The Collections section is inside Payments. A collection is one pending submission containing invoice allocations and one or more payment entries. Each invoice appears at most once. Allocations identify the payment entry that funded them, so a single Cash, UPI or Online receipt can cover several invoices, and mixed methods stay separate. The form uses authorised customer and invoice queries. A regular User may submit only invoices they own and customers assigned to or owned by them; staff have existing wider access.
+
+`submitCollectionCall` validates the amounts, customer access, invoice balances, methods, transaction IDs and private receipt objects. It creates one immutable pending `collections` record and reserves online transaction IDs. Submission never changes invoice balances. A unique operation ID makes retries idempotent. Rejected collections remain historical records; a corrected submission gets a new ID. Rejection releases its online transaction reservation so the corrected collection can use the same actual transaction.
+
+`reviewCollectionCall` permits the existing payment verification roles, Admin and Account Admin. Approval uses one Firestore transaction to recheck each invoice, update its verified balance and status, create deterministic collection-linked payment records, and write immutable audit entries. Rejection requires a reason and changes no invoice. The collection total must match its payment entries and the approved allocation total. An approved collection payment cannot be reversed individually because that would break collection reconciliation.
+
+Collection receipts reuse the private Firebase Storage workflow configured in `storage.rules`. Cash receipts are optional; UPI and Online receipts are required. Each payment entry may have one receipt, restricted to JPG, PNG or PDF up to 5 MB. The backend validates actual file content. Client reads of stored objects are denied; `readCollectionReceiptCall` checks ownership or staff role and returns bytes for preview or download. The project must have a Storage bucket and the Blaze plan, as documented in [PAYMENT_RECEIPTS.md](PAYMENT_RECEIPTS.md). This work does not change billing or deploy code.
+
+Limits: 40 invoice allocations and 20 payment entries per collection. Unreferenced uploads after an abandoned form remain private and require a cleanup job before production use. The collection date and reference use Asia/Kolkata time.
+
+Run `npm.cmd run test:collections` for Firestore and Storage emulator coverage, `npm.cmd run test:rules` for access rules, and `npm.cmd run test:unit` for the existing UI and application checks.

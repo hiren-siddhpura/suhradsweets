@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { analyticsColumns, analyticsCsv, lineQuantity, matchingOrders, quantities, quantityText, sortAnalyticsRows, statusSortValue, totalText } from '../js/order-analytics-data.js';
 import { getOrderAnalytics } from '../functions/order-analytics.js';
+import { userExcelFilename, userOrderWorkbook } from '../js/order-analytics-export.js';
 
 const source = {
   items: [{ id: 'kaju', name: 'Kaju Katri', unitSymbol: 'KG' }, { id: 'packing', name: 'Gift Packing', unitSymbol: 'PCS' }],
@@ -39,6 +40,25 @@ test('analytics filters use assigned user when order owner differs', () => {
   assert.deepEqual(matchingOrders(data, { user: 'b' }).map((order) => order.id), ['reassigned']);
   assert.deepEqual(matchingOrders(data, { user: 'a' }), []);
   assert.deepEqual(matchingOrders(data, { search: 'Rahul' }).map((order) => order.id), ['reassigned']);
+});
+
+test('user XLSX data respects assigned user, filters, separate products and numeric totals', () => {
+  const data = { ...source, viewerUid: 'a', staff: true, customers: [{ id: 'c', name: 'Ajay', phone: '00123', area: 'North' }],
+    items: [...source.items, { id: 'kesar', name: 'Kesar Kaju Katri', unitSymbol: 'KG' }, { id: 'anjir-roll', name: 'Anjir Roll', unitSymbol: 'KG' }, { id: 'anjir-cake', name: 'Anjir Cake', unitSymbol: 'KG' }],
+    orders: [...source.orders.map((order) => ({ ...order, customerId: 'c', grandTotalPaise: 15000 })), { ...source.orders[0], id: 'three', orderNumber: 'SS-3', assignedUserId: 'a', orderDate: '2026-10-12', status: 'ready', customerId: 'c', grandTotalPaise: 20000, lines: [{ productId: 'kesar', quantityQty: 1000, orderUnitId: '250gm' }, { productId: 'anjir-roll', quantityQty: 1000, orderUnitId: 'kg' }, { productId: 'anjir-cake', quantityQty: 2000, orderUnitId: 'pcs' }] }] };
+  const workbook = userOrderWorkbook(data, { from: '2026-10-10', to: '2026-10-12' }, 'a', (order) => order.status);
+  assert.equal(workbook.orderCount, 2);
+  assert.equal(workbook.rows[0][2], '00123');
+  assert.deepEqual(workbook.rows.slice(0, -1).map((row) => row[4]), ['SS-1', 'SS-3']);
+  assert.deepEqual(workbook.headers.filter((header) => /Kaju Katri|Anjir/.test(header)), ['Anjir Cake (KG)', 'Anjir Cake (PCS)', 'Anjir Roll (KG)', 'Kaju Katri (KG)', 'Kesar Kaju Katri (KG)']);
+  assert.equal(workbook.rows.at(-1).at(-1), 350);
+  assert.equal(userOrderWorkbook(data, { status: 'ready' }, 'a', (order) => order.status).orderCount, 1);
+  assert.equal(userOrderWorkbook(data, { status: 'delivered' }, 'a', (order) => order.status).orderCount, 0);
+  assert.equal(userOrderWorkbook(data, {}, 'b', (order) => order.status).orderCount, 1);
+  assert.throws(() => userOrderWorkbook({ ...data, staff: false }, {}, 'b', () => ''), /cannot export/);
+  assert.equal(userExcelFilename('Hiren Siddhpura'), 'hiren_siddhpura.xlsx');
+  assert.equal(userExcelFilename('  A/B: C?  '), 'ab_c.xlsx');
+  assert.equal(userExcelFilename(' /:*? '), 'user_orders.xlsx');
 });
 
 test('CSV contains the same filtered quantity and total and neutralizes formulas', () => {

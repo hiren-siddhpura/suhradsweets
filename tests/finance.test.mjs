@@ -9,17 +9,22 @@ import { getPaymentNames, listOrderActivity, listPaymentActivity } from '../func
 const require = createRequire(new URL('../functions/package.json', import.meta.url));
 const { initializeApp, deleteApp } = require('firebase-admin/app');
 const { getFirestore } = require('firebase-admin/firestore');
-if (!process.env.FIRESTORE_EMULATOR_HOST || process.env.GCLOUD_PROJECT !== 'demo-suh-oms') throw new Error('Run against demo Firestore emulator.');
-const app = initializeApp({ projectId: 'demo-suh-oms' }, 'finance-test');
+const { getStorage } = require('firebase-admin/storage');
+if (!process.env.FIRESTORE_EMULATOR_HOST || !process.env.FIREBASE_STORAGE_EMULATOR_HOST || process.env.GCLOUD_PROJECT !== 'demo-suh-oms') throw new Error('Run against demo Firestore and Storage emulators.');
+const app = initializeApp({ projectId: 'demo-suh-oms', storageBucket: 'demo-suh-oms.firebasestorage.app' });
 const db = getFirestore(app);
 const invoice = () => db.doc('invoices/orderA').get().then((snap) => snap.data());
+async function proof(uid, operationId) {
+  await getStorage().bucket().file(`paymentReceipts/${uid}/${operationId}.pdf`).save(Buffer.from('%PDF-1.4\n%%EOF'), { metadata: { contentType: 'application/pdf', metadata: { ownerUid: uid, invoiceId: 'orderA', originalName: 'proof.pdf' } } });
+  return { operationId, attachment: { extension: 'pdf' } };
+}
 
 test.beforeEach(async () => {
   for (const name of ['users', 'orders', 'invoices', 'payments', 'paymentReferences', 'paymentReversals', 'auditLogs']) {
     const docs = await db.collection(name).get(); if (!docs.empty) { const batch = db.batch(); docs.forEach((doc) => batch.delete(doc.ref)); await batch.commit(); }
   }
   await Promise.all([
-    db.doc('users/adminA').set({ role: 'admin', active: true }), db.doc('users/opsAdmin').set({ role: 'admin', active: true }), db.doc('users/accountA').set({ role: 'account_admin', active: true }),
+    db.doc('users/adminA').set({ role: 'admin', active: true }), db.doc('users/opsAdmin').set({ role: 'user', active: true }), db.doc('users/accountA').set({ role: 'account_admin', active: true }),
     db.doc('users/userA').set({ role: 'user', active: true }), db.doc('users/userB').set({ role: 'user', active: true }),
     db.doc('orders/orderA').set({ status: 'confirmed', ownerUid: 'userA', orderNumber: 'SS-2026-000001', customerId: 'customerA', customerSnapshot: { fullName: 'Asha', contact: '123', address: 'Road', area: 'West', sabha: true }, lines: [{ kind: 'item', itemSnapshot: { name: 'Sweet', unitSymbol: 'kg' }, quantityQty: 1000, unitPricePaise: 10000, lineTotalPaise: 10000 }], stockDeductions: [{ itemId: 'sweet', quantityQty: 1000 }], subtotal: 10000, grandTotal: 10000 }),
   ]);
@@ -39,11 +44,11 @@ test('partial and multiple payments count only after verification', async () => 
   const a = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 4000, mode: 'cash' });
   assert.equal((await invoice()).paymentStatus, 'in_process');
   assert.equal((await invoice()).verifiedPaidPaise, 0);
-  await assert.rejects(submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 6000, mode: 'upi', transactionNumber: 'upi-123' }), /already in process/);
+  await assert.rejects(submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 6000, mode: 'upi', transactionNumber: 'upi-123', ...await proof('userA', 'pending-upi') }), /already in process/);
   assert.equal((await db.doc(`payments/${a.paymentId}`).get()).data().transactionNumber, '-');
   await reviewPayment(db, 'adminA', { paymentId: a.paymentId, decision: 'verified' });
   assert.equal((await invoice()).paymentStatus, 'partial');
-  const b = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 6000, mode: 'upi', transactionNumber: 'upi-123' });
+  const b = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 6000, mode: 'upi', transactionNumber: 'upi-123', ...await proof('userA', 'verified-upi') });
   assert.equal((await invoice()).paymentStatus, 'in_process');
   assert.equal((await invoice()).verifiedPaidPaise, 4000);
   await reviewPayment(db, 'accountA', { paymentId: b.paymentId, decision: 'verified' });
@@ -55,13 +60,13 @@ test('partial and multiple payments count only after verification', async () => 
 });
 
 test('online references are unique after normalization and cannot be reused', async () => {
-  await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'upi', transactionNumber: 'AbC-123' });
-  await assert.rejects(submitPayment(db, 'adminA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'bank_transfer', transactionNumber: 'abc-123' }), /already been submitted/);
+  await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'upi', transactionNumber: 'AbC-123', ...await proof('userA', 'reference-first') });
+  await assert.rejects(submitPayment(db, 'adminA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'bank_transfer', transactionNumber: 'abc-123', ...await proof('adminA', 'reference-second') }), /already been submitted/);
   await assert.rejects(submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'upi', transactionNumber: '' }), /reference/);
 });
 
 test('review refuses a malformed legacy online payment even when staff requests verification', async () => {
-  const result = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'upi', transactionNumber: 'valid-123' });
+  const result = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'upi', transactionNumber: 'valid-123', ...await proof('userA', 'legacy-malformed') });
   await db.doc(`payments/${result.paymentId}`).update({ transactionNumber: '' });
   await assert.rejects(reviewPayment(db, 'adminA', { paymentId: result.paymentId, decision: 'verified' }), /reference/);
   assert.equal((await invoice()).verifiedPaidPaise, 0);
@@ -77,12 +82,12 @@ test('insufficient and stale balances block Mark as Paid', async () => {
 
 test('only privileged roles mark paid; ownership and review permissions hold', async () => {
   await assert.rejects(submitPayment(db, 'userB', { invoiceId: 'orderA', amountPaise: 1000, mode: 'cash' }), /own invoices/);
-  await assert.rejects(markInvoicePaid(db, 'opsAdmin', { invoiceId: 'orderA' }), /Access denied/);
-  await assert.rejects(markInvoicePaid(db, 'userA', { invoiceId: 'orderA' }), /Access denied/);
+  await assert.rejects(markInvoicePaid(db, 'opsAdmin', { invoiceId: 'orderA' }), /access is required/i);
+  await assert.rejects(markInvoicePaid(db, 'userA', { invoiceId: 'orderA' }), /access is required/i);
   const a = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 1000, mode: 'cash' });
-  await assert.rejects(reviewPayment(db, 'userA', { paymentId: a.paymentId, decision: 'verified' }), /Access denied/);
-  await assert.rejects(reviewPayment(db, 'opsAdmin', { paymentId: a.paymentId, decision: 'verified' }), /Access denied/);
-  await assert.rejects(reversePayment(db, 'opsAdmin', { paymentId: a.paymentId, reason: 'No authority' }), /Access denied/);
+  await assert.rejects(reviewPayment(db, 'userA', { paymentId: a.paymentId, decision: 'verified' }), /access is required/i);
+  await assert.rejects(reviewPayment(db, 'opsAdmin', { paymentId: a.paymentId, decision: 'verified' }), /access is required/i);
+  await assert.rejects(reversePayment(db, 'opsAdmin', { paymentId: a.paymentId, reason: 'No authority' }), /access is required/i);
 });
 
 test('competing submissions allow one pending payment and cannot over-credit invoice', async () => {
@@ -169,9 +174,9 @@ test('stable request ID makes cash retries idempotent without duplicate payment 
 });
 
 test('staff corrects only unverified payment mode with reason and immutable audit snapshot', async () => {
-  const result = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 2000, mode: 'cash', operationId: 'mode-request' });
-  await assert.rejects(changePaymentMode(db, 'userA', { paymentId: result.paymentId, mode: 'upi', transactionNumber: 'upi-789', reason: 'Customer correction' }), /Access denied/);
-  await assert.rejects(changePaymentMode(db, 'opsAdmin', { paymentId: result.paymentId, mode: 'upi', transactionNumber: 'upi-789', reason: 'Customer correction' }), /Access denied/);
+  const result = await submitPayment(db, 'userA', { invoiceId: 'orderA', amountPaise: 2000, mode: 'cash', ...await proof('userA', 'mode-request') });
+  await assert.rejects(changePaymentMode(db, 'userA', { paymentId: result.paymentId, mode: 'upi', transactionNumber: 'upi-789', reason: 'Customer correction' }), /access is required/i);
+  await assert.rejects(changePaymentMode(db, 'opsAdmin', { paymentId: result.paymentId, mode: 'upi', transactionNumber: 'upi-789', reason: 'Customer correction' }), /access is required/i);
   await assert.rejects(changePaymentMode(db, 'adminA', { paymentId: result.paymentId, mode: 'upi', transactionNumber: '', reason: 'Correction' }), /reference/);
   await changePaymentMode(db, 'adminA', { paymentId: result.paymentId, mode: 'upi', transactionNumber: 'upi-789', reason: 'Customer correction' });
   const changed = (await db.doc(`payments/${result.paymentId}`).get()).data();

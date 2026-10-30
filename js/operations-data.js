@@ -14,7 +14,7 @@ export const listMovements = async (db, ownerUid = null) => unpack(await getDocs
 export const callOperation = async (functions, name, data) => {
   const messages = {
     saveOrderDraft: 'Saving your order…', confirmOrder: 'Confirming order…', advanceOrder: 'Updating order status…', cancelOrder: 'Cancelling order…', archiveOrder: 'Archiving order…', restoreOrder: 'Restoring order…', reassignOrder: 'Updating assigned user…', requestOrderPayment: 'Recording payment request…', setOrderTaking: 'Updating order settings…', createInvoiceFromOrder: 'Creating invoice…',
-    submitPayment: 'Submitting payment…', reviewPayment: 'Verifying payment…', changePaymentMode: 'Updating payment method…', reversePayment: 'Reversing payment…', markInvoicePaid: 'Marking invoice paid…',
+    readPaymentReceipt: 'Opening receipt…', submitPayment: 'Submitting payment…', reviewPayment: 'Verifying payment…', changePaymentMode: 'Updating payment method…', reversePayment: 'Reversing payment…', markInvoicePaid: 'Marking invoice paid…', submitCollection: 'Submitting collection…', reviewCollection: 'Verifying collection…', readCollectionReceipt: 'Opening collection receipt…',
     adjustStock: 'Updating inventory…', setInventoryControl: 'Updating stock controls…', savePurchaseDraft: 'Saving purchase order…', confirmPurchase: 'Confirming purchase…', cancelPurchase: 'Cancelling purchase…',
     saveUserProfile: 'Saving user account…', sendUserSetupLink: 'Sending password setup link…', saveCustomer: 'Saving customer…', deleteCustomer: 'Deleting customer…', saveSpecialProduct: 'Saving special product…', saveTarget: 'Saving target…', saveAnnouncement: 'Saving announcement…',
   };

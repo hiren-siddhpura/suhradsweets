@@ -97,3 +97,51 @@ test('KG conversion excludes count units and sales snapshots count combos once',
   assert.throws(() => validateTargetKg('-1'));
   assert.throws(() => validateTargetKg('12.3456'));
 });
+
+test('Regular User order count matches assigned orders across statuses and owners', async () => {
+  const source = readFileSync(new URL('../js/reporting-data.js', import.meta.url), 'utf8')
+    .split('export async function dashboardTargetKg')[0]
+    .replace(/^import .*;\r?\n/gm, '').replace('export async function dashboardOrderKg', 'async function dashboardOrderKg');
+  const records = [
+    { id: 'a', assignedUserId: 'u1', status: 'confirmed', orderDate: '2026-10-30' },
+    { id: 'b', assignedUserId: 'u1', status: 'invoiced', orderDate: '2026-10-31' },
+    { id: 'c', assignedUserId: 'u1', status: 'paid', orderDate: '2026-10-31' },
+    { id: 'd', assignedUserId: 'u1', status: 'cancelled' },
+    { id: 'e', assignedUserId: 'u2', status: 'confirmed', orderDate: '2026-10-31' },
+  ];
+  const context = {
+    summarizeOrderKg, collection: () => ({}), where: (field, op, value) => ({ field, op, value }),
+    query: (_, ...terms) => terms, getDocs: async (terms) => ({ docs: records.filter((record) => terms.every((term) => {
+      const value = record[term.field];
+      return value !== undefined && (term.op === '==' ? value === term.value : term.op === '>=' ? value >= term.value : value <= term.value);
+    })).map(({ id, ...data }) => ({ id, data: () => data })) }),
+  };
+  vm.runInNewContext(`${source}\nthis.dashboardOrderKg = dashboardOrderKg;`, context);
+  const count = async (uid, from, to) => (await context.dashboardOrderKg({}, 'user', uid, from, to)).orderCount;
+  assert.equal(await count('nobody'), 0);
+  assert.equal(await count('u2'), 1);
+  assert.equal(await count('u1'), 4);
+  assert.equal(await count('u1', '2026-10-30', '2026-10-30'), 1);
+  assert.equal(await count('u1', '2026-10-31', '2026-10-31'), 2);
+  records.push({ id: 'f', assignedUserId: 'u1', status: 'confirmed', orderDate: '2026-10-31' });
+  assert.equal(await count('u1'), 5, 'a new order is counted on the next dashboard read');
+});
+
+test('Admin and Account Admin retain the existing paginated sales count', async () => {
+  const source = readFileSync(new URL('../js/reporting-data.js', import.meta.url), 'utf8')
+    .split('export async function dashboardTargetKg')[0]
+    .replace(/^import .*;\r?\n/gm, '').replace('export async function dashboardOrderKg', 'async function dashboardOrderKg');
+  const records = Array.from({ length: 101 }, (_, index) => ({ id: String(index), status: index === 100 ? 'cancelled' : 'confirmed', orderDate: '2026-10-31' }));
+  const context = {
+    summarizeOrderKg, collection: () => ({}), where: () => ({}), orderBy: () => ({}),
+    startAfter: (cursor) => ({ cursor }), limit: (size) => ({ size }), query: (_, ...terms) => terms,
+    getDocs: async (terms) => {
+      const cursor = terms.find((term) => term.cursor)?.cursor;
+      const start = cursor ? Number(cursor.id) + 1 : 0;
+      return { docs: records.slice(start, start + 100).map(({ id, ...data }) => ({ id, data: () => data })) };
+    },
+  };
+  vm.runInNewContext(`${source}\nthis.dashboardOrderKg = dashboardOrderKg;`, context);
+  assert.equal((await context.dashboardOrderKg({}, 'admin', 'admin')).orderCount, 100);
+  assert.equal((await context.dashboardOrderKg({}, 'account_admin', 'account-admin')).orderCount, 100);
+});

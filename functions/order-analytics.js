@@ -13,7 +13,7 @@ export async function getOrderAnalytics(db, uid) {
   ]);
   const orders = orderSnaps.docs.filter((snap) => !['cancelled', 'deleted'].includes(snap.data().status) && !snap.data().deletedAt).map((snap) => {
     const order = snap.data();
-    return { id: snap.id, ownerUid: order.ownerUid, assignedUserId: order.assignedUserId, customerId: order.customerId, customerName: order.customerSnapshot?.fullName || '', orderNumber: order.orderNumber || '', orderDate: order.orderDate || '', status: order.status || '', invoiceId: order.invoiceId || '', lines: (order.lines || []).filter((line) => line.kind === 'item').map((line) => ({ productId: line.productId, name: line.itemSnapshot?.name || '', quantityQty: line.quantityQty, orderUnitId: line.orderUnitId || '', orderUnitName: line.orderUnitName || '', unitSymbol: line.itemSnapshot?.unitSymbol || '' })) };
+    return { id: snap.id, ownerUid: order.ownerUid, assignedUserId: order.assignedUserId, customerId: order.customerId, customerName: order.customerSnapshot?.fullName || '', orderNumber: order.orderNumber || '', orderDate: order.orderDate || '', status: order.status || '', invoiceId: order.invoiceId || '', grandTotalPaise: Number.isSafeInteger(order.grandTotal) ? order.grandTotal : null, lines: (order.lines || []).filter((line) => line.kind === 'item').map((line) => ({ productId: line.productId, name: line.itemSnapshot?.name || '', quantityQty: line.quantityQty, orderUnitId: line.orderUnitId || '', orderUnitName: line.orderUnitName || '', unitSymbol: line.itemSnapshot?.unitSymbol || '' })) };
   });
   const customerIds = [...new Set(orders.map((order) => order.customerId).filter(validId))];
   const customerSnaps = [];

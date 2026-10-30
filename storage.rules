@@ -1,0 +1,43 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /paymentReceipts/{uid}/{fileName} {
+      allow read, update, delete: if false;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && fileName.matches('^[A-Za-z0-9_-]+[.](jpg|png|pdf)$')
+        && request.resource.size > 0 && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType in ['image/jpeg', 'image/png', 'application/pdf']
+        && ((fileName.matches('.*[.]jpg') && request.resource.contentType == 'image/jpeg')
+          || (fileName.matches('.*[.]png') && request.resource.contentType == 'image/png')
+          || (fileName.matches('.*[.]pdf') && request.resource.contentType == 'application/pdf'))
+        && request.resource.metadata.ownerUid == uid
+        && request.resource.metadata.invoiceId is string
+        && request.resource.metadata.originalName is string
+        && request.resource.metadata.originalName.size() > 0
+        && request.resource.metadata.originalName.size() <= 150
+        && firestore.exists(/databases/(default)/documents/users/$(uid))
+        && firestore.get(/databases/(default)/documents/users/$(uid)).data.active == true
+        && firestore.exists(/databases/(default)/documents/invoices/$(request.resource.metadata.invoiceId))
+        && (firestore.get(/databases/(default)/documents/invoices/$(request.resource.metadata.invoiceId)).data.ownerUid == uid
+          || firestore.get(/databases/(default)/documents/users/$(uid)).data.role in ['admin', 'account_admin']);
+    }
+    match /collectionReceipts/{uid}/{operationId}/{fileName} {
+      allow read, update, delete: if false;
+      allow create: if request.auth != null && request.auth.uid == uid
+        && operationId.matches('^[A-Za-z0-9_-]{1,128}$')
+        && fileName.matches('^[0-9]{1,2}[.](jpg|png|pdf)$')
+        && request.resource.size > 0 && request.resource.size <= 5 * 1024 * 1024
+        && ((fileName.matches('.*[.]jpg') && request.resource.contentType == 'image/jpeg')
+          || (fileName.matches('.*[.]png') && request.resource.contentType == 'image/png')
+          || (fileName.matches('.*[.]pdf') && request.resource.contentType == 'application/pdf'))
+        && request.resource.metadata.ownerUid == uid
+        && request.resource.metadata.operationId == operationId
+        && request.resource.metadata.originalName is string
+        && request.resource.metadata.originalName.size() > 0
+        && request.resource.metadata.originalName.size() <= 150
+        && firestore.exists(/databases/(default)/documents/users/$(uid))
+        && firestore.get(/databases/(default)/documents/users/$(uid)).data.active == true
+        && firestore.get(/databases/(default)/documents/users/$(uid)).data.role in ['admin', 'account_admin', 'user'];
+    }
+  }
+}

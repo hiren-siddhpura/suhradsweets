@@ -15,7 +15,7 @@ export async function loadSheetJs() {
     const script = document.createElement('script');
     script.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
     script.onload = () => resolve(window.XLSX);
-    script.onerror = () => reject(new Error('SheetJS could not load. Check your connection.'));
+    script.onerror = () => { libraryPromise = null; script.remove(); reject(new Error('SheetJS could not load. Check your connection.')); };
     document.head.append(script);
   });
   return libraryPromise;
@@ -31,7 +31,7 @@ export async function downloadXlsx(name, sheets) {
   XLSX.writeFile(book, `suhrad-${name}-${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
-export async function downloadAnalyticsXlsx(workbook) {
+export async function analyticsXlsxBlob(workbook) {
   const XLSX = await loadSheetJs();
   const book = XLSX.utils.book_new();
   const rows = [workbook.headers, ...workbook.rows].map((row) => row.map(safeSpreadsheetValue));
@@ -40,5 +40,15 @@ export async function downloadAnalyticsXlsx(workbook) {
   sheet['!autofilter'] = { ref: `A1:${XLSX.utils.encode_cell({ r: Math.max(1, rows.length - 2), c: workbook.headers.length - 1 })}` };
   sheet['!freeze'] = { xSplit: 0, ySplit: 1 };
   XLSX.utils.book_append_sheet(book, sheet, 'User Orders');
-  XLSX.writeFile(book, workbook.filename);
+  return new Blob([XLSX.write(book, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+}
+
+export function downloadReportBlob(blob, filename) {
+  const url = URL.createObjectURL(blob), link = document.createElement('a');
+  link.href = url; link.download = filename; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export async function downloadAnalyticsXlsx(workbook) {
+  downloadReportBlob(await analyticsXlsxBlob(workbook), workbook.filename);
 }

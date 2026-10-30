@@ -1,7 +1,7 @@
 import { callOperation } from './operations-data.js';
 import { analyticsColumns, analyticsCsv, matchingOrders, quantities, quantityText, sortAnalyticsRows, statusSortValue, totalText } from './order-analytics-data.js';
 import { userOrderWorkbook } from './order-analytics-export.js';
-import { downloadAnalyticsXlsx } from './xlsx-export.js';
+import { openAnalyticsExport } from './analytics-share.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -86,7 +86,7 @@ export function initOrderAnalytics({ functions }) {
       }
     }
     const sortedRows = sortAnalyticsRows(rows, activeSort);
-    $('analytics-body').innerHTML = sortedRows.length ? sortedRows.map((row) => `<tr data-analytics-row="${esc(row.id)}">${row.cells.map((value, index) => `<td>${index === 0 && !detailUid ? `<button type="button" data-analytics-user="${esc(row.id)}" aria-label="View ${esc(value)} customer orders">${esc(value)}</button>` : esc(value)}</td>`).join('')}${detailUid ? '' : `<td class="analytics-export-cell"><button type="button" class="analytics-row-export" data-analytics-export="${esc(row.id)}" title="Export Excel" aria-label="Export Excel for ${esc(row.cells[0])}" ${exportingUid ? 'disabled' : ''}>${exportingUid === row.id ? '…' : '⇩'}</button></td>`}</tr>`).join('') : `<tr><td colspan="${headers.length + (detailUid ? 0 : 1)}">No orders match these filters.</td></tr>`;
+    $('analytics-body').innerHTML = sortedRows.length ? sortedRows.map((row) => `<tr data-analytics-row="${esc(row.id)}">${row.cells.map((value, index) => `<td>${index === 0 && !detailUid ? `<button type="button" data-analytics-user="${esc(row.id)}" aria-label="View ${esc(value)} customer orders">${esc(value)}</button>` : esc(value)}</td>`).join('')}${detailUid ? '' : `<td class="analytics-export-cell"><button type="button" class="analytics-row-export" data-analytics-export="${esc(row.id)}" title="Download or share Excel" aria-label="Download or share Excel for ${esc(row.cells[0])}" ${exportingUid ? 'disabled' : ''}>${exportingUid === row.id ? '…' : '↗'}</button></td>`}</tr>`).join('') : `<tr><td colspan="${headers.length + (detailUid ? 0 : 1)}">No orders match these filters.</td></tr>`;
     const totals = quantities(orders, cols);
     const footer = detailUid ? ['Total', '', '', '', '', ...cols.map((col) => quantityText(totals[col.key], col.unit)), '', totalText(totals, cols)] : ['Total', ...cols.map((col) => quantityText(totals[col.key], col.unit)), totalText(totals, cols)];
     $('analytics-foot').innerHTML = `<tr>${footer.map((value) => `<th>${esc(value)}</th>`).join('')}${detailUid ? '' : '<th class="analytics-export-cell"></th>'}</tr>`;
@@ -185,7 +185,8 @@ export function initOrderAnalytics({ functions }) {
       let exportError = '';
       try {
         const workbook = userOrderWorkbook(data, filters(), uid, displayStatus);
-        await downloadAnalyticsXlsx(workbook);
+        const viewer = session.uid, version = requestId;
+        await openAnalyticsExport(workbook, { isAuthorized: () => session?.uid === viewer && requestId === version });
       } catch (error) {
         exportError = `Excel export failed: ${error.message || 'Please retry.'}`;
       } finally {

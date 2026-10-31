@@ -6,6 +6,7 @@ import { isStaff, hasPermission } from './permissions.js';
 import { uniqueId } from './unique-id.js';
 import { showToast } from './ui.js';
 import { paymentInvoiceSummary, paymentUpload } from './payment-form-ui.js';
+import { eligibleCollectionInvoice } from './collection-eligibility.js';
 
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '<': '&lt;', "'": '&#39;' })[char]);
 const rupees = (paise) => `₹${((paise || 0) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -35,7 +36,7 @@ export function initCollectionsUi({ db, functions }) {
   const filterValue = (id) => String($(id)?.value ?? '');
   let user = null, profile = null, collections = [], payments = [], customers = [], invoices = [], draft = null, viewingId = null, loadingRevision = 0, busy = false;
   const own = () => isStaff(profile) ? null : user?.uid;
-  const invoiceAvailable = (invoice) => invoice.customerId && invoice.totalPaise > invoice.verifiedPaidPaise && invoice.paymentStatus !== 'paid' && invoice.paymentStatus !== 'in_process';
+  const invoiceAvailable = eligibleCollectionInvoice;
   function renderList() {
     const singles = payments.filter((row) => !row.collectionId && !row.collectionNumber);
     const records = [
@@ -72,24 +73,29 @@ export function initCollectionsUi({ db, functions }) {
   }
   function renderDraft() {
     if (!draft) return;
-    const selected = new Set(draft.customers), available = customers.filter((customer) => !selected.has(customer.id));
+    const selected = new Set(draft.customers), invoiceCounts = new Map();
+    for (const invoice of invoices) if (invoiceAvailable(invoice)) invoiceCounts.set(invoice.customerId, (invoiceCounts.get(invoice.customerId) || 0) + 1);
+    const available = customers.filter((customer) => !selected.has(customer.id)).sort((a, b) => (invoiceCounts.get(b.id) || 0) - (invoiceCounts.get(a.id) || 0) || String(a.fullName || '').localeCompare(String(b.fullName || '')));
+    const customerOption = (customer) => `<option value="${esc(customer.id)}">${esc(customer.fullName)} · ${invoiceCounts.get(customer.id) || 0} outstanding invoice${invoiceCounts.get(customer.id) === 1 ? '' : 's'}</option>`;
     const { allocations, total, customers: customerCount } = draftTotals();
     $('collection-dialog-content').innerHTML = `<div class="dialog-header"><h2>Create Bulk Payment</h2><button id="collection-close" class="icon-button" type="button" aria-label="Close">×</button></div>
       <div class="payment-draft-meta"><span><strong>Draft reference</strong>${esc(reference())}</span><span><strong>Collection date</strong>${esc(collectionDay())}</span><span><strong>Collected by</strong>${esc(profile?.fullName || profile?.displayName || user?.uid || '—')}</span></div>
-      <section class="payment-form-section"><div class="payment-section-heading"><h3>Customer Payments</h3><span>${customerCount} selected</span></div><div class="collection-add"><label class="ops-field" for="collection-customer-search">Find customer<input id="collection-customer-search" type="search" placeholder="Search customer name or phone"></label><label class="ops-field" for="collection-customer-pick">Customer<select id="collection-customer-pick"><option value="">Select customer</option>${available.map((customer) => `<option value="${esc(customer.id)}">${esc(customer.fullName)} · ${esc(customer.contact)}</option>`).join('')}</select></label><button id="collection-add-customer" class="button button-outline" type="button">＋ Add Customer</button></div>
+      <section class="payment-form-section"><div class="payment-section-heading"><h3>Customer Payments</h3><span>${customerCount} selected</span></div><div class="collection-add"><label class="ops-field" for="collection-customer-search">Find customer<input id="collection-customer-search" type="search" placeholder="Search customer name or phone"></label><label class="ops-field" for="collection-customer-pick">Customer<select id="collection-customer-pick"><option value="">Select customer</option>${available.map(customerOption).join('')}</select></label><button id="collection-add-customer" class="button button-outline" type="button">＋ Add Customer</button></div>
+      ${draft.invoiceLoading ? '<p class="muted" role="status">Loading current invoice balances…</p>' : draft.invoiceError ? `<p class="form-error" role="alert">Could not load invoices. <button type="button" id="collection-retry-invoices">Retry</button></p>` : ''}
       ${draft.customers.map((customerId) => {
-        const customer = customers.find((item) => item.id === customerId), rows = invoices.filter((invoice) => invoice.customerId === customerId && invoiceAvailable(invoice));
+        const customer = customers.find((item) => item.id === customerId), rows = draft.invoiceLoading || draft.invoiceError ? [] : invoices.filter((invoice) => invoice.customerId === customerId && invoiceAvailable(invoice));
         const sum = rows.reduce((value, invoice) => value + (draft.allocations.get(invoice.id)?.amountPaise || 0), 0);
         return `<div class="collection-customer"><div class="payment-card-header"><h4>${esc(customer?.fullName || 'Customer')}</h4><button type="button" data-remove-customer="${esc(customerId)}" class="button button-outline" aria-label="Remove ${esc(customer?.fullName || 'customer')}">Remove</button></div><p class="payment-card-subtotal">Customer subtotal <strong data-customer-subtotal="${esc(customerId)}">${rupees(sum)}</strong></p>${rows.length ? rows.map((invoice) => {
           const row = draft.allocations.get(invoice.id), balance = invoice.totalPaise - invoice.verifiedPaidPaise;
           return `<div class="collection-invoice"><label class="payment-invoice-choice"><input type="checkbox" data-invoice-check="${esc(invoice.id)}" ${row ? 'checked' : ''}><span>${esc(invoice.invoiceNumber)}</span></label>${paymentInvoiceSummary(invoice)}${row ? `<div class="collection-allocation"><label class="ops-field">Amount collected (₹)<input type="number" min="0.01" step="0.01" max="${(balance / 100).toFixed(2)}" data-invoice-amount="${esc(invoice.id)}" value="${esc(row.amountRaw ?? (row.amountPaise / 100).toFixed(2))}"></label><label class="ops-field">Payment entry<select data-invoice-entry="${esc(invoice.id)}">${draft.entries.map((entry, index) => `<option value="${index}" ${row.paymentIndex === index ? 'selected' : ''}>${index + 1}: ${paymentName(entry.mode)}</option>`).join('')}</select></label></div>` : ''}</div>`;
-        }).join('') : '<p class="muted">No unpaid invoices available for this customer.</p>'}</div>`;
+        }).join('') : draft.invoiceLoading || draft.invoiceError ? '' : '<p class="muted">No eligible outstanding invoices are available for this customer.</p>'}</div>`;
       }).join('')}</section>
       <section class="payment-form-section"><div class="payment-section-heading"><h3>Payment Entries</h3><span>${draft.entries.length} entries</span></div>${draft.entries.map((entry, index) => `<div class="collection-entry"><div class="payment-card-header"><h4>Entry ${index + 1}</h4>${draft.entries.length > 1 ? `<button type="button" data-entry-remove="${index}" class="button button-outline">Remove entry</button>` : ''}</div><p class="payment-card-subtotal">Allocated to this entry <strong data-entry-total="${index}">${rupees(allocations.filter((row) => row.paymentIndex === index).reduce((sum, row) => sum + row.amountPaise, 0))}</strong></p><div class="payment-form-grid"><label class="ops-field">Payment method<select data-entry-mode="${index}"><option value="cash" ${entry.mode === 'cash' ? 'selected' : ''}>Cash</option><option value="upi" ${entry.mode === 'upi' ? 'selected' : ''}>UPI</option><option value="bank_transfer" ${entry.mode === 'bank_transfer' ? 'selected' : ''}>Online</option></select></label><label class="ops-field" ${entry.mode === 'cash' ? 'hidden' : ''}>Transaction ID<input data-entry-reference="${index}" maxlength="100" value="${esc(entry.transactionNumber || '')}" ${entry.mode === 'cash' ? 'disabled' : ''}></label></div>${paymentUpload({ id: `collection-entry-file-${index}`, dataAttribute: `data-entry-file="${index}"` })}${entry.file ? `<p class="payment-file-name">${esc(entry.file.name)} · ${(entry.file.size / 1024 / 1024).toFixed(2)} MB <button type="button" data-entry-remove-file="${index}">Remove</button></p><div class="collection-file-preview">${entry.file.type === 'application/pdf' ? `<iframe title="Receipt preview" src="${entry.url}"></iframe>` : `<img alt="Receipt preview" src="${entry.url}">`}</div>` : ''}<p id="collection-progress-${index}" role="status"></p></div>`).join('')}<button id="collection-add-entry" class="button button-outline" type="button">＋ Add Payment Entry</button></section>
       <section class="payment-form-section"><label class="ops-field">Remarks <small>Optional</small><textarea id="collection-remarks" maxlength="1000" rows="3">${esc(draft.remarks)}</textarea></label><div class="collection-summary"><strong>Collection Summary</strong><p id="collection-summary-totals">${customerCount} customers · ${allocations.length} invoices · ${draft.entries.length} payment entries · Total ${rupees(total)}</p><small>Each invoice allocation is assigned to one payment entry. The entry totals must cover the full collection amount.</small></div></section><p id="collection-error" class="form-error" role="alert"></p><div class="dialog-actions"><button id="collection-cancel" type="button" class="button button-outline">Cancel</button><button id="collection-submit" type="button" class="button button-primary">Submit for Verification</button></div>`;
     $('collection-close').onclick = $('collection-cancel').onclick = () => $('collection-dialog').close();
-    $('collection-customer-search').oninput = (event) => { const term = event.target.value.trim().toLowerCase(); const select = $('collection-customer-pick'); select.innerHTML = `<option value="">Select customer</option>${available.filter((customer) => `${customer.fullName || ''} ${customer.contact || ''}`.toLowerCase().includes(term)).map((customer) => `<option value="${esc(customer.id)}">${esc(customer.fullName)} · ${esc(customer.contact)}</option>`).join('')}`; };
-    $('collection-add-customer').onclick = () => { const id = $('collection-customer-pick').value; if (id) { draft.customers.push(id); changed(); renderDraft(); } };
+    if ($('collection-retry-invoices')) $('collection-retry-invoices').onclick = refreshDraftInvoices;
+    $('collection-customer-search').oninput = (event) => { const term = event.target.value.trim().toLowerCase(); const select = $('collection-customer-pick'); select.innerHTML = `<option value="">Select customer</option>${available.filter((customer) => `${customer.fullName || ''} ${customer.contact || ''}`.toLowerCase().includes(term)).map(customerOption).join('')}`; };
+    $('collection-add-customer').onclick = () => { const id = $('collection-customer-pick').value; if (id) { draft.customers.push(id); changed(); renderDraft(); refreshDraftInvoices(); } };
     $('collection-add-entry').onclick = () => { if (draft.entries.length >= 20) return; draft.entries.push({ mode: 'cash', transactionNumber: '', file: null, url: null, uploaded: null }); changed(); renderDraft(); };
     $('collection-remarks').oninput = (event) => { draft.remarks = event.target.value; changed(); };
     $('collection-submit').onclick = submit;
@@ -110,13 +116,32 @@ export function initCollectionsUi({ db, functions }) {
   }
   function openCreate() {
     draft?.entries.forEach((entry) => { if (entry.url) URL.revokeObjectURL(entry.url); });
-    draft = { operationId: uniqueId(), customers: [], allocations: new Map(), entries: [{ mode: 'cash', transactionNumber: '', file: null, url: null, uploaded: null }], remarks: '' };
-    renderDraft(); $('collection-dialog').showModal();
+    draft = { operationId: uniqueId(), customers: [], allocations: new Map(), entries: [{ mode: 'cash', transactionNumber: '', file: null, url: null, uploaded: null }], remarks: '', invoiceLoading: false, invoiceError: false };
+    renderDraft(); $('collection-dialog').showModal(); refreshDraftInvoices();
+  }
+  async function refreshDraftInvoices() {
+    const currentDraft = draft;
+    if (!currentDraft || currentDraft.invoiceLoading) return;
+    currentDraft.invoiceLoading = true; currentDraft.invoiceError = false; renderDraft();
+    try {
+      const fresh = await listInvoices(db, own());
+      if (draft !== currentDraft) return;
+      invoices = fresh;
+      for (const [id] of currentDraft.allocations) if (!fresh.some((invoice) => invoice.id === id && invoiceAvailable(invoice))) currentDraft.allocations.delete(id);
+      console.info('Bulk payment invoice availability', { invoiceCount: fresh.length, eligibleCount: fresh.filter(invoiceAvailable).length });
+    } catch (error) {
+      if (draft !== currentDraft) return;
+      currentDraft.invoiceError = true;
+      console.warn('Bulk payment invoice load failed', { code: error.code || 'unknown' });
+    } finally {
+      if (draft === currentDraft) { currentDraft.invoiceLoading = false; renderDraft(); }
+    }
   }
   async function submit() {
     if (busy || !draft) return;
     const { allocations, total } = draftTotals();
     try {
+      if (draft.invoiceLoading || draft.invoiceError) throw new Error('Refresh invoice balances before submitting.');
       if (!allocations.length || !total || allocations.some((row) => !Number.isSafeInteger(row.amountPaise) || row.amountPaise < 1)) throw new Error('Select invoices and enter a positive collected amount for each.');
       for (const row of allocations) {
         const invoice = invoices.find((item) => item.id === row.invoiceId);

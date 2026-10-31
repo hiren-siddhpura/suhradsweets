@@ -101,6 +101,18 @@ test('duplicate invoice, overpayment and missing online receipt are rejected', a
   await assert.rejects(submitCollection(db, 'userA', input('missing-proof', [rows[0]], [{ mode: 'upi', transactionNumber: 'UPI-88' }])), /receipt/);
 });
 
+test('cancelled invoice cannot be collected or approved after cancellation', async () => {
+  await db.doc('invoices/invoiceA').update({ status: 'cancelled', paymentStatus: 'cancelled' });
+  await assert.rejects(submitCollection(db, 'userA', input('cancelled-submit', [rows[0]])), /not eligible/);
+  assert.equal((await db.collection('collections').get()).size, 0);
+  await db.doc('invoices/invoiceA').update({ status: 'active', paymentStatus: 'partial' });
+  const pending = await submitCollection(db, 'userA', input('cancelled-review', [rows[0]]));
+  await db.doc('invoices/invoiceA').update({ status: 'cancelled', paymentStatus: 'cancelled' });
+  await assert.rejects(reviewCollection(db, 'adminA', { collectionId: pending.collectionId, decision: 'verified' }), /balance changed/);
+  assert.equal((await db.doc('invoices/invoiceA').get()).data().verifiedPaidPaise, 2000);
+  assert.equal((await db.collection('payments').get()).size, 0);
+});
+
 test('PNG receipt is accepted, while invalid signatures and oversized files are rejected', async () => {
   const storage = getStorage().bucket();
   await storage.file('collectionReceipts/userA/image-good/0.png').save(png, { metadata: { contentType: 'image/png', metadata: { ownerUid: 'userA', operationId: 'image-good', originalName: 'proof.png' } } });

@@ -163,14 +163,16 @@ test('payment names come from trusted profiles and snapshots; users see only own
 });
 
 test('stable request ID makes cash retries idempotent without duplicate payment or audit', async () => {
-  const input = { invoiceId: 'orderA', amountPaise: 1200, mode: 'cash', operationId: 'cash-request-1' };
+  const input = { invoiceId: 'orderA', amountPaise: 1200, mode: 'cash', operationId: 'cash-request-1', remarks: 'Received at counter' };
   const first = await submitPayment(db, 'userA', input);
   const retry = await submitPayment(db, 'userA', input);
   assert.equal(retry.paymentId, first.paymentId);
   assert.equal(retry.alreadySubmitted, true);
   assert.equal((await db.collection('payments').get()).size, 1);
+  assert.equal((await db.doc(`payments/${first.paymentId}`).get()).data().remarks, 'Received at counter');
   assert.equal((await listPaymentActivity(db, 'userA', { filters: { type: 'payment.submitted' } })).rows.length, 1);
   await assert.rejects(submitPayment(db, 'userA', { ...input, amountPaise: 1300 }), /already used for different details/);
+  await assert.rejects(submitPayment(db, 'userA', { ...input, remarks: 'Different note' }), /already used for different details/);
 });
 
 test('staff corrects only unverified payment mode with reason and immutable audit snapshot', async () => {

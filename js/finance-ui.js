@@ -9,6 +9,7 @@ import { downloadXlsx } from './xlsx-export.js';
 import { actionLabel, activityDate, changeSummary, references } from './activity-format.js';
 import { listActivity } from './activity-data.js';
 import { uniqueId } from './unique-id.js';
+import { paymentInvoiceSummary, paymentUpload } from './payment-form-ui.js';
 import { getStorage, ref as storageRef, uploadBytesResumable } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-storage.js';
 
 const $ = (id) => document.getElementById(id);
@@ -54,9 +55,9 @@ export function initFinanceUi({ db, functions }) {
     return snapshot || resolvedNames.get(row.id)?.[`${field}Name`] || (uid === user?.uid ? profile?.fullName || profile?.displayName : '') || 'Unknown user';
   };
   const customerName = (row) => row.customerSnapshot?.fullName || resolvedNames.get(row.id)?.customerName || 'Unknown customer';
-  const invoiceStatus = (row) => row.paymentStatus === 'paid' || row.paymentStatus === 'ready_to_mark_paid' && row.verifiedPaidPaise === row.totalPaise ? 'paid'
+  const invoiceStatus = (row) => row.status === 'cancelled' || row.paymentStatus === 'cancelled' ? 'cancelled' : row.paymentStatus === 'overpaid' || row.verifiedPaidPaise > row.totalPaise ? 'overpaid' : row.paymentStatus === 'paid' || row.paymentStatus === 'ready_to_mark_paid' && row.verifiedPaidPaise === row.totalPaise ? 'paid'
     : payments.some((payment) => payment.invoiceId === row.id && payment.verificationStatus === 'unverified') ? 'in_process' : row.paymentStatus;
-  const statusLabel = (status) => ({ unpaid: 'Unpaid', partial: 'Partial', in_process: 'In process', ready_to_mark_paid: 'Ready to mark paid', paid: 'Paid' })[status] || status || 'Unknown';
+  const statusLabel = (status) => ({ unpaid: 'Unpaid', partial: 'Partially Paid', in_process: 'In process', ready_to_mark_paid: 'Ready to mark paid', paid: 'Paid', overpaid: 'Overpaid / credit review', cancelled: 'Cancelled' })[status] || status || 'Unknown';
   const statusBadge = (status) => `<span class="status-badge is-${esc(String(status || 'unknown').replace(/_/g, '-'))}">${esc(statusLabel(status))}</span>`;
   const matching = (kind) => {
     const rows = kind === 'invoice' ? invoices : payments;
@@ -76,16 +77,24 @@ export function initFinanceUi({ db, functions }) {
   };
   function renderInvoices() {
     const rows = matching('invoice');
-    $('invoice-cards').innerHTML = stat('Visible invoices', rows.length) + stat('Outstanding', cash(rows.reduce((sum, row) => sum + row.totalPaise - row.verifiedPaidPaise, 0))) + stat('Verified payments', cash(rows.reduce((sum, row) => sum + row.verifiedPaidPaise, 0)));
+    $('invoice-cards').innerHTML = stat('Visible invoices', rows.length) + stat('Outstanding', cash(rows.filter((row) => invoiceStatus(row) !== 'cancelled').reduce((sum, row) => sum + Math.max(0, row.totalPaise - row.verifiedPaidPaise), 0))) + stat('Verified payments', cash(rows.reduce((sum, row) => sum + row.verifiedPaidPaise, 0)));
     $('invoice-body').innerHTML = rows.length ? rows.map((row) => {
       const status = invoiceStatus(row);
-      return `<tr><td>${esc(row.invoiceNumber || `INV-${row.orderNumber}`)}</td><td><button type="button" class="ops-link" data-finance="order" data-id="${esc(row.orderNumber)}">${esc(row.orderNumber)}</button></td><td>${esc(row.customerSnapshot?.fullName)}</td><td>${esc(date(row.issuedAt))}</td><td>${esc(cash(row.totalPaise))}</td><td>${esc(cash(row.verifiedPaidPaise))}</td><td>${esc(cash(row.totalPaise - row.verifiedPaidPaise))}</td><td>${statusBadge(status)}</td><td class="ops-actions"><button type="button" data-finance="preview" data-id="${esc(row.id)}">Preview / Print</button><button type="button" data-finance="pdf" data-id="${esc(row.id)}">PDF</button><button type="button" data-finance="share" data-id="${esc(row.id)}">Share on WhatsApp</button>${paymentsLoaded && status !== 'paid' && status !== 'in_process' && row.totalPaise > row.verifiedPaidPaise && (canVerify() || row.ownerUid === user?.uid) ? `<button type="button" data-finance="submit" data-id="${esc(row.id)}">Add payment</button>` : ''}</td></tr>`;
+      return `<tr><td>${esc(row.invoiceNumber || `INV-${row.orderNumber}`)}</td><td><button type="button" class="ops-link" data-finance="order" data-id="${esc(row.orderNumber)}">${esc(row.orderNumber)}</button></td><td>${esc(row.customerSnapshot?.fullName)}</td><td>${esc(date(row.issuedAt))}</td><td>${esc(cash(row.totalPaise))}</td><td>${esc(cash(row.verifiedPaidPaise))}</td><td>${esc(cash(row.totalPaise - row.verifiedPaidPaise))}</td><td>${statusBadge(status)}</td><td class="ops-actions"><button type="button" data-finance="preview" data-id="${esc(row.id)}">Preview / Print</button><button type="button" data-finance="pdf" data-id="${esc(row.id)}">PDF</button><button type="button" data-finance="share" data-id="${esc(row.id)}">Share on WhatsApp</button>${paymentsLoaded && !['paid', 'in_process', 'cancelled', 'overpaid'].includes(status) && row.totalPaise > row.verifiedPaidPaise && (canVerify() || row.ownerUid === user?.uid) ? `<button type="button" data-finance="submit" data-id="${esc(row.id)}">Add payment</button>` : ''}</td></tr>`;
     }).join('') : '<tr><td colspan="9" class="empty-cell">No invoices match your access or filters.</td></tr>';
     if (!rows.length && !invoices.length) $('invoice-body').innerHTML = '<tr><td colspan="9" class="empty-cell">No invoice has been created yet. An Admin or Account Admin must choose Create invoice on a confirmed order.</td></tr>';
     $('invoice-mobile-list').innerHTML = rows.length ? rows.map((row) => {
       const status = invoiceStatus(row);
-      return `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${esc(row.invoiceNumber || `INV-${row.orderNumber}`)}</strong>${statusBadge(status)}</div><p>${esc(row.customerSnapshot?.fullName)}<small>${esc(date(row.issuedAt))} · ${esc(row.orderNumber)}</small></p><div class="mobile-record-bottom"><b>${esc(cash(row.totalPaise))}</b><div class="mobile-record-actions"><button type="button" data-finance="preview" data-id="${esc(row.id)}">View</button><button type="button" data-finance="pdf" data-id="${esc(row.id)}">PDF</button><button type="button" data-finance="share" data-id="${esc(row.id)}">Share</button>${paymentsLoaded && status !== 'paid' && status !== 'in_process' && row.totalPaise > row.verifiedPaidPaise && (canVerify() || row.ownerUid === user?.uid) ? `<button type="button" data-finance="submit" data-id="${esc(row.id)}"><span aria-hidden="true">₹</span> Payment</button>` : ''}</div></div></article>`;
+      return `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${esc(row.invoiceNumber || `INV-${row.orderNumber}`)}</strong>${statusBadge(status)}</div><p>${esc(row.customerSnapshot?.fullName)}<small>${esc(date(row.issuedAt))} · ${esc(row.orderNumber)}</small></p><div class="mobile-record-bottom"><b>${esc(cash(row.totalPaise))}</b><div class="mobile-record-actions"><button type="button" data-finance="preview" data-id="${esc(row.id)}">View</button><button type="button" data-finance="pdf" data-id="${esc(row.id)}">PDF</button><button type="button" data-finance="share" data-id="${esc(row.id)}">Share</button>${paymentsLoaded && !['paid', 'in_process', 'cancelled', 'overpaid'].includes(status) && row.totalPaise > row.verifiedPaidPaise && (canVerify() || row.ownerUid === user?.uid) ? `<button type="button" data-finance="submit" data-id="${esc(row.id)}"><span aria-hidden="true">₹</span> Payment</button>` : ''}</div></div></article>`;
     }).join('') : '<p class="mobile-record-empty">No invoices match the current filters.</p>';
+    if (profile?.role === 'admin') {
+      for (const containerId of ['invoice-body', 'invoice-mobile-list']) {
+        $(containerId).querySelectorAll?.('[data-finance="preview"]').forEach((button) => {
+          const row = rows.find((entry) => entry.id === button.dataset.id);
+          if (row && invoiceStatus(row) !== 'cancelled') button.insertAdjacentHTML('beforebegin', `<button type="button" data-finance="customerName" data-id="${esc(row.id)}">Edit Customer Name</button>`);
+        });
+      }
+    }
   }
   function renderPayments() {
     const rows = matching('payment');
@@ -139,6 +148,7 @@ export function initFinanceUi({ db, functions }) {
     }
     if (current !== revision) return;
     renderInvoices(); renderPayments();
+    if (document.querySelector?.('[data-page].is-active')?.dataset.page === 'payments') document.dispatchEvent(new Event('oms:payment-changed'));
     $('invoice-message').textContent = invoiceResult.status === 'rejected' ? `Could not load invoices: ${message(invoiceResult.reason)}`
       : paymentResult.status === 'rejected' ? 'Could not check payment submissions. Refresh before adding a payment.' : '';
     $('payment-message').textContent = paymentResult.status === 'rejected' ? `Could not load payments: ${message(paymentResult.reason)}` : '';
@@ -151,11 +161,17 @@ export function initFinanceUi({ db, functions }) {
     if (kind === 'submit') paymentOperationId = uniqueId();
     const payment = payments.find((row) => row.id === id);
     const outstanding = invoice ? (invoice.totalPaise - invoice.verifiedPaidPaise) / 100 : 0;
+    $('finance-dialog').classList.toggle('payment-entry-dialog', kind === 'submit');
+    $('finance-save').textContent = kind === 'submit' ? 'Submit for Verification' : 'Save';
     $('finance-dialog-title').textContent = ({ submit: 'Submit payment', correct: 'Correct payment mode', reject: 'Reject payment', reverse: 'Reverse verified payment' })[kind];
-    $('finance-fields').innerHTML = kind === 'submit' ? `<p>Outstanding: <strong>${esc(cash(invoice.totalPaise - invoice.verifiedPaidPaise))}</strong>. Submissions count only after staff verification.</p><label class="ops-field">Amount (₹)<input name="amount" type="number" min="0.01" step="0.01" max="${outstanding.toFixed(2)}" value="${outstanding.toFixed(2)}" required></label><label class="ops-field">Mode<select name="mode"><option value="cash">Cash</option><option value="upi">UPI</option><option value="bank_transfer">Bank transfer</option></select></label><label class="ops-field">Transaction reference<input name="reference" maxlength="100" placeholder="Cash uses -"></label>` : kind === 'correct' ? `<p>Current mode: ${esc(payment?.mode)} · Reference: ${esc(payment?.transactionNumber)}</p><label class="ops-field">New mode<select name="mode"><option value="cash">Cash</option><option value="upi">UPI</option><option value="bank_transfer">Bank transfer</option></select></label><label class="ops-field">New transaction reference<input name="reference" maxlength="100" placeholder="Cash uses -"></label><label class="ops-field">Reason<textarea name="reason" maxlength="500" required></textarea></label>` : '<label class="ops-field">Reason<textarea name="reason" maxlength="500" required></textarea></label>';
+    $('finance-fields').innerHTML = kind === 'submit' ? `${paymentInvoiceSummary(invoice)}<div class="payment-form-grid"><label class="ops-field">Payment amount (₹)<input name="amount" type="number" min="0.01" step="0.01" max="${outstanding.toFixed(2)}" value="${outstanding.toFixed(2)}" required></label><label class="ops-field">Payment method<select name="mode"><option value="cash">Cash</option><option value="upi">UPI</option><option value="bank_transfer">Online</option></select></label></div><label class="ops-field payment-reference-field">Transaction ID<input name="reference" maxlength="100" placeholder="Enter transaction ID"></label><p class="payment-form-note">Payments count toward the balance after verification.</p>` : kind === 'correct' ? `<p>Current mode: ${esc(payment?.mode)} · Reference: ${esc(payment?.transactionNumber)}</p><label class="ops-field">New mode<select name="mode"><option value="cash">Cash</option><option value="upi">UPI</option><option value="bank_transfer">Bank transfer</option></select></label><label class="ops-field">New transaction reference<input name="reference" maxlength="100" placeholder="Cash uses -"></label><label class="ops-field">Reason<textarea name="reason" maxlength="500" required></textarea></label>` : '<label class="ops-field">Reason<textarea name="reason" maxlength="500" required></textarea></label>';
+    if (kind === 'customerName') {
+      $('finance-dialog-title').textContent = 'Update Customer Name';
+      $('finance-fields').innerHTML = `<p>Invoice <strong>${esc(invoice.invoiceNumber)}</strong>. Only this invoice and linked order name will change.</p><label class="ops-field">Customer name<input name="fullName" maxlength="120" value="${esc(invoice.customerSnapshot?.fullName)}" required></label>`;
+    }
     $('finance-dialog').showModal();
     if (kind === 'submit') {
-      $('finance-fields').insertAdjacentHTML('beforeend', '<label class="ops-field">Payment proof (JPG, JPEG, PNG or PDF; max 5 MB)<input id="payment-proof" type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf"></label><div id="payment-proof-info" class="payment-proof-info" role="status"></div><div id="payment-proof-preview"></div><button id="payment-proof-remove" class="button button-outline" type="button" hidden>Remove</button>');
+      $('finance-fields').insertAdjacentHTML('beforeend', `${paymentUpload({ id: 'payment-proof' })}<div id="payment-proof-info" class="payment-proof-info" role="status"></div><div id="payment-proof-preview"></div><button id="payment-proof-remove" class="button button-outline" type="button" hidden>Remove</button><label class="ops-field">Remarks <small>Optional</small><textarea name="remarks" maxlength="1000" rows="3" placeholder="Add a note about this payment"></textarea></label><div id="payment-submit-summary" class="payment-submit-summary" role="status"></div>`);
       $('payment-proof').onchange = (event) => {
         if (uploadedReceipt) paymentOperationId = uniqueId();
         clearReceipt();
@@ -170,7 +186,9 @@ export function initFinanceUi({ db, functions }) {
       };
       $('payment-proof-remove').onclick = () => { if (uploadedReceipt) paymentOperationId = uniqueId(); clearReceipt(); $('payment-proof').value = ''; $('payment-proof-info').textContent = ''; $('payment-proof-preview').replaceChildren(); $('payment-proof-remove').hidden = true; };
       const mode = $('finance-fields').querySelector('[name="mode"]');
-      const updateRequirement = () => { $('payment-proof').required = mode.value !== 'cash'; };
+      const updateRequirement = () => { const online = mode.value !== 'cash'; $('payment-proof').required = online; const reference = $('finance-fields').querySelector('[name="reference"]'); reference.required = online; reference.closest('label').hidden = !online; updateSummary(); };
+      const updateSummary = () => { const amount = Number($('finance-fields').querySelector('[name="amount"]').value || 0); $('payment-submit-summary').textContent = `Submit ${cash(Math.round(amount * 100))} by ${{ cash: 'Cash', upi: 'UPI', bank_transfer: 'Online' }[mode.value]} for verification.`; };
+      $('finance-fields').querySelector('[name="amount"]').addEventListener('input', updateSummary);
       mode.addEventListener('change', updateRequirement); updateRequirement();
     }
   }
@@ -178,6 +196,12 @@ export function initFinanceUi({ db, functions }) {
     try {
       if (['verify', 'reject', 'reverse', 'correct'].includes(kind) && !canVerify()) throw new Error('Access denied: payment review requires a privileged OMS role.');
       if (kind === 'order') { document.querySelector('[data-page="orders"]')?.click(); $('order-search').value = id; $('order-search').dispatchEvent(new Event('input')); return; }
+      if (kind === 'customerName') {
+        if (profile?.role !== 'admin') throw new Error('Only Admin may update an invoice customer name.');
+        const invoice = invoices.find((row) => row.id === id);
+        if (!invoice || invoiceStatus(invoice) === 'cancelled') throw new Error('An active invoice is required.');
+        openDialog('customerName', id); return;
+      }
       if (kind === 'receipt') {
         const row = payments.find((payment) => payment.id === id);
         if (!row?.attachment) throw new Error('No receipt is attached.');
@@ -255,6 +279,18 @@ export function initFinanceUi({ db, functions }) {
     $('payment-next').onclick = () => { paymentPage++; renderPayments(); };
   }
   const paymentView = $('payments-view');
+  document.addEventListener('oms:create-single-payment', () => {
+    const available = invoices.filter((row) => row.customerId && row.totalPaise > row.verifiedPaidPaise && !['paid', 'in_process', 'cancelled', 'overpaid'].includes(invoiceStatus(row)) && (canVerify() || row.ownerUid === user?.uid));
+    const dialog = document.createElement('dialog'); dialog.className = 'app-dialog payment-picker-dialog';
+    dialog.innerHTML = `<div class="dialog-header"><h2>Create Payment</h2><button type="button" data-close class="icon-button" aria-label="Close">×</button></div><div class="payment-picker-body"><label class="ops-field" for="single-payment-search">Select Invoice<input id="single-payment-search" type="search" placeholder="Search invoice number or customer" autocomplete="off"></label><label class="ops-field" for="single-payment-invoice">Available invoices<select id="single-payment-invoice"><option value="">Choose an invoice</option>${available.map((row) => `<option value="${esc(row.id)}">${esc(row.invoiceNumber)} · ${esc(row.customerSnapshot?.fullName)} · ${esc(cash(row.totalPaise - row.verifiedPaidPaise))} due</option>`).join('')}</select></label><div id="single-payment-summary" aria-live="polite"></div>${available.length ? '' : '<p class="payment-form-note">No payable invoices are available.</p>'}</div><div class="dialog-actions"><button type="button" data-continue class="button button-primary" disabled>Continue</button></div>`;
+    dialog.querySelector('[data-close]').onclick = () => dialog.close();
+    const select = dialog.querySelector('#single-payment-invoice');
+    dialog.querySelector('#single-payment-search').oninput = (event) => { const term = event.target.value.trim().toLowerCase(); select.innerHTML = `<option value="">Choose an invoice</option>${available.filter((row) => `${row.invoiceNumber} ${row.customerSnapshot?.fullName || ''}`.toLowerCase().includes(term)).map((row) => `<option value="${esc(row.id)}">${esc(row.invoiceNumber)} · ${esc(row.customerSnapshot?.fullName)} · ${esc(cash(row.totalPaise - row.verifiedPaidPaise))} due</option>`).join('')}`; select.dispatchEvent(new Event('change')); };
+    select.onchange = () => { const invoice = available.find((row) => row.id === select.value); dialog.querySelector('#single-payment-summary').innerHTML = paymentInvoiceSummary(invoice); dialog.querySelector('[data-continue]').disabled = !invoice; };
+    dialog.querySelector('[data-continue]').onclick = () => { const id = select.value; if (!available.some((row) => row.id === id)) return; dialog.close(); openDialog('submit', id); };
+    dialog.onclose = () => dialog.remove(); document.body.append(dialog); dialog.showModal();
+  });
+  document.addEventListener('oms:single-payment-action', (event) => act(event.detail.kind, event.detail.id));
   let activityPage = 1, activityCursors = [null], activityRevision = 0, activityRows = [], activityHasMore = false;
   const activityMounted = Boolean(paymentView?.insertAdjacentHTML);
   const activityFilters = () => Object.fromEntries(['actor', 'customer', 'order', 'invoice', 'type', 'from', 'to'].map((field) => [field, $(`payment-activity-${field}`).value.trim()]));
@@ -322,7 +358,13 @@ export function initFinanceUi({ db, functions }) {
     $('finance-save').disabled = true; $('finance-save').textContent = 'Saving…'; $('finance-error').hidden = true;
     try {
       const fields = new FormData(event.currentTarget);
-      if (action === 'submit') {
+      if (action === 'customerName') {
+        const invoice = invoices.find((row) => row.id === target);
+        const fullName = String(fields.get('fullName') || '').trim();
+        if (!invoice || !fullName) throw new Error('Invoice and customer name are required.');
+        if (!confirm(`Update customer name on ${invoice.invoiceNumber} from ${invoice.customerSnapshot?.fullName || ''} to ${fullName}?`)) return;
+        await callOperation(functions, 'updateInvoiceCustomerName', { invoiceId: target, fullName });
+      } else if (action === 'submit') {
         const amount = Number(fields.get('amount')); if (!Number.isFinite(amount) || amount <= 0 || Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-7) throw new Error('Enter a positive amount with at most two decimal places.');
         const invoice = invoices.find((row) => row.id === target);
         if (!invoice || Math.round(amount * 100) > invoice.totalPaise - invoice.verifiedPaidPaise) throw new Error('Payment exceeds the current outstanding balance. Refresh the invoice and try again.');
@@ -340,7 +382,7 @@ export function initFinanceUi({ db, functions }) {
           } finally { globalThis.omsLoading?.stop(token); receiptUpload = null; }
         }
         attachment = uploadedReceipt;
-        await callOperation(functions, 'submitPayment', { invoiceId: target, amountPaise: Math.round(amount * 100), mode: fields.get('mode'), transactionNumber: fields.get('mode') === 'cash' ? '-' : fields.get('reference'), operationId: paymentOperationId, attachment });
+        await callOperation(functions, 'submitPayment', { invoiceId: target, amountPaise: Math.round(amount * 100), mode: fields.get('mode'), transactionNumber: fields.get('mode') === 'cash' ? '-' : fields.get('reference'), operationId: paymentOperationId, attachment, remarks: String(fields.get('remarks') || '').trim() });
         invoice.paymentStatus = 'in_process';
         renderInvoices();
       } else if (action === 'correct') {
@@ -350,8 +392,8 @@ export function initFinanceUi({ db, functions }) {
       else await callOperation(functions, action === 'reject' ? 'reviewPayment' : 'reversePayment', action === 'reject' ? { paymentId: target, decision: 'rejected', reason: fields.get('reason') } : { paymentId: target, reason: fields.get('reason') });
       paymentOperationId = '';
       clearReceipt();
-      $('finance-dialog').close(); showToast(action === 'submit' ? 'Payment submitted for verification.' : 'Payment history updated.'); await refresh(); await loadPaymentActivity();
-    } catch (error) { $('finance-error').textContent = message(error); $('finance-error').hidden = false; } finally { $('finance-save').disabled = false; $('finance-save').textContent = 'Save'; }
+      $('finance-dialog').close(); showToast(action === 'submit' ? 'Payment submitted for verification.' : action === 'customerName' ? 'Invoice customer name updated.' : 'Payment history updated.'); await refresh(); if (action !== 'customerName') await loadPaymentActivity();
+    } catch (error) { $('finance-error').textContent = message(error); $('finance-error').hidden = false; } finally { $('finance-save').disabled = false; $('finance-save').textContent = action === 'submit' ? 'Submit for Verification' : 'Save'; }
   });
   document.addEventListener('oms:pagechange', (event) => { if (!['invoices', 'payments'].includes(event.detail.page)) stopRecordLoad(); if (event.detail.page !== 'payments') stopActivityLoad(); if (['invoices', 'payments'].includes(event.detail.page)) refresh(); if (event.detail.page === 'payments') loadPaymentActivity(); });
   return { setSession(nextUser, nextProfile) { revision++; activityRevision++; stopRecordLoad(); stopActivityLoad(); user = nextUser; profile = nextProfile; invoices = []; payments = []; paymentsLoaded = false; resolvedNames = new Map(); paymentPage = 1; activityRows = []; activityPage = 1; activityCursors = [null]; if (user && profile) refresh(); else { $('invoice-body').innerHTML = ''; $('payment-body').innerHTML = ''; renderPaymentActivity(); } } };

@@ -30,9 +30,11 @@ test('report lists show the OMS loader instead of a loading records message', as
 
 test('a missing dashboard index preserves other cards without a visible warning or link', async () => {
   const elements = new Map();
+  const placements = [];
+  let userAnnouncements = [{ title: 'Notice', body: 'Long message for everyone', expiresOn: '2026-11-01' }];
   let targetReads = 0, stockReads = 0, activityReads = 0, announcementReads = 0;
   const element = (id) => {
-    if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', textContent: '', hidden: false, children: [], addEventListener() {}, replaceChildren() { this.children = []; }, append(child) { this.children.push(child); } });
+    if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', textContent: '', hidden: false, children: [], classList: { toggle() {} }, addEventListener() {}, replaceChildren() { this.children = []; }, append(child) { this.children.push(child); }, insertBefore(node, next) { placements.push([node, next]); } });
     return elements.get(id);
   };
   const missingIndex = Object.assign(new Error('The query requires an index. https://console.firebase.google.com/v1/r/project/example/firestore/indexes?create_composite=example'), { code: 'failed-precondition' });
@@ -44,7 +46,7 @@ test('a missing dashboard index preserves other cards without a visible warning 
     dashboardTargetKg: async () => { targetReads++; return 20; },
     dashboardStockKg: async () => { stockReads++; throw missingIndex; },
     listInvoices: async () => [{ paymentStatus: 'unpaid' }, { paymentStatus: 'paid' }],
-    recentActivity: async () => { activityReads++; return []; }, activeAnnouncements: async () => { announcementReads++; throw missingIndex; },
+    recentActivity: async () => { activityReads++; return []; }, activeAnnouncements: async (_db, role) => { announcementReads++; if (role === 'user') return userAnnouncements; throw missingIndex; },
     currentTargets: async () => [], targetAchievement: async () => 0,
     console: { warn() {} }, Intl, Date, Set, Object, Promise, Number, String,
   };
@@ -72,8 +74,16 @@ test('a missing dashboard index preserves other cards without a visible warning 
   assert.doesNotMatch(element('dashboard-cards').innerHTML, /Target Achievement|Available Stock|Total Selling|KG/);
   assert.equal((element('dashboard-cards').innerHTML.match(/class="card stat-card/g) || []).length, 1);
   assert.equal(element('dashboard-activity-panel').hidden, true);
+  assert.equal(element('dashboard-announcements-panel').hidden, false);
+  assert.match(element('dashboard-announcements').innerHTML, /Notice[\s\S]*Long message for everyone[\s\S]*2026-11-01/);
+  assert.equal(placements.at(-1)[1], element('dashboard-cards'));
+  assert.deepEqual([targetReads, stockReads, activityReads, announcementReads], [priorReads[0], priorReads[1], priorReads[2], priorReads[3] + 1]);
+  userAnnouncements = [];
+  await element('dashboard-refresh').onclick();
   assert.equal(element('dashboard-announcements-panel').hidden, true);
-  assert.deepEqual([targetReads, stockReads, activityReads, announcementReads], [priorReads[0], priorReads[1], priorReads[2], priorReads[3]]);
+  await ui.setSession({ uid: 'test-admin' }, { role: 'admin', fullName: 'Test Admin' });
+  await element('dashboard-refresh').onclick();
+  assert.equal(placements.at(-1)[1], element('dashboard-activity-panel'));
   assert.equal(elements.has('dashboard-priority'), false);
 });
 

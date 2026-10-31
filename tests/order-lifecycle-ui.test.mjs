@@ -9,18 +9,24 @@ import { actionLabel, activityDate, changeSummary, references } from '../js/acti
 test('order form shows trusted availability; financial locks disable edit and archive', async () => {
   const nodes = new Map(), calls = [], exports = [];
   let invoicePresent = true;
+  let stockStatus = 'low_stock';
   const el = id => { if (!nodes.has(id)) nodes.set(id, { value: '', innerHTML: '', textContent: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, querySelectorAll() { return []; }, showModal() {}, close() {} }); return nodes.get(id); };
   const order = { id: 'orderA', orderNumber: 'SS-1', customerId: 'customerA', customerSnapshot: { fullName: 'Asha' }, ownerUid: 'userA', assignedUserId: 'userA', status: 'confirmed', orderDate: '2026-10-10', lines: [{ kind: 'item', productId: 'itemA', quantityQty: 1000, unitPricePaise: 10000, lineTotalPaise: 10000, itemSnapshot: { name: 'Sweet', unitSymbol: 'kg' } }], stockDeductions: [{ itemId: 'itemA', quantityQty: 1000 }], subtotal: 10000, grandTotal: 10000 };
   const activity = [{ type: 'order.status_changed', orderNumber: 'SS-2026-000051', actorName: 'A Long Actor Name', customerName: 'A Long Customer Name', changedFields: { status: { before: 'draft', after: 'confirmed' } }, outcome: 'success', at: 1791710000000 }];
-  const context = { document: { getElementById: el, addEventListener() {}, querySelector() { return null; } }, isStaff, validateProfile, hasPermission, showToast() {}, listOrders: async () => [order], listCustomers: async () => [{ id: 'customerA', fullName: 'Asha', contact: '123' }], listMasterRecords: async () => [], listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'itemA', name: 'Sweet', active: true, defaultUnitId: 'kg', defaultSellingPrice: 100 }] : [], listInvoices: async () => invoicePresent ? [{ orderId: 'orderA' }] : [], getOrderTaking: async () => true, listActivity: async () => ({ rows: activity, cursor: null, hasMore: false }), callOperation: async (_fn, name) => { calls.push(name); if (name === 'getOrderStock') return { items: [{ itemId: 'itemA', availableQty: 2500, onHandQty: 2500, reservedQty: 0, unit: 'kg', status: 'low_stock' }] }; throw new Error('Mutation not expected.'); }, downloadXlsx: async (_name, sheets) => { exports.push(sheets); } };
+  const context = { document: { getElementById: el, addEventListener() {}, querySelector() { return null; } }, isStaff, validateProfile, hasPermission, showToast() {}, listOrders: async () => [order], listCustomers: async () => [{ id: 'customerA', fullName: 'Asha', contact: '123' }], listMasterRecords: async () => [], listOrderProducts: async (_db, type) => type === 'items' ? [{ id: 'itemA', name: 'Sweet', active: true, defaultUnitId: 'kg', defaultSellingPrice: 100 }] : [], listInvoices: async () => invoicePresent ? [{ orderId: 'orderA' }] : [], getOrderTaking: async () => true, listActivity: async () => ({ rows: activity, cursor: null, hasMore: false }), callOperation: async (_fn, name) => { calls.push(name); if (name === 'getOrderStock') return { items: [{ itemId: 'itemA', availableQty: 2500, onHandQty: 2500, reservedQty: 0, unit: 'kg', status: stockStatus }] }; throw new Error('Mutation not expected.'); }, downloadXlsx: async (_name, sheets) => { exports.push(sheets); } };
   const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
   vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, Object.assign(context, { availableOrderUnits, itemUnitPrice, orderLineUnitLabel, actionLabel, activityDate, changeSummary, references }));
   const ui = context.init({ db: {}, functions: {}, auth: {} });
   ui.setSession({ uid: 'userA' }, { role: 'user', active: true, fullName: 'User A' });
   await el('order-refresh').listeners.click();
   el('order-new').listeners.click();
-  assert.match(el('order-fields').innerHTML, /Available: 2\.5 kg/);
-  assert.match(el('order-fields').innerHTML, /Sweet — ₹100\.00/);
+  assert.match(el('order-fields').innerHTML, /<select name="productId"><\/select>/);
+  assert.doesNotMatch(el('order-fields').innerHTML, /Sweet — ₹100\.00/);
+  assert.doesNotMatch(el('order-product-list').innerHTML, /Sweet/);
+  stockStatus = 'available'; await el('order-refresh').listeners.click();
+  assert.match(el('order-product-list').innerHTML, /Sweet/);
+  stockStatus = 'blocked'; await el('order-refresh').listeners.click();
+  assert.doesNotMatch(el('order-product-list').innerHTML, /Sweet/);
   assert.doesNotMatch(el('order-fields').innerHTML, /On hand:|Reserved:|Low stock/);
   assert.doesNotMatch(el('order-body').innerHTML, /data-action="editOrder"/);
   assert.match(el('order-body').innerHTML, /data-action="archiveOrder"[^>]*disabled/);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { hasPermission, isStaff } from '../js/permissions.js';
+import { paymentInvoiceSummary, paymentUpload } from '../js/payment-form-ui.js';
 
 test('payment status displays resolved names, safe fallbacks and names in export', async () => {
   const elements = new Map(), exports = [];
@@ -125,13 +126,13 @@ test('pending payment shows In process, hides Add payment, and collection cards 
 test('payment form starts with the outstanding amount and reports a failed save', async () => {
   const elements = new Map(), calls = [];
   const element = id => {
-    if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', textContent: '', hidden: true, disabled: false, listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; }, close() {}, showModal() {} });
+    if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', textContent: '', hidden: true, disabled: false, listeners: {}, classList: { toggle() {} }, addEventListener(type, fn) { this.listeners[type] = fn; }, close() {}, showModal() {} });
     return elements.get(id);
   };
   const invoice = { id: 'orderA', invoiceNumber: 'INV-SS-1', orderNumber: 'SS-1', ownerUid: 'userA', customerSnapshot: { fullName: 'Asha' }, totalPaise: 10000, verifiedPaidPaise: 2500, paymentStatus: 'partially_paid' };
   let rejectSave;
   const context = {
-    document: { getElementById: element, addEventListener() {} }, uniqueId: () => 'request-1', isStaff, hasPermission, showToast() {},
+    document: { getElementById: element, addEventListener() {} }, uniqueId: () => 'request-1', isStaff, hasPermission, paymentInvoiceSummary, paymentUpload, showToast() {},
     listInvoices: async () => [invoice], listPayments: async () => [],
     callOperation: async (_functions, name, data) => { calls.push({ name, data }); return new Promise((_resolve, reject) => { rejectSave = reject; }); },
     FormData: class { get(name) { return { amount: '75.00', mode: 'cash', reference: '' }[name]; } },
@@ -157,7 +158,7 @@ test('payment form starts with the outstanding amount and reports a failed save'
   assert.match(element('finance-error').textContent, /backend is unavailable/);
   assert.equal(element('finance-error').hidden, false);
   assert.equal(element('finance-save').disabled, false);
-  assert.equal(element('finance-save').textContent, 'Save');
+  assert.equal(element('finance-save').textContent, 'Submit for Verification');
 
   element('finance-form').listeners.invalid({ target: { name: 'amount' } });
   assert.match(element('finance-error').textContent, /Enter an amount greater than zero/);

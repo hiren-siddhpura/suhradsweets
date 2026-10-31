@@ -406,7 +406,7 @@ test('dashboard KG data layer returns authorized sales and item-wise sellable st
   });
   const user = dbFor('userA'), admin = dbFor('adminA');
   const own = await dashboardOrderKg(user, 'user', 'userA', '2026-10-10', '2026-10-10');
-  assert.equal(own.orderCount, 1); assert.equal(own.totalKg, 2.5);
+  assert.equal(own.orderCount, 2); assert.equal(own.totalKg, 2.5);
   const all = await dashboardOrderKg(admin, 'admin', 'adminA', '2026-10-10', '2026-10-10');
   assert.equal(all.orderCount, 2); assert.equal(all.totalKg, 7.5);
   const stock = await dashboardStockKg(admin);

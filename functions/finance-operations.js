@@ -71,6 +71,7 @@ async function actor(db, tx, uid) {
 }
 
 function invoiceBalance(invoice) {
+  if (invoice.status === 'cancelled' || invoice.paymentStatus === 'cancelled') fail('Cancelled invoices cannot receive payments. Resolve any received amount separately.');
   if (!validAmount(invoice.totalPaise) || !money(invoice.verifiedPaidPaise) || invoice.verifiedPaidPaise > invoice.totalPaise) fail('Invoice balance is invalid. Contact an administrator.');
   return invoice.totalPaise - invoice.verifiedPaidPaise;
 }
@@ -82,6 +83,8 @@ async function hasUnverifiedPayment(tx, db, invoiceId, exceptPaymentId = '') {
 
 export async function submitPayment(db, uid, input) {
   if (!validId(input?.invoiceId) || !validAmount(input.amountPaise) || !['cash', 'upi', 'bank_transfer'].includes(input.mode)) fail('Choose an invoice, a positive amount and a valid payment mode.');
+  if (input.remarks !== undefined && (typeof input.remarks !== 'string' || input.remarks.length > 1000)) fail('Payment remarks must be at most 1000 characters.');
+  const remarks = String(input.remarks || '').trim();
   const online = input.mode !== 'cash';
   const reference = referenceFor(input.mode, input.transactionNumber);
   if (input.operationId !== undefined && !validId(input.operationId)) fail('Invalid payment request ID.');
@@ -95,7 +98,7 @@ export async function submitPayment(db, uid, input) {
     const prior = await tx.get(paymentRef);
     if (prior.exists) {
       const saved = prior.data();
-      if (saved.submittedBy !== uid || saved.invoiceId !== input.invoiceId || saved.amountPaise !== input.amountPaise || saved.mode !== input.mode || saved.transactionNumber !== reference || saved.attachment?.path !== attachment?.path) fail('Payment request ID was already used for different details.');
+      if (saved.submittedBy !== uid || saved.invoiceId !== input.invoiceId || saved.amountPaise !== input.amountPaise || saved.mode !== input.mode || saved.transactionNumber !== reference || saved.attachment?.path !== attachment?.path || String(saved.remarks || '') !== remarks) fail('Payment request ID was already used for different details.');
       return { paymentId: paymentRef.id, alreadySubmitted: true };
     }
     const invoiceSnap = await tx.get(invoiceRef);
@@ -109,7 +112,7 @@ export async function submitPayment(db, uid, input) {
     if (referenceRef && (await tx.get(referenceRef)).exists) fail('This online transaction reference has already been submitted.');
     if (invoice.paymentStatus === 'in_process' || await hasUnverifiedPayment(tx, db, invoiceRef.id)) fail('A payment is already in process for this invoice. Wait for staff review.');
     if (referenceRef) tx.create(referenceRef, { paymentId: paymentRef.id, reference, createdAt: FieldValue.serverTimestamp() });
-    const payment = { attachment, invoiceId: invoiceRef.id, invoiceNumber: invoice.invoiceNumber, orderId: invoice.orderId, orderNumber: invoice.orderNumber, ownerUid: invoice.ownerUid, customerId: invoice.customerId, customerSnapshot: invoice.customerSnapshot, amountPaise: input.amountPaise, mode: input.mode, transactionNumber: reference, submittedBy: uid, submittedByName: identity.name, submittedAt: FieldValue.serverTimestamp(), verificationStatus: 'unverified', verifiedBy: null, verifiedByName: null, verifiedAt: null, receivedBy: null, reversalId: null };
+    const payment = { attachment, invoiceId: invoiceRef.id, invoiceNumber: invoice.invoiceNumber, orderId: invoice.orderId, orderNumber: invoice.orderNumber, ownerUid: invoice.ownerUid, customerId: invoice.customerId, customerSnapshot: invoice.customerSnapshot, amountPaise: input.amountPaise, mode: input.mode, transactionNumber: reference, remarks, submittedBy: uid, submittedByName: identity.name, submittedAt: FieldValue.serverTimestamp(), verificationStatus: 'unverified', verifiedBy: null, verifiedByName: null, verifiedAt: null, receivedBy: null, reversalId: null };
     tx.create(paymentRef, payment);
     tx.update(invoiceRef, { paymentStatus: 'in_process' });
     paymentEvent(tx, db, 'payment.submitted', identity, paymentRef.id, payment, { amountPaise: { before: null, after: input.amountPaise }, mode: { before: null, after: input.mode }, invoiceStatus: { before: invoice.paymentStatus, after: 'in_process' } });
@@ -131,6 +134,7 @@ export async function reviewPayment(db, uid, input) {
     const invoiceSnap = await tx.get(invoiceRef);
     if (!invoiceSnap.exists || invoiceSnap.data().orderId !== payment.orderId || invoiceSnap.data().ownerUid !== payment.ownerUid) fail('Payment and invoice do not match.');
     const invoice = invoiceSnap.data();
+    if (invoice.status === 'cancelled') fail('Cancelled invoice payments require separate Admin resolution.');
     if (invoice.paymentStatus === 'paid') fail('Invoice is already paid. Review the payment history.');
     const otherPending = await hasUnverifiedPayment(tx, db, payment.invoiceId, paymentRef.id);
     let next = invoice.verifiedPaidPaise;
@@ -193,6 +197,7 @@ export async function reversePayment(db, uid, input) {
     const invoiceSnap = await tx.get(invoiceRef);
     if (!invoiceSnap.exists || invoiceSnap.data().orderId !== payment.orderId || invoiceSnap.data().ownerUid !== payment.ownerUid || invoiceSnap.data().verifiedPaidPaise < payment.amountPaise) fail('Invoice balance cannot be reconciled.');
     const invoice = invoiceSnap.data();
+    if (invoice.status === 'cancelled') fail('Cancelled invoice payments require separate Admin resolution.');
     const next = invoice.verifiedPaidPaise - payment.amountPaise;
     const nextStatus = await hasUnverifiedPayment(tx, db, payment.invoiceId) ? 'in_process' : next === 0 ? 'unpaid' : 'partial';
     tx.create(reversalRef, { paymentId: paymentRef.id, invoiceId: payment.invoiceId, amountPaise: payment.amountPaise, reason: input.reason.trim(), actorUid: uid, at: FieldValue.serverTimestamp() });

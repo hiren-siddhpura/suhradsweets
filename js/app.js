@@ -4,6 +4,7 @@ import { firebaseErrorCode, profileReadErrorMessage } from './profile-error.js';
 import { initPasswordVisibilityToggle } from './password-visibility.js';
 import { initPwa } from './pwa.js';
 import { startLoading, stopLoading } from './loading.js';
+import { initMobileToolbars } from './mobile-toolbar.js';
 
 // Diagnostic fields are limited to mode, public project ID, category and Firebase error code.
 // Never log Auth users, profile data, passwords, credentials or raw Firebase error objects.
@@ -62,6 +63,7 @@ try {
     const reporting = initReportingUi(services);
     const boxReq = initBoxReq(services);
     const orderAnalytics = initOrderAnalytics(services);
+    initMobileToolbars();
     let authRevision = 0;
     let stopProfile = null;
     let profileTimer = null;

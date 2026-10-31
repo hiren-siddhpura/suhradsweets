@@ -22,8 +22,10 @@ export function invoicePdfModel(invoice, business = {}, payments = null) {
     reference: payment.mode === 'cash' ? '' : String(payment.transactionNumber || ''),
   })) : [];
   if (Array.isArray(payments) && verifiedPayments.reduce((sum, payment) => sum + payment.amountPaise, 0) !== verifiedPaidPaise) throw new Error('Invoice payments could not be reconciled. Refresh and contact an administrator.');
-  if (!Number.isSafeInteger(totalPaise) || !Number.isSafeInteger(verifiedPaidPaise) || verifiedPaidPaise < 0 || verifiedPaidPaise > totalPaise) throw new Error('Invoice balance is invalid.');
-  const status = ['paid', 'ready_to_mark_paid'].includes(invoice.paymentStatus) && verifiedPaidPaise === totalPaise ? 'Paid'
+  if (!Number.isSafeInteger(totalPaise) || !Number.isSafeInteger(verifiedPaidPaise) || verifiedPaidPaise < 0) throw new Error('Invoice balance is invalid.');
+  const status = invoice.status === 'cancelled' || invoice.paymentStatus === 'cancelled' ? 'Cancelled'
+    : verifiedPaidPaise > totalPaise ? 'Overpaid / credit review'
+    : ['paid', 'ready_to_mark_paid'].includes(invoice.paymentStatus) && verifiedPaidPaise === totalPaise ? 'Paid'
     : verifiedPaidPaise >= totalPaise && totalPaise > 0 ? 'Payment in process'
       : verifiedPaidPaise > 0 ? 'Partially Paid'
         : invoice.paymentStatus === 'in_process' ? 'Payment in process' : 'Unpaid';
@@ -42,7 +44,7 @@ export function invoicePreviewHtml(invoice, business = {}, payments = null) {
   const e = escapeHtml;
   return `<article class="invoice-sheet">
     <header class="invoice-sheet-header"><div class="invoice-brand"><img class="invoice-sheet-logo" src="./logo/suhradsweets.png" alt="Suhrad Sweets"><strong class="invoice-business-name" lang="gu">${invoiceBrandText}</strong></div><div class="invoice-heading"><h2>INVOICE</h2></div></header>
-    <div class="invoice-detail-grid"><section class="invoice-card"><span class="invoice-card-icon" aria-hidden="true">●</span><div><h3>Bill To</h3><strong>${e(model.customer.name)}</strong>${[model.customer.contact, model.customer.address, model.customer.area].filter(Boolean).map((value) => `<p>${e(value)}</p>`).join('')}</div></section><section class="invoice-card"><span class="invoice-card-icon" aria-hidden="true">▤</span><div><h3>Invoice Details</h3><dl><dt>Invoice No.</dt><dd>${e(model.invoiceNumber)}</dd><dt>Invoice Date</dt><dd>${e(model.date)}</dd><dt>Order No.</dt><dd>${e(model.orderNumber)}</dd>${model.business.fssaiLicenseNo ? `<dt>FSSAI License No.</dt><dd>${e(model.business.fssaiLicenseNo)}</dd>` : ''}</dl></div></section></div>
+    <div class="invoice-detail-grid"><section class="invoice-card"><span class="invoice-card-icon" aria-hidden="true">●</span><div><h3>Bill To</h3><strong>${e(model.customer.name)}</strong>${[model.customer.contact, model.customer.address, model.customer.area].filter(Boolean).map((value) => `<p>${e(value)}</p>`).join('')}</div></section><section class="invoice-card"><span class="invoice-card-icon" aria-hidden="true">▤</span><div><h3>Invoice Details</h3><dl><dt>Invoice No.</dt><dd>${e(model.invoiceNumber)}</dd><dt>Invoice Date</dt><dd>${e(model.date)}</dd><dt>Order No.</dt><dd>${e(model.orderNumber)}</dd><dt>Status</dt><dd>${e(model.status)}</dd>${model.business.fssaiLicenseNo ? `<dt>FSSAI License No.</dt><dd>${e(model.business.fssaiLicenseNo)}</dd>` : ''}</dl></div></section></div>
     <table class="invoice-lines"><thead><tr><th>#</th><th>Item Description</th><th>Qty</th><th>Unit</th><th>Rate (INR)</th><th>Amount (INR)</th></tr></thead><tbody>${model.lines.map((line, index) => `<tr><td>${index + 1}</td><td>${e(line.description)}</td><td>${e((line.quantityQty / 1000).toLocaleString('en-IN', { maximumFractionDigits: 3 }))}</td><td>${e(line.unit)}</td><td>${e(money(line.unitPricePaise))}</td><td>${e(money(line.lineTotalPaise))}</td></tr>`).join('')}</tbody></table>
     <div class="invoice-totals"><div><span>Subtotal</span><strong>${e(money(model.subtotalPaise))}</strong></div><div class="invoice-grand"><span>Grand Total</span><strong>${e(money(model.totalPaise))}</strong></div></div>
     <footer><small>${invoiceFooterText}</small></footer>
@@ -112,7 +114,7 @@ function drawPage(ctx, model, logo, pageLines, pageIndex, pageCount) {
   ctx.font = '13px Arial';
   let customerY = 301;
   for (const value of [model.customer.contact, model.customer.address, model.customer.area].filter(Boolean)) customerY += wrapped(ctx, value, 108, customerY, 258, 17, 2) * 17;
-  const details = [['Invoice No.', model.invoiceNumber], ['Invoice Date', model.date], ['Order No.', model.orderNumber]];
+  const details = [['Invoice No.', model.invoiceNumber], ['Invoice Date', model.date], ['Order No.', model.orderNumber], ['Status', model.status]];
   if (model.business.fssaiLicenseNo) details.push(['FSSAI License No.', model.business.fssaiLicenseNo]);
   details.forEach(([label, value], index) => {
     const y = 278 + index * 23;

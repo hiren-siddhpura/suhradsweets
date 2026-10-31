@@ -22,13 +22,17 @@ export async function loadSheetJs() {
 }
 
 export async function downloadXlsx(name, sheets) {
-  const XLSX = await loadSheetJs();
-  const book = XLSX.utils.book_new();
-  for (const [title, rows] of sheets) {
-    const sheet = XLSX.utils.json_to_sheet(safeSpreadsheetRows(rows));
-    XLSX.utils.book_append_sheet(book, sheet, title.slice(0, 31));
+  try {
+    const XLSX = await loadSheetJs();
+    const book = XLSX.utils.book_new();
+    for (const [title, rows] of sheets) {
+      const sheet = XLSX.utils.json_to_sheet(safeSpreadsheetRows(rows));
+      XLSX.utils.book_append_sheet(book, sheet, title.slice(0, 31));
+    }
+    XLSX.writeFile(book, `suhrad-${name}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  } finally {
+    if (typeof Event !== 'undefined') globalThis.document?.dispatchEvent?.(new Event('oms:export-complete'));
   }
-  XLSX.writeFile(book, `suhrad-${name}-${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
 export async function analyticsXlsxBlob(workbook) {

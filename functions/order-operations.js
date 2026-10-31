@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { FieldValue } from 'firebase-admin/firestore';
-import { audit, fail, money, movement, qty, setStock, stockState, text, validDate, validId } from './operations.js';
+import { audit, fail, money, movement, orderStockRestriction, qty, setStock, stockState, text, validDate, validId } from './operations.js';
 
 const staffRole = (role) => role === 'admin' || role === 'account_admin';
 const orderUnitLabel = (unit) => {
@@ -32,18 +32,24 @@ async function actor(db, uid, tx) {
 }
 function requireStaff(user) { if (!staffRole(user.role)) fail('Access denied: operational staff access is required.'); }
 function canManage(user, order) { return staffRole(user.role) || order.ownerUid === user.uid; }
-function editableOrder(order) {
-  if (!['draft', 'confirmed'].includes(order.status)) fail('Only a Draft or Confirmed order can be edited.');
+function editableOrder(order, user) {
+  if (!['draft', 'confirmed'].includes(order.status) && !(user.role === 'admin' && order.invoiceId && ['in_preparation', 'ready'].includes(order.status))) fail('Only an active Draft or Confirmed order can be edited.');
   if (order.archivedAt) fail('Restore this archived order before editing it.');
 }
-async function financialLock(db, tx, orderId) {
-  if ((await tx.get(db.doc(`invoices/${orderId}`))).exists) fail('This order is locked because an invoice exists.');
-  if (!(await tx.get(db.collection('payments').where('orderId', '==', orderId).limit(1))).empty) fail('This order is locked because payment history exists.');
+async function financialLock(db, tx, orderId, user) {
+  const invoice = await tx.get(db.doc(`invoices/${orderId}`));
+  const payments = await tx.get(db.collection('payments').where('orderId', '==', orderId));
+  if (!invoice.exists && !payments.empty) fail('This order is locked because payment history exists.');
+  if (invoice.exists && user.role !== 'admin') fail('This order is locked because an invoice exists.');
+  if (payments.docs.some((entry) => entry.data().verificationStatus === 'unverified')) fail('Review pending payments before editing this invoice.');
+  if (invoice.exists && invoice.data().status === 'cancelled') fail('A cancelled invoice cannot be edited.');
+  return invoice;
 }
 export function orderEvent(tx, db, type, user, orderId, order, changedFields = {}, reason = '') {
   tx.create(db.collection('auditLogs').doc(), {
     type, actorUid: user.uid, actorName: user.name, ownerUid: order.ownerUid,
     referenceType: 'order', referenceId: orderId, orderNumber: order.orderNumber,
+    invoiceNumber: changedFields.invoiceNumber || (order.invoiceId ? `INV-${order.orderNumber}` : null),
     customerId: order.customerId, customerName: order.customerSnapshot?.fullName || '',
     detail: { changedFields, reason }, outcome: 'success', at: FieldValue.serverTimestamp(),
   });
@@ -225,8 +231,8 @@ export async function saveOrderDraft(db, uid, input) {
     if (user.role !== 'admin' && (input.lines.some((line) => line.kind === 'special') || old.exists && old.data().lines?.some((line) => line.kind === 'special'))) fail('Only Admin may create or edit a special order.');
     if (old.exists && !canManage(user, old.data())) fail('You may edit only your own order.');
     if (old.exists) {
-      editableOrder(old.data());
-      await financialLock(db, tx, orderId);
+      editableOrder(old.data(), user);
+      var linkedInvoice = await financialLock(db, tx, orderId, user);
       if (old.data().status === 'confirmed' && user.role !== 'admin') fail('Only Admin may edit a confirmed order.');
     }
     if (old.exists && newCustomer) fail('New customer must be selected when the order is created.');
@@ -257,7 +263,8 @@ export async function saveOrderDraft(db, uid, input) {
         const item = itemSnaps[index];
         const state = stockState(stockSnaps[index]);
         if (!item.exists || item.data().active !== true || !unitSnaps[index]?.exists) fail('An order component is inactive or unavailable.');
-        if (state.sellingBlocked) fail(`${item.data().name} is blocked from selling.`);
+        const restriction = orderStockRestriction(state);
+        if (user.role !== 'admin' && restriction.restricted) fail(`${item.data().name} is restricted from ordering because it is ${restriction.reason === 'blocked' ? 'blocked' : 'at or below its stock threshold'}.`);
         if (state.onHandQty - state.reservedQty < needed.get(itemId)) fail(`Insufficient available stock for ${item.data().name}.`);
         return { itemId, quantityQty: needed.get(itemId), itemSnapshot: { itemCode: item.data().itemCode, name: item.data().name, unitId: item.data().defaultUnitId, unitSymbol: unitSnaps[index].data().symbol }, state, stockRef: stockSnaps[index].ref };
       });
@@ -281,7 +288,8 @@ export async function saveOrderDraft(db, uid, input) {
       stockChanges = itemIds.map((itemId, index) => {
         const previousQty = oldNeeded.get(itemId) || 0, nextQty = newNeeded.get(itemId) || 0;
         const difference = previousQty - nextQty, state = stockState(stockSnaps[index]);
-        if (difference < 0 && (!itemSnaps[index].exists || itemSnaps[index].data().active !== true || state.sellingBlocked || state.onHandQty - state.reservedQty < -difference)) fail('Insufficient available stock or an item is blocked from selling.');
+        if (difference < 0 && (!itemSnaps[index].exists || itemSnaps[index].data().active !== true || state.onHandQty - state.reservedQty < -difference)) fail('Insufficient available stock or an inactive item.');
+        if (user.role !== 'admin' && newNeeded.has(itemId) && orderStockRestriction(state).restricted) fail('An order item is blocked or at or below its stock threshold.');
         if (difference !== 0 && !qty(state.onHandQty + difference)) fail('Stock correction exceeds allowed quantity.');
         const snapshot = revisedDeductions.find((part) => part.itemId === itemId)?.itemSnapshot || previous.find((part) => part.itemId === itemId)?.itemSnapshot;
         return { itemId, difference, state, stockRef: stockSnaps[index].ref, itemSnapshot: snapshot };
@@ -292,7 +300,7 @@ export async function saveOrderDraft(db, uid, input) {
     const sequence = old.exists ? null : (counter.exists ? counter.data().nextNumber : 1);
     if (!old.exists && (!Number.isSafeInteger(sequence) || sequence < 1 || sequence > 999999)) fail('Order number range is exhausted.');
     const orderNumber = old.exists ? old.data().orderNumber : `SS-${input.orderDate.slice(0, 4)}-${String(sequence).padStart(6, '0')}`;
-    const customerData = newCustomer || (old.exists && !staffRole(user.role) && customer.data().assignedUserId !== uid ? old.data().customerSnapshot : customer.data());
+    const customerData = newCustomer || (old.exists && linkedInvoice?.exists ? old.data().customerSnapshot : old.exists && !staffRole(user.role) && customer.data().assignedUserId !== uid ? old.data().customerSnapshot : customer.data());
     if (newCustomer) {
       tx.create(customerRef, { ...newCustomer, assignedUserId: owner.data().role === 'user' ? ownerUid : null, ownerUserIds: [ownerUid], orderLinks: { [ownerUid]: orderId }, createdBy: uid, createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
       tx.create(reservation, { customerId, createdAt: FieldValue.serverTimestamp() });
@@ -304,7 +312,7 @@ export async function saveOrderDraft(db, uid, input) {
     const revision = old.exists ? (old.data().editRevision || 0) + 1 : 0;
     for (const part of stockChanges) {
       setStock(tx, part.stockRef, part.state, part.state.onHandQty + part.difference, uid);
-      movement(tx, db, `order_edit_${orderId}_${revision}_${part.itemId}`, part.itemId, { ...part.itemSnapshot, defaultUnitId: part.itemSnapshot.unitId }, 'order_edit_adjustment', part.difference, part.state.onHandQty, 'order', orderId, 'Order edited before invoice', uid, ownerUid, user.name);
+      movement(tx, db, `order_edit_${orderId}_${revision}_${part.itemId}`, part.itemId, { ...part.itemSnapshot, defaultUnitId: part.itemSnapshot.unitId }, 'order_edit_adjustment', part.difference, part.state.onHandQty, 'order', orderId, linkedInvoice?.exists ? `Invoice ${linkedInvoice.data().invoiceNumber} revised` : 'Order edited before invoice', uid, ownerUid, user.name, linkedInvoice?.exists ? linkedInvoice.data().invoiceNumber : null);
     }
     if (!old.exists) for (const part of initialDeductions) {
       setStock(tx, part.stockRef, part.state, part.state.onHandQty - part.quantityQty, uid);
@@ -313,7 +321,14 @@ export async function saveOrderDraft(db, uid, input) {
     const values = { orderNumber, customerId, customerSnapshot: customerSnapshot(customerData), assignedUserId: old.exists ? old.data().assignedUserId || ownerUid : ownerUid, ownerUid, orderDate: input.orderDate, deliveryDate: input.deliveryDate || null, status: old.exists ? old.data().status : 'confirmed', lines, subtotal, grandTotal: subtotal, notes: clean(input.notes), editRevision: revision, ...(!old.exists ? { stockDeductions: initialDeductions.map(({ itemId, quantityQty, itemSnapshot }) => ({ itemId, quantityQty, itemSnapshot })), confirmedAt: FieldValue.serverTimestamp(), confirmedBy: uid } : revisedDeductions ? { stockDeductions: revisedDeductions } : {}), updatedAt: FieldValue.serverTimestamp(), updatedBy: uid };
     if (old.exists) tx.update(ref, values);
     else tx.create(ref, { ...values, createdBy: uid, createdAt: FieldValue.serverTimestamp() });
-    orderEvent(tx, db, old.exists ? 'order.edited' : 'order.created', user, orderId, values, orderChanges(old.exists ? old.data() : null, values));
+    if (linkedInvoice?.exists) {
+      const invoice = linkedInvoice.data();
+      const paid = invoice.verifiedPaidPaise || 0;
+      const paymentStatus = paid > subtotal ? 'overpaid' : paid === subtotal ? invoice.paymentStatus === 'paid' ? 'paid' : 'ready_to_mark_paid' : paid > 0 ? 'partial' : 'unpaid';
+      tx.update(linkedInvoice.ref, { lines, subtotal, totalPaise: subtotal, customerSnapshot: customerSnapshot(customerData), paymentStatus, balancePaise: subtotal - paid, revisedAt: FieldValue.serverTimestamp(), revisedBy: uid, editRevision: revision });
+      orderEvent(tx, db, 'invoice.order_revised', user, orderId, values, { invoiceNumber: invoice.invoiceNumber, totalPaise: { before: invoice.totalPaise, after: subtotal }, verifiedPaidPaise: paid, inventory: stockChanges.map(({ itemId, difference }) => ({ itemId, changeQty: difference })), ...orderChanges(old.data(), values) });
+    }
+    orderEvent(tx, db, old.exists ? 'order.edited' : 'order.created', user, orderId, values, { ...orderChanges(old.exists ? old.data() : null, values), ...(stockChanges.length ? { inventory: stockChanges.map(({ itemId, difference }) => ({ itemId, changeQty: difference })) } : {}) });
     if (!old.exists) orderEvent(tx, db, 'order.confirmed', user, orderId, values, { status: { before: null, after: 'confirmed' }, stockDeductions: initialDeductions.map(({ itemId, quantityQty }) => ({ itemId, quantityQty })) });
     return { orderId, orderNumber, customerId, status: values.status };
   });
@@ -339,7 +354,8 @@ async function confirmDraftInTransaction(db, tx, uid, user, orderId, order) {
       const item = itemSnaps[index];
       const state = stockState(stockSnaps[index]);
       const change = needed.get(itemId);
-      if (!item.exists || item.data().active !== true || !unitSnaps[index]?.exists || state.sellingBlocked) fail('An item is inactive, has no unit, or is blocked from selling.');
+      if (!item.exists || item.data().active !== true || !unitSnaps[index]?.exists) fail('An item is inactive or has no unit.');
+      if (user.role !== 'admin' && orderStockRestriction(state).restricted) fail('An item is blocked or at or below its stock threshold.');
       if (state.onHandQty - state.reservedQty < change) fail(`Insufficient available stock for ${item.data().name}.`);
       return { itemId, quantityQty: change, itemSnapshot: { itemCode: item.data().itemCode, name: item.data().name, unitId: item.data().defaultUnitId, unitSymbol: unitSnaps[index].data().symbol }, state, stockRef: stockSnaps[index].ref };
     });
@@ -369,56 +385,76 @@ export async function cancelOrder(db, uid, orderId, reason) {
   return db.runTransaction(async (tx) => {
     const user = await actor(db, uid, tx);
     const order = await tx.get(ref);
+    if (user.role !== 'admin') fail('Only Admin may cancel orders.');
     if (!order.exists || !['draft', 'confirmed', 'in_preparation', 'ready'].includes(order.data().status)) fail('This order cannot be cancelled. Delivered orders require a separate return workflow.');
     if (user.role === 'user' && order.data().lines?.some((line) => line.kind === 'special')) fail('Assigned Users may view special orders but cannot change them.');
-    if (order.data().paymentRequestedAt) fail('Payment-requested orders cannot use ordinary cancellation.');
     const draft = order.data().status === 'draft';
     if (!staffRole(user.role) && (!draft || order.data().ownerUid !== uid)) fail('Only staff can cancel a confirmed order.');
     const invoice = await tx.get(db.doc(`invoices/${orderId}`));
-    if (invoice.exists || order.data().invoiceId || order.data().editLockedAt) fail('An invoiced order needs a credit or return workflow before cancellation.');
-    if (!(await tx.get(db.collection('payments').where('orderId', '==', orderId).limit(1))).empty) fail('An order with payment history needs a correction or reversal workflow before cancellation.');
+    if (invoice.exists && invoice.data().status === 'cancelled') fail('This invoice is already cancelled.');
+    if (!invoice.exists && (order.data().invoiceId || order.data().editLockedAt)) fail('Linked invoice needs review before cancellation.');
+    const payments = await tx.get(db.collection('payments').where('orderId', '==', orderId));
+    if (payments.docs.some((entry) => entry.data().verificationStatus === 'unverified')) fail('Review pending payments before cancelling this order.');
     const deductions = order.data().stockDeductions ?? [];
     const reservations = order.data().stockReservations ?? [];
-    if (!Array.isArray(deductions) || !Array.isArray(reservations) || deductions.length && reservations.length || !draft && !deductions.length && !reservations.length) fail('Order stock state needs review before cancellation.');
-    const parts = deductions.length ? deductions : reservations;
-    if (draft && deductions.length || new Set(parts.map((part) => part?.itemId)).size !== parts.length || parts.some((part) => !validId(part?.itemId) || !qty(part?.quantityQty, true) || !part.itemSnapshot || ['itemCode', 'name', 'unitId', 'unitSymbol'].some((key) => typeof part.itemSnapshot[key] !== 'string'))) fail('Order stock state needs review before cancellation.');
-    if (parts.length) {
-      const expected = requiredStock(order.data().lines || []);
-      if (expected.size !== parts.length || parts.some((part) => expected.get(part.itemId) !== part.quantityQty)) fail('Order stock snapshot does not match its lines. Review before cancellation.');
+    if (!Array.isArray(deductions) || !Array.isArray(reservations) || !draft && !deductions.length && !reservations.length || draft && deductions.length) fail('Order stock state needs review before cancellation.');
+    const validPart = (part) => validId(part?.itemId) && qty(part?.quantityQty, true) && part.itemSnapshot && ['itemCode', 'name', 'unitId', 'unitSymbol'].every((key) => typeof part.itemSnapshot[key] === 'string');
+    if ([deductions, reservations].some((list) => new Set(list.map((part) => part?.itemId)).size !== list.length || list.some((part) => !validPart(part)))) fail('Order stock state needs review before cancellation.');
+    const grouped = new Map();
+    for (const part of deductions) grouped.set(part.itemId, { itemId: part.itemId, itemSnapshot: part.itemSnapshot, deductedQty: part.quantityQty, reservedQty: 0 });
+    for (const part of reservations) {
+      const prior = grouped.get(part.itemId);
+      grouped.set(part.itemId, { itemId: part.itemId, itemSnapshot: prior?.itemSnapshot || part.itemSnapshot, deductedQty: prior?.deductedQty || 0, reservedQty: part.quantityQty });
     }
+    if (grouped.size) {
+      const expected = requiredStock(order.data().lines || []);
+      if (expected.size !== grouped.size || [...grouped.values()].some((part) => expected.get(part.itemId) !== part.deductedQty + part.reservedQty)) fail('Order stock snapshot does not match its lines. Review before cancellation.');
+    }
+    const parts = [...grouped.values()];
     const stockSnaps = await Promise.all(parts.map((part) => tx.get(db.doc(`inventory/${part.itemId}`))));
     const inventory = parts.map((part, index) => {
       const snap = stockSnaps[index];
       if (!snap.exists) fail('Inventory record needs review before cancellation.');
-      const data = snap.data();
-      if (reservations.length) {
-        if (!qty(data.onHandQty) || !qty(data.reservedQty) || data.reservedQty > data.onHandQty || data.reservedQty < part.quantityQty) fail('Reserved inventory needs review before cancellation.');
-        return { itemId: part.itemId, itemName: part.itemSnapshot.name, unitSymbol: part.itemSnapshot.unitSymbol, reservedQtyReleased: part.quantityQty };
-      }
-      const state = stockState(snap);
-      if (!qty(state.onHandQty + part.quantityQty)) fail('Stock restoration exceeds allowed quantity.');
-      return { itemId: part.itemId, itemName: part.itemSnapshot.name, unitSymbol: part.itemSnapshot.unitSymbol, onHandQtyRestored: part.quantityQty };
+      const state = snap.data();
+      if (!qty(state.onHandQty) || !qty(state.reservedQty) || state.reservedQty > state.onHandQty || state.reservedQty < part.reservedQty || !qty(state.onHandQty + part.deductedQty)) fail('Inventory needs review before cancellation.');
+      return { itemId: part.itemId, itemName: part.itemSnapshot.name, unitSymbol: part.itemSnapshot.unitSymbol, onHandQtyRestored: part.deductedQty, reservedQtyReleased: part.reservedQty };
     });
     parts.forEach((part, index) => {
-      const snap = stockSnaps[index];
-      if (reservations.length) {
-        const state = snap.data();
-        tx.update(snap.ref, { reservedQty: state.reservedQty - part.quantityQty, updatedBy: uid, updatedAt: FieldValue.serverTimestamp() });
-        tx.create(db.doc(`inventoryMovements/order_reservation_release_${orderId}_${part.itemId}`), {
-          itemId: part.itemId, itemSnapshot: { itemCode: part.itemSnapshot.itemCode, name: part.itemSnapshot.name, unitId: part.itemSnapshot.unitId, unitSymbol: part.itemSnapshot.unitSymbol },
-          movementType: 'order_reservation_release', changeQty: 0, previousQty: state.onHandQty, newQty: state.onHandQty,
-          reservedChangeQty: -part.quantityQty, previousReservedQty: state.reservedQty, newReservedQty: state.reservedQty - part.quantityQty,
-          referenceType: 'order', referenceId: orderId, reason: reason.trim(), actorUid: uid, actorName: user.name, ownerUid: order.data().ownerUid, at: FieldValue.serverTimestamp(),
-        });
-      } else {
-        const state = stockState(snap);
-        setStock(tx, snap.ref, state, state.onHandQty + part.quantityQty, uid);
-        movement(tx, db, `order_reversal_${orderId}_${part.itemId}`, part.itemId, { ...part.itemSnapshot, defaultUnitId: part.itemSnapshot.unitId }, 'order_reversal', part.quantityQty, state.onHandQty, 'order', orderId, reason.trim(), uid, order.data().ownerUid, user.name);
-      }
+      const snap = stockSnaps[index], state = snap.data();
+      tx.update(snap.ref, { onHandQty: state.onHandQty + part.deductedQty, reservedQty: state.reservedQty - part.reservedQty, updatedBy: uid, updatedAt: FieldValue.serverTimestamp() });
+      if (part.reservedQty) tx.create(db.doc(`inventoryMovements/order_reservation_release_${orderId}_${part.itemId}`), {
+        itemId: part.itemId, itemSnapshot: part.itemSnapshot, movementType: 'order_reservation_release', changeQty: 0, previousQty: state.onHandQty, newQty: state.onHandQty,
+        reservedChangeQty: -part.reservedQty, previousReservedQty: state.reservedQty, newReservedQty: state.reservedQty - part.reservedQty,
+        referenceType: 'order', referenceId: orderId, invoiceNumber: invoice.exists ? invoice.data().invoiceNumber : null, reason: reason.trim(), actorUid: uid, actorName: user.name, ownerUid: order.data().ownerUid, at: FieldValue.serverTimestamp(),
+      });
+      if (part.deductedQty) movement(tx, db, `order_reversal_${orderId}_${part.itemId}`, part.itemId, { ...part.itemSnapshot, defaultUnitId: part.itemSnapshot.unitId }, 'order_reversal', part.deductedQty, state.onHandQty, 'order', orderId, reason.trim(), uid, order.data().ownerUid, user.name, invoice.exists ? invoice.data().invoiceNumber : null);
     });
     tx.update(ref, { status: 'cancelled', cancelledAt: FieldValue.serverTimestamp(), cancelledBy: uid, cancellationReason: reason.trim(), updatedBy: uid, updatedAt: FieldValue.serverTimestamp() });
-    orderEvent(tx, db, draft ? 'order.draft_cancelled' : 'order.cancelled', user, orderId, order.data(), { status: { before: order.data().status, after: 'cancelled' }, inventory: { kind: reservations.length ? 'reservation_released' : deductions.length ? 'stock_restored' : 'none', items: inventory } }, reason.trim());
-    return { orderId, status: 'cancelled' };
+    if (invoice.exists) tx.update(invoice.ref, { status: 'cancelled', cancelledAt: FieldValue.serverTimestamp(), cancelledBy: uid, cancellationReason: reason.trim(), paymentStatus: 'cancelled' });
+    orderEvent(tx, db, draft ? 'order.draft_cancelled' : 'order.cancelled', user, orderId, order.data(), { invoiceNumber: invoice.exists ? invoice.data().invoiceNumber : null, receivedPaise: invoice.exists ? invoice.data().verifiedPaidPaise || 0 : 0, status: { before: order.data().status, after: 'cancelled' }, inventory: { kind: deductions.length && reservations.length ? 'partial_restoration_and_release' : reservations.length ? 'reservation_released' : deductions.length ? 'stock_restored' : 'none', items: inventory } }, reason.trim());
+    return { orderId, status: 'cancelled', receivedPaise: invoice.exists ? invoice.data().verifiedPaidPaise || 0 : 0 };
+  });
+}
+
+export async function updateInvoiceCustomerName(db, uid, input) {
+  if (!validId(input?.invoiceId) || !text(input?.fullName, 120)) fail('Invoice and customer name are required.');
+  return db.runTransaction(async (tx) => {
+    const user = await actor(db, uid, tx);
+    if (user.role !== 'admin') fail('Only Admin may update an invoice customer name.');
+    const ref = db.doc(`invoices/${input.invoiceId}`);
+    const invoice = await tx.get(ref);
+    if (!invoice.exists || invoice.data().status === 'cancelled') fail('An active invoice is required.');
+    const before = invoice.data().customerSnapshot?.fullName || '';
+    const after = input.fullName.trim();
+    if (before === after) return { invoiceId: input.invoiceId, unchanged: true };
+    const order = await tx.get(db.doc(`orders/${invoice.data().orderId}`));
+    tx.update(ref, { 'customerSnapshot.fullName': after, revisedAt: FieldValue.serverTimestamp(), revisedBy: uid });
+    if (order.exists) {
+      tx.update(order.ref, { 'customerSnapshot.fullName': after, updatedAt: FieldValue.serverTimestamp(), updatedBy: uid });
+      orderEvent(tx, db, 'invoice.customer_name_updated', user, order.id, order.data(), { invoiceNumber: invoice.data().invoiceNumber, customerName: { before, after } });
+    }
+    tx.create(db.collection('auditLogs').doc(), { type: 'invoice.customer_name_updated', actorUid: uid, actorName: user.name, referenceType: 'invoice', referenceId: input.invoiceId, orderNumber: invoice.data().orderNumber, invoiceNumber: invoice.data().invoiceNumber, customerId: invoice.data().customerId, customerName: after, detail: { oldName: before, newName: after }, outcome: 'success', at: FieldValue.serverTimestamp() });
+    return { invoiceId: input.invoiceId, fullName: after };
   });
 }
 

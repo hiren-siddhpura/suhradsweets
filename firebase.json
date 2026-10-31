@@ -3,7 +3,7 @@
     "public": "dist",
     "headers": [
       {
-        "source": "**/*.@(js|html|webmanifest)",
+        "source": "**/*.@(js|css|html|webmanifest)",
         "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
       },
       {

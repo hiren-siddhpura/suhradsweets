@@ -58,16 +58,21 @@ export function stockState(snap) {
   return { onHandQty, reservedQty, sellingBlocked: data.sellingBlocked === true, lowStockThresholdQty };
 }
 
+export function orderStockRestriction(state) {
+  const availableQty = state.onHandQty - state.reservedQty;
+  return { availableQty, restricted: state.sellingBlocked || availableQty <= (state.lowStockThresholdQty || 0), reason: state.sellingBlocked ? 'blocked' : availableQty <= (state.lowStockThresholdQty || 0) ? 'threshold' : null };
+}
+
 export function setStock(tx, ref, state, newQty, uid, extra = {}) {
   if (!qty(newQty)) fail('Insufficient stock or stock limit exceeded.');
   tx.set(ref, { itemId: ref.id, ...state, ...extra, onHandQty: newQty, reservedQty: 0, updatedBy: uid, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
 }
 
-export function movement(tx, db, id, itemId, item, type, changeQty, previousQty, referenceType, referenceId, reason, uid, ownerUid = null, actorName = 'Unknown user') {
+export function movement(tx, db, id, itemId, item, type, changeQty, previousQty, referenceType, referenceId, reason, uid, ownerUid = null, actorName = 'Unknown user', invoiceNumber = null) {
   tx.create(db.doc(`inventoryMovements/${id}`), {
     itemId, itemSnapshot: { itemCode: item.itemCode, name: item.name, unitId: item.defaultUnitId, unitSymbol: item.unitSymbol },
     movementType: type, changeQty, previousQty, newQty: previousQty + changeQty,
-    referenceType, referenceId, reason, actorUid: uid, actorName, ownerUid, at: FieldValue.serverTimestamp(),
+    referenceType, referenceId, ...(invoiceNumber ? { invoiceNumber } : {}), reason, actorUid: uid, actorName, ownerUid, at: FieldValue.serverTimestamp(),
   });
 }
 

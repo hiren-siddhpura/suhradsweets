@@ -1,5 +1,9 @@
 # Firestore schema and trust boundary
 
+## Order and invoice revisions
+
+Admin may revise an invoiced active order in the existing `saveOrderDraft` transaction. The order's `editRevision`, `updatedAt`, and `updatedBy` advance; the linked invoice keeps its original ID, number, and `issuedAt` while `lines`, `subtotal`, `totalPaise`, `paymentStatus`, `balancePaise`, `revisedAt`, `revisedBy`, and `editRevision` reflect the revision. `overpaid` flags a credit needing separate Admin resolution. `status: cancelled`, `cancelledAt`, `cancelledBy`, and `cancellationReason` mark a voided invoice without removing it or its payments. Cancelled invoices are excluded from outstanding totals. Customer name corrections change only the order and invoice snapshots; the customer master record and historical payment snapshots remain unchanged. Inventory movement and audit documents remain append only. Legacy `stockReservations[]` can coexist with `stockDeductions[]` for partial consumption during cancellation; each quantity is released or restored once inside the same transaction.
+
 This is the contract for the required 17 top-level collections. Purchase, inventory, customer, order and financial operations are implemented locally through trusted callable functions. They require deployment before live use. All IDs are stable Firestore document IDs; monetary transaction values are integer **paise**, and stock quantities are integer **milli-units** (1,000 milli-units = one item's default unit). Every timestamp is a Firestore server timestamp. Do not store passwords, Auth tokens, service-account material or Google Drive file contents in Firestore.
 
 | Collection / document ID | Fields and intended meaning | Current browser access |

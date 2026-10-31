@@ -234,7 +234,7 @@ test('Admin may edit special lines; assigned User can view the saved special ord
   const html = el('order-fields').innerHTML;
   assert.equal((html.match(/class="ops-line order-entry-line"/g) || []).length, 2);
   assert.match(html, /Choose an active permitted unit/);
-  assert.match(html, /Kaju Katli — ₹1,200\.00/);
+  assert.match(html, /Kaju Katli \(Stock Unavailable\) — ₹1,200\.00/);
   assert.match(html, /Gift Box — ₹1,600\.00/);
   assert.equal((html.match(/Available: Unavailable/g) || []).length, 2);
   assert.doesNotMatch(html, /On hand:|Reserved:|Low stock|Out of stock/);

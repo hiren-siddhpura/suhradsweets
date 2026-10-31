@@ -106,13 +106,9 @@ export function initMasterData({ db, functions, auth, mode }) {
   }
 
   function visibleRecords() {
-    const search = $('master-search').value.trim().toLocaleLowerCase();
     const status = $('master-status').value;
     const result = records.filter((record) => {
-      if (status !== 'all' && (record.active === true ? 'active' : 'inactive') !== status) return false;
-      if (!search) return true;
-      return [recordName(record), record.itemCode, record.symbol, record.description, record.email, record.role, record.id]
-        .some((part) => String(part ?? '').toLocaleLowerCase().includes(search));
+      return status === 'all' || (record.active === true ? 'active' : 'inactive') === status;
     });
     const sort = $('master-sort').value;
     result.sort((a, b) => {
@@ -140,6 +136,7 @@ export function initMasterData({ db, functions, auth, mode }) {
       const details = columns[type].slice(1, 3).map(([key]) => {
         let value = record[key] ?? (key === 'displayName' ? record.fullName : undefined);
         if (key === 'role') value = ({ admin: 'Admin', account_admin: 'Account Admin', user: 'User' })[value] || value;
+        if (key === 'defaultUnitId') value = unitNames.get(value) || value;
         return value;
       }).filter((value) => value !== undefined && value !== '').join(' · ');
       const canEdit = type !== 'users' || canManageUser(record);
@@ -148,7 +145,7 @@ export function initMasterData({ db, functions, auth, mode }) {
     if (!shown.length) {
       const row = document.createElement('tr'); const cell = document.createElement('td');
       cell.colSpan = columns[type].length + 2; cell.className = 'empty-cell';
-      cell.textContent = records.length ? 'No records match your search or filters.' : `No ${titles[type].toLowerCase()} yet.`;
+      cell.textContent = records.length ? 'No records match the current filter.' : `No ${titles[type].toLowerCase()} yet.`;
       row.append(cell); body.append(row);
     }
     for (const record of shown) {
@@ -282,7 +279,7 @@ export function initMasterData({ db, functions, auth, mode }) {
   }
 
   document.querySelectorAll('[data-master-tab]').forEach((button) => button.addEventListener('click', () => {
-    type = button.dataset.masterTab; page = 1; $('master-search').value = ''; $('master-status').value = 'all';
+    type = button.dataset.masterTab; page = 1; $('master-status').value = 'all';
     $('master-business-form').hidden = type !== 'settings';
     const canSaveBusiness = session?.role === 'admin';
     for (const id of ['master-business-address', 'master-business-contact', 'master-business-fssai', 'master-business-save']) $(id).disabled = !canSaveBusiness;
@@ -294,7 +291,6 @@ export function initMasterData({ db, functions, auth, mode }) {
     $('master-add').textContent = `Add ${MASTER_LABELS[type].toLowerCase()}`;
     load();
   }));
-  $('master-search').addEventListener('input', () => { page = 1; render(); });
   $('master-status').addEventListener('change', () => { page = 1; render(); });
   $('master-sort').addEventListener('change', () => { page = 1; render(); });
   $('master-prev').addEventListener('click', () => { page--; render(); });

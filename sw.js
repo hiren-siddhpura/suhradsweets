@@ -1,4 +1,4 @@
-const CACHE = 'suhrad-static-v4';
+const CACHE = 'suhrad-static-v5';
 const STATIC_PATHS = new Set(['/offline.html', '/manifest.webmanifest', '/logo.png', '/icons/icon-192.png', '/icons/icon-512.png']);
 
 self.addEventListener('install', (event) => {

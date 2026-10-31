@@ -89,9 +89,16 @@ export function initReportingUi({ db, functions }) {
     if (!profile) return;
     const version = revision, run = ++dashboardRun, day = today();
     const userOnly = profile.role === 'user';
-    $('dashboard-announcements-panel').hidden = userOnly;
+    const announcementsPanel = $('dashboard-announcements-panel');
+    const cards = $('dashboard-cards');
+    const dashboardView = $('dashboard-view');
+    dashboardView.insertBefore(announcementsPanel, userOnly ? cards : $('dashboard-activity-panel'));
+    announcementsPanel.classList.toggle('dashboard-announcements-user', userOnly);
+    announcementsPanel.hidden = userOnly;
     $('dashboard-activity-panel').hidden = userOnly;
     if (userOnly) {
+      $('dashboard-announcements').replaceChildren();
+      const announcementsPromise = activeAnnouncements(db, profile.role, day).then((value) => ({ value }), (error) => ({ error }));
       $('dashboard-cards').innerHTML = '<div class="card stat-card dashboard-metric"><span class="stat-label">Total Orders</span><strong>Loading…</strong></div>';
       try {
         const orders = await dashboardOrderKg(db, profile.role, user.uid);
@@ -101,6 +108,17 @@ export function initReportingUi({ db, functions }) {
         if (version !== revision || run !== dashboardRun) return;
         $('dashboard-cards').innerHTML = '<div class="card stat-card dashboard-metric"><span class="stat-label">Total Orders</span><strong>Unavailable</strong><small>Your orders</small></div>';
         console.warn('[OMS dashboard]', { code: String(error?.code || 'unknown'), category: 'query-failed' });
+      }
+      {
+        const result = await announcementsPromise;
+        if (version !== revision || run !== dashboardRun) return;
+        if (result.error) {
+          announcementsPanel.hidden = true;
+          console.warn('[OMS dashboard]', { code: String(result.error?.code || 'unknown'), category: 'query-failed' });
+        } else {
+          announcementsPanel.hidden = result.value.length === 0;
+          $('dashboard-announcements').innerHTML = result.value.map((entry) => `<div class="report-announcement"><strong>${esc(entry.title)}</strong><p>${esc(entry.body)}</p>${entry.expiresOn ? `<small>Until ${esc(entry.expiresOn)}</small>` : ''}${entry.priority ? `<small> · ${esc(entry.priority)}</small>` : ''}</div>`).join('');
+        }
       }
       return;
     }

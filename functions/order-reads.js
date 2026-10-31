@@ -1,4 +1,4 @@
-import { fail, validId } from './operations.js';
+import { fail, orderStockRestriction, qty, validId } from './operations.js';
 
 async function viewer(db, uid) {
   if (!validId(uid)) fail('Sign in is required.');
@@ -28,9 +28,9 @@ export async function getOrderStock(db, uid, input) {
     if (!item.exists || item.data().active !== true) return { itemId, availableQty: null, onHandQty: null, reservedQty: null, status: 'unavailable', unit: '' };
     const unit = unitMap.get(item.data().defaultUnitId) || '';
     const state = stock.exists ? stock.data() : null;
-    if (!state || !Number.isSafeInteger(state.onHandQty) || state.onHandQty < 0 || !Number.isSafeInteger(state.reservedQty) || state.reservedQty < 0 || state.reservedQty > state.onHandQty || !unit) return { itemId, availableQty: null, onHandQty: null, reservedQty: null, status: 'unavailable', unit };
-    const availableQty = state.onHandQty - state.reservedQty;
-    return { itemId, availableQty, onHandQty: state.onHandQty, reservedQty: state.reservedQty, unit, status: state.sellingBlocked ? 'blocked' : availableQty === 0 ? 'out_of_stock' : availableQty <= (state.lowStockThresholdQty || 0) ? 'low_stock' : 'available' };
+    if (!state || !qty(state.onHandQty) || !qty(state.reservedQty) || state.reservedQty > state.onHandQty || !qty(state.lowStockThresholdQty ?? 0) || !unit) return { itemId, availableQty: null, onHandQty: null, reservedQty: null, status: 'unavailable', unit };
+    const { availableQty, reason } = orderStockRestriction(state);
+    return { itemId, availableQty, onHandQty: state.onHandQty, reservedQty: state.reservedQty, lowStockThresholdQty: state.lowStockThresholdQty || 0, unit, status: reason === 'blocked' ? 'blocked' : availableQty === 0 ? 'out_of_stock' : reason === 'threshold' ? 'low_stock' : 'available' };
   }) };
 }
 

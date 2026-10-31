@@ -57,6 +57,7 @@ export async function submitCollection(db, uid, input) {
   for (let index = 0; index < input.entries.length; index++) {
     const item = input.entries[index];
     if (!['cash', 'upi', 'bank_transfer'].includes(item?.mode)) fail('Choose Cash, UPI or Online for every payment entry.');
+    if (item.amountPaise !== undefined && item.amountPaise !== totals[index]) fail('Payment entry amounts must match their invoice allocations.');
     if (item.mode !== 'cash' && !item.attachment) fail('UPI and online entries require a receipt.');
     entries.push({ mode: item.mode, transactionNumber: refNumber(item.mode, item.transactionNumber), attachment: await receipt(uid, input.operationId, index, item.attachment), amountPaise: totals[index] });
   }

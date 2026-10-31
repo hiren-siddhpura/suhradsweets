@@ -5,8 +5,8 @@ import { callOperation } from './operations-data.js';
 import { isStaff, hasPermission } from './permissions.js';
 import { uniqueId } from './unique-id.js';
 import { showToast } from './ui.js';
-import { paymentInvoiceSummary, paymentUpload } from './payment-form-ui.js';
 import { eligibleCollectionInvoice } from './collection-eligibility.js';
+import { bulkDraftHtml } from './bulk-draft-render.js';
 
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '<': '&lt;', "'": '&#39;' })[char]);
 const rupees = (paise) => `₹${((paise || 0) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -34,7 +34,7 @@ export function initCollectionsUi({ db, functions }) {
   if (heading) heading.after(root); else parent.append(root);
   const $ = (id) => root.querySelector(`#${id}`);
   const filterValue = (id) => String($(id)?.value ?? '');
-  let user = null, profile = null, collections = [], payments = [], customers = [], invoices = [], draft = null, viewingId = null, loadingRevision = 0, busy = false;
+  let user = null, profile = null, collections = [], payments = [], invoices = [], ownerNames = new Map(), draft = null, viewingId = null, loadingRevision = 0, busy = false;
   const own = () => isStaff(profile) ? null : user?.uid;
   const invoiceAvailable = eligibleCollectionInvoice;
   function renderList() {
@@ -55,11 +55,9 @@ export function initCollectionsUi({ db, functions }) {
     const revision = ++loadingRevision, token = globalThis.omsLoading?.start('Loading collections…');
     try {
       const owner = own();
-      const customerQuery = owner ? [query(collection(db, 'customers'), where('assignedUserId', '==', owner)), query(collection(db, 'customers'), where('ownerUserIds', 'array-contains', owner))] : [collection(db, 'customers')];
-      const [collectionRows, paymentRows, invoiceRows, ...customerSnaps] = await Promise.all([listCollections(db, owner), listPayments(db, owner), listInvoices(db, owner), ...customerQuery.map((item) => getDocs(item))]);
+      const [collectionRows, paymentRows, invoiceRows] = await Promise.all([listCollections(db, owner), listPayments(db, owner), listInvoices(db, owner)]);
       if (revision !== loadingRevision) return;
       collections = collectionRows; payments = paymentRows; invoices = invoiceRows;
-      customers = [...new Map(customerSnaps.flatMap((snap) => snap.docs.map((doc) => [doc.id, { id: doc.id, ...doc.data() }]))).values()];
       $('collection-message').textContent = ''; renderList();
     } catch (error) { if (revision === loadingRevision) $('collection-message').textContent = `Could not load collections: ${error.message}`; }
     finally { globalThis.omsLoading?.stop(token); }
@@ -69,54 +67,50 @@ export function initCollectionsUi({ db, functions }) {
   const statusName = (status) => ({ pending: 'Pending verification', verified: 'Approved', rejected: 'Rejected', reversed: 'Reversed' })[status] || status;
   function draftTotals() {
     const allocations = [...draft.allocations.entries()].map(([invoiceId, row]) => ({ invoiceId, ...row }));
-    return { allocations, total: allocations.reduce((sum, row) => sum + (row.amountPaise || 0), 0), customers: new Set(allocations.map((row) => invoices.find((invoice) => invoice.id === row.invoiceId)?.customerId)).size };
+    return { allocations, total: allocations.reduce((sum, row) => sum + (row.amountPaise || 0), 0) };
+  }
+  function syncEntryAmounts() {
+    draft.entries.forEach((entry, index) => {
+      if (entry.manualAmount) return;
+      const amount = [...draft.allocations.values()].filter((row) => row.paymentIndex === index).reduce((sum, row) => sum + (Number(row.amountPaise) || 0), 0);
+      entry.amountPaise = amount; entry.amountRaw = (amount / 100).toFixed(2);
+      const control = root.querySelector(`[data-entry-amount="${index}"]`);
+      if (control && document.activeElement !== control) control.value = entry.amountRaw;
+    });
+  }
+  function visibleDraftInvoices() {
+    const { owner, number, customer, status } = draft.filters;
+    return invoices.filter((row) => invoiceAvailable(row) && (!owner || row.ownerUid === owner) && (!number || String(row.invoiceNumber || '').toLowerCase().includes(number.toLowerCase())) && (!customer || String(row.customerSnapshot?.fullName || '').toLowerCase().includes(customer.toLowerCase())) && (!status || (status === 'partial' ? row.verifiedPaidPaise > 0 : row.verifiedPaidPaise === 0)));
   }
   function renderDraft() {
     if (!draft) return;
-    const selected = new Set(draft.customers), invoiceCounts = new Map();
-    for (const invoice of invoices) if (invoiceAvailable(invoice)) invoiceCounts.set(invoice.customerId, (invoiceCounts.get(invoice.customerId) || 0) + 1);
-    const available = customers.filter((customer) => !selected.has(customer.id)).sort((a, b) => (invoiceCounts.get(b.id) || 0) - (invoiceCounts.get(a.id) || 0) || String(a.fullName || '').localeCompare(String(b.fullName || '')));
-    const customerOption = (customer) => `<option value="${esc(customer.id)}">${esc(customer.fullName)} · ${invoiceCounts.get(customer.id) || 0} outstanding invoice${invoiceCounts.get(customer.id) === 1 ? '' : 's'}</option>`;
-    const { allocations, total, customers: customerCount } = draftTotals();
-    $('collection-dialog-content').innerHTML = `<div class="dialog-header"><h2>Create Bulk Payment</h2><button id="collection-close" class="icon-button" type="button" aria-label="Close">×</button></div>
-      <div class="payment-draft-meta"><span><strong>Draft reference</strong>${esc(reference())}</span><span><strong>Collection date</strong>${esc(collectionDay())}</span><span><strong>Collected by</strong>${esc(profile?.fullName || profile?.displayName || user?.uid || '—')}</span></div>
-      <section class="payment-form-section"><div class="payment-section-heading"><h3>Customer Payments</h3><span>${customerCount} selected</span></div><div class="collection-add"><label class="ops-field" for="collection-customer-search">Find customer<input id="collection-customer-search" type="search" placeholder="Search customer name or phone"></label><label class="ops-field" for="collection-customer-pick">Customer<select id="collection-customer-pick"><option value="">Select customer</option>${available.map(customerOption).join('')}</select></label><button id="collection-add-customer" class="button button-outline" type="button">＋ Add Customer</button></div>
-      ${draft.invoiceLoading ? '<p class="muted" role="status">Loading current invoice balances…</p>' : draft.invoiceError ? `<p class="form-error" role="alert">Could not load invoices. <button type="button" id="collection-retry-invoices">Retry</button></p>` : ''}
-      ${draft.customers.map((customerId) => {
-        const customer = customers.find((item) => item.id === customerId), rows = draft.invoiceLoading || draft.invoiceError ? [] : invoices.filter((invoice) => invoice.customerId === customerId && invoiceAvailable(invoice));
-        const sum = rows.reduce((value, invoice) => value + (draft.allocations.get(invoice.id)?.amountPaise || 0), 0);
-        return `<div class="collection-customer"><div class="payment-card-header"><h4>${esc(customer?.fullName || 'Customer')}</h4><button type="button" data-remove-customer="${esc(customerId)}" class="button button-outline" aria-label="Remove ${esc(customer?.fullName || 'customer')}">Remove</button></div><p class="payment-card-subtotal">Customer subtotal <strong data-customer-subtotal="${esc(customerId)}">${rupees(sum)}</strong></p>${rows.length ? rows.map((invoice) => {
-          const row = draft.allocations.get(invoice.id), balance = invoice.totalPaise - invoice.verifiedPaidPaise;
-          return `<div class="collection-invoice"><label class="payment-invoice-choice"><input type="checkbox" data-invoice-check="${esc(invoice.id)}" ${row ? 'checked' : ''}><span>${esc(invoice.invoiceNumber)}</span></label>${paymentInvoiceSummary(invoice)}${row ? `<div class="collection-allocation"><label class="ops-field">Amount collected (₹)<input type="number" min="0.01" step="0.01" max="${(balance / 100).toFixed(2)}" data-invoice-amount="${esc(invoice.id)}" value="${esc(row.amountRaw ?? (row.amountPaise / 100).toFixed(2))}"></label><label class="ops-field">Payment entry<select data-invoice-entry="${esc(invoice.id)}">${draft.entries.map((entry, index) => `<option value="${index}" ${row.paymentIndex === index ? 'selected' : ''}>${index + 1}: ${paymentName(entry.mode)}</option>`).join('')}</select></label></div>` : ''}</div>`;
-        }).join('') : draft.invoiceLoading || draft.invoiceError ? '' : '<p class="muted">No eligible outstanding invoices are available for this customer.</p>'}</div>`;
-      }).join('')}</section>
-      <section class="payment-form-section"><div class="payment-section-heading"><h3>Payment Entries</h3><span>${draft.entries.length} entries</span></div>${draft.entries.map((entry, index) => `<div class="collection-entry"><div class="payment-card-header"><h4>Entry ${index + 1}</h4>${draft.entries.length > 1 ? `<button type="button" data-entry-remove="${index}" class="button button-outline">Remove entry</button>` : ''}</div><p class="payment-card-subtotal">Allocated to this entry <strong data-entry-total="${index}">${rupees(allocations.filter((row) => row.paymentIndex === index).reduce((sum, row) => sum + row.amountPaise, 0))}</strong></p><div class="payment-form-grid"><label class="ops-field">Payment method<select data-entry-mode="${index}"><option value="cash" ${entry.mode === 'cash' ? 'selected' : ''}>Cash</option><option value="upi" ${entry.mode === 'upi' ? 'selected' : ''}>UPI</option><option value="bank_transfer" ${entry.mode === 'bank_transfer' ? 'selected' : ''}>Online</option></select></label><label class="ops-field" ${entry.mode === 'cash' ? 'hidden' : ''}>Transaction ID<input data-entry-reference="${index}" maxlength="100" value="${esc(entry.transactionNumber || '')}" ${entry.mode === 'cash' ? 'disabled' : ''}></label></div>${paymentUpload({ id: `collection-entry-file-${index}`, dataAttribute: `data-entry-file="${index}"` })}${entry.file ? `<p class="payment-file-name">${esc(entry.file.name)} · ${(entry.file.size / 1024 / 1024).toFixed(2)} MB <button type="button" data-entry-remove-file="${index}">Remove</button></p><div class="collection-file-preview">${entry.file.type === 'application/pdf' ? `<iframe title="Receipt preview" src="${entry.url}"></iframe>` : `<img alt="Receipt preview" src="${entry.url}">`}</div>` : ''}<p id="collection-progress-${index}" role="status"></p></div>`).join('')}<button id="collection-add-entry" class="button button-outline" type="button">＋ Add Payment Entry</button></section>
-      <section class="payment-form-section"><label class="ops-field">Remarks <small>Optional</small><textarea id="collection-remarks" maxlength="1000" rows="3">${esc(draft.remarks)}</textarea></label><div class="collection-summary"><strong>Collection Summary</strong><p id="collection-summary-totals">${customerCount} customers · ${allocations.length} invoices · ${draft.entries.length} payment entries · Total ${rupees(total)}</p><small>Each invoice allocation is assigned to one payment entry. The entry totals must cover the full collection amount.</small></div></section><p id="collection-error" class="form-error" role="alert"></p><div class="dialog-actions"><button id="collection-cancel" type="button" class="button button-outline">Cancel</button><button id="collection-submit" type="button" class="button button-primary">Submit for Verification</button></div>`;
+    $('collection-dialog-content').innerHTML = bulkDraftHtml({ draft, invoices, names: ownerNames, eligible: invoiceAvailable, reference: reference(), collectionDate: collectionDay(), collectedBy: profile?.fullName || profile?.displayName || user?.uid || '—' });
     $('collection-close').onclick = $('collection-cancel').onclick = () => $('collection-dialog').close();
-    if ($('collection-retry-invoices')) $('collection-retry-invoices').onclick = refreshDraftInvoices;
-    $('collection-customer-search').oninput = (event) => { const term = event.target.value.trim().toLowerCase(); const select = $('collection-customer-pick'); select.innerHTML = `<option value="">Select customer</option>${available.filter((customer) => `${customer.fullName || ''} ${customer.contact || ''}`.toLowerCase().includes(term)).map(customerOption).join('')}`; };
-    $('collection-add-customer').onclick = () => { const id = $('collection-customer-pick').value; if (id) { draft.customers.push(id); changed(); renderDraft(); refreshDraftInvoices(); } };
-    $('collection-add-entry').onclick = () => { if (draft.entries.length >= 20) return; draft.entries.push({ mode: 'cash', transactionNumber: '', file: null, url: null, uploaded: null }); changed(); renderDraft(); };
+    $('collection-refresh-invoices').onclick = refreshDraftInvoices;
+    $('collection-clear-filters').onclick = () => { draft.filters = { owner: '', number: '', customer: '', status: '' }; renderDraft(); };
+    $('collection-select-visible').onclick = () => { for (const invoice of visibleDraftInvoices()) if (!draft.allocations.has(invoice.id)) draft.allocations.set(invoice.id, { amountPaise: invoice.totalPaise - invoice.verifiedPaidPaise, paymentIndex: 0 }); changed(); syncEntryAmounts(); renderDraft(); };
+    $('collection-deselect-all').onclick = () => { draft.allocations.clear(); changed(); syncEntryAmounts(); renderDraft(); };
+    $('collection-add-entry').onclick = () => { if (draft.entries.length >= 20) return; draft.entries.push({ mode: 'cash', transactionNumber: '', file: null, url: null, uploaded: null, amountPaise: 0, amountRaw: '0.00', manualAmount: false }); changed(); renderDraft(); };
     $('collection-remarks').oninput = (event) => { draft.remarks = event.target.value; changed(); };
     $('collection-submit').onclick = submit;
+    root.querySelectorAll('[data-bulk-filter]').forEach((node) => { node.oninput = (event) => { draft.filters[node.dataset.bulkFilter] = event.target.value; const position = node.selectionStart; renderDraft(); const next = root.querySelector(`[data-bulk-filter="${node.dataset.bulkFilter}"]`); next?.focus(); if (position !== null && next?.setSelectionRange) next.setSelectionRange(position, position); }; });
   }
   function changed() {
     if (draft.entries.some((entry) => entry.uploaded)) { draft.operationId = uniqueId(); draft.entries.forEach((entry) => { entry.uploaded = null; }); }
   }
   function updateDraftSummary() {
     if (!draft) return;
-    const { allocations, total, customers: customerCount } = draftTotals();
+    const { allocations, total } = draftTotals();
     const totals = $('collection-summary-totals');
-    if (totals) totals.textContent = `${customerCount} customers · ${allocations.length} invoices · ${draft.entries.length} payment entries · Total ${rupees(total)}`;
-    for (const customerId of draft.customers) {
-      const subtotal = root.querySelector(`[data-customer-subtotal="${CSS.escape(customerId)}"]`);
-      if (subtotal) subtotal.textContent = rupees(allocations.filter((row) => invoices.find((invoice) => invoice.id === row.invoiceId)?.customerId === customerId).reduce((sum, row) => sum + (row.amountPaise || 0), 0));
-    }
-    draft.entries.forEach((_, index) => { const subtotal = root.querySelector(`[data-entry-total="${index}"]`); if (subtotal) subtotal.textContent = rupees(allocations.filter((row) => row.paymentIndex === index).reduce((sum, row) => sum + (row.amountPaise || 0), 0)); });
+    const outstanding = allocations.reduce((sum, row) => { const invoice = invoices.find((item) => item.id === row.invoiceId); return sum + (invoice ? invoice.totalPaise - invoice.verifiedPaidPaise : 0); }, 0);
+    const entryTotal = draft.entries.reduce((sum, entry) => sum + (Number(entry.amountPaise) || 0), 0);
+    if (totals) totals.textContent = `${allocations.length} invoices · ${rupees(outstanding)} outstanding · ${rupees(total)} allocated · ${draft.entries.length} entries · Difference ${rupees(total - entryTotal)}`;
+    const button = $('collection-submit');
+    if (button) button.disabled = draft.invoiceLoading || draft.invoiceError || !allocations.length || !Number.isSafeInteger(total) || total <= 0 || total !== entryTotal || allocations.some((row) => { const invoice = invoices.find((item) => item.id === row.invoiceId); return !invoice || !Number.isSafeInteger(row.amountPaise) || row.amountPaise <= 0 || row.amountPaise > invoice.totalPaise - invoice.verifiedPaidPaise; }) || draft.entries.some((entry, index) => !Number.isSafeInteger(entry.amountPaise) || entry.amountPaise <= 0 || (entry.mode !== 'cash' && (!entry.transactionNumber.trim() || !entry.file)) || allocations.filter((row) => row.paymentIndex === index).reduce((sum, row) => sum + row.amountPaise, 0) !== entry.amountPaise);
   }
   function openCreate() {
     draft?.entries.forEach((entry) => { if (entry.url) URL.revokeObjectURL(entry.url); });
-    draft = { operationId: uniqueId(), customers: [], allocations: new Map(), entries: [{ mode: 'cash', transactionNumber: '', file: null, url: null, uploaded: null }], remarks: '', invoiceLoading: false, invoiceError: false };
+    draft = { operationId: uniqueId(), allocations: new Map(), filters: { owner: '', number: '', customer: '', status: '' }, entries: [{ mode: 'cash', transactionNumber: '', file: null, url: null, uploaded: null, amountPaise: 0, amountRaw: '0.00', manualAmount: false }], remarks: '', invoiceLoading: false, invoiceError: false };
     renderDraft(); $('collection-dialog').showModal(); refreshDraftInvoices();
   }
   async function refreshDraftInvoices() {
@@ -127,7 +121,13 @@ export function initCollectionsUi({ db, functions }) {
       const fresh = await listInvoices(db, own());
       if (draft !== currentDraft) return;
       invoices = fresh;
+      ownerNames = new Map([[user.uid, profile?.fullName || profile?.displayName || user.uid]]);
+      if (isStaff(profile)) {
+        try { const snap = await getDocs(collection(db, 'users')); if (draft !== currentDraft) return; for (const row of snap.docs) ownerNames.set(row.id, row.data().fullName || row.data().displayName || row.id); }
+        catch (error) { console.warn('Bulk payment user names unavailable', { code: error.code || 'unknown' }); }
+      }
       for (const [id] of currentDraft.allocations) if (!fresh.some((invoice) => invoice.id === id && invoiceAvailable(invoice))) currentDraft.allocations.delete(id);
+      syncEntryAmounts();
       console.info('Bulk payment invoice availability', { invoiceCount: fresh.length, eligibleCount: fresh.filter(invoiceAvailable).length });
     } catch (error) {
       if (draft !== currentDraft) return;
@@ -148,7 +148,7 @@ export function initCollectionsUi({ db, functions }) {
         if (row.amountPaise > invoice.totalPaise - invoice.verifiedPaidPaise) throw new Error(`Amount exceeds the balance for ${invoice.invoiceNumber}.`);
       }
       const entryTotals = draft.entries.map((_, index) => allocations.filter((row) => row.paymentIndex === index).reduce((sum, row) => sum + row.amountPaise, 0));
-      if (entryTotals.some((amount) => !amount)) throw new Error('Every payment entry needs an invoice allocation.');
+      if (entryTotals.some((amount, index) => !amount || amount !== draft.entries[index].amountPaise)) throw new Error('Payment entry amounts must match their invoice allocations.');
       for (const entry of draft.entries) {
         if (entry.mode !== 'cash' && (!entry.transactionNumber.trim() || !entry.file)) throw new Error('UPI and Online entries need a transaction ID and receipt.');
         if (entry.file) validFile(entry.file);
@@ -166,7 +166,7 @@ export function initCollectionsUi({ db, functions }) {
             entry.uploaded = { extension };
           } finally { globalThis.omsLoading?.stop(token); }
         }
-        entries.push({ mode: entry.mode, transactionNumber: entry.mode === 'cash' ? '-' : entry.transactionNumber, attachment: entry.uploaded });
+        entries.push({ mode: entry.mode, amountPaise: entry.amountPaise, transactionNumber: entry.mode === 'cash' ? '-' : entry.transactionNumber, attachment: entry.uploaded });
       }
       const result = await callOperation(functions, 'submitCollection', { operationId: draft.operationId, allocations: allocations.map(({ invoiceId, amountPaise, paymentIndex }) => ({ invoiceId, amountPaise, paymentIndex })), entries, remarks: draft.remarks });
       $('collection-dialog').close(); showToast(`${shortCollectionNumber(result.collectionNumber)} submitted for verification.`); draft = null; await load();
@@ -232,21 +232,21 @@ export function initCollectionsUi({ db, functions }) {
       document.dispatchEvent(new CustomEvent('oms:single-payment-action', { detail: { kind: single.dataset.singleApprove ? 'verify' : 'reject', id } })); return;
     }
     const receipt = event.target.closest('[data-single-receipt]'); if (receipt) { document.dispatchEvent(new CustomEvent('oms:single-payment-action', { detail: { kind: 'receipt', id: receipt.dataset.singleReceipt } })); return; }
-    const target = event.target.closest('[data-collection-view],[data-collection-approve],[data-collection-reject],[data-collection-receipt],[data-remove-customer],[data-invoice-check],[data-entry-remove-file],[data-entry-remove]'); if (!target) return;
+    const target = event.target.closest('[data-collection-view],[data-collection-approve],[data-collection-reject],[data-collection-receipt],[data-remove-invoice],[data-invoice-check],[data-entry-remove-file],[data-entry-remove]'); if (!target) return;
     if (target.dataset.collectionView) return view(target.dataset.collectionView);
     if (target.dataset.collectionApprove) return review(target.dataset.collectionApprove, 'verified');
     if (target.dataset.collectionReject) return review(target.dataset.collectionReject, 'rejected');
     if (target.dataset.collectionReceipt !== undefined) return showReceipt(viewingId, Number(target.dataset.collectionReceipt));
     if (!draft) return;
-    if (target.dataset.removeCustomer) { const id = target.dataset.removeCustomer; draft.customers = draft.customers.filter((value) => value !== id); for (const invoice of invoices.filter((item) => item.customerId === id)) draft.allocations.delete(invoice.id); changed(); renderDraft(); }
-    if (target.dataset.invoiceCheck) { const id = target.dataset.invoiceCheck; if (target.checked) draft.allocations.set(id, { amountPaise: 0, amountRaw: '', paymentIndex: 0 }); else draft.allocations.delete(id); changed(); renderDraft(); }
+    if (target.dataset.removeInvoice) { draft.allocations.delete(target.dataset.removeInvoice); changed(); syncEntryAmounts(); renderDraft(); }
+    if (target.dataset.invoiceCheck) { const id = target.dataset.invoiceCheck, invoice = invoices.find((item) => item.id === id); if (target.checked && invoice && invoiceAvailable(invoice)) draft.allocations.set(id, { amountPaise: invoice.totalPaise - invoice.verifiedPaidPaise, paymentIndex: 0 }); else draft.allocations.delete(id); changed(); syncEntryAmounts(); renderDraft(); }
     if (target.dataset.entryRemoveFile !== undefined) { const entry = draft.entries[Number(target.dataset.entryRemoveFile)]; if (entry.url) URL.revokeObjectURL(entry.url); entry.file = null; entry.url = null; entry.uploaded = null; changed(); renderDraft(); }
     if (target.dataset.entryRemove !== undefined) { const index = Number(target.dataset.entryRemove); if (draft.allocations.size && [...draft.allocations.values()].some((item) => item.paymentIndex === index)) return showToast('Move invoice allocations to another payment entry first.', 'toast-error'); const [entry] = draft.entries.splice(index, 1); if (entry.url) URL.revokeObjectURL(entry.url); for (const row of draft.allocations.values()) if (row.paymentIndex > index) row.paymentIndex--; changed(); renderDraft(); }
   });
   root.addEventListener('change', (event) => {
     if (!draft) return; const target = event.target;
-    if (target.dataset.invoiceEntry) { draft.allocations.get(target.dataset.invoiceEntry).paymentIndex = Number(target.value); changed(); renderDraft(); }
-    if (target.dataset.invoiceAmount) renderDraft();
+    if (target.dataset.invoiceEntry) { draft.allocations.get(target.dataset.invoiceEntry).paymentIndex = Number(target.value); changed(); syncEntryAmounts(); renderDraft(); }
+    if (target.dataset.invoiceAmount) { syncEntryAmounts(); renderDraft(); }
     if (target.dataset.entryMode !== undefined) { draft.entries[Number(target.dataset.entryMode)].mode = target.value; changed(); renderDraft(); }
     if (target.dataset.entryFile !== undefined) {
       const entry = draft.entries[Number(target.dataset.entryFile)], file = target.files?.[0]; if (!file) return;
@@ -257,13 +257,14 @@ export function initCollectionsUi({ db, functions }) {
   });
   root.addEventListener('input', (event) => {
     if (!draft) return; const target = event.target;
-    if (target.dataset.invoiceAmount) { const row = draft.allocations.get(target.dataset.invoiceAmount); if (row) { row.amountRaw = target.value; row.amountPaise = /^\d+(?:\.\d{1,2})?$/.test(target.value) ? Math.round(Number(target.value) * 100) : NaN; } changed(); updateDraftSummary(); }
-    if (target.dataset.entryReference !== undefined) { draft.entries[Number(target.dataset.entryReference)].transactionNumber = target.value; changed(); }
+    if (target.dataset.invoiceAmount) { const row = draft.allocations.get(target.dataset.invoiceAmount); if (row) { row.amountRaw = target.value; row.amountPaise = /^\d+(?:\.\d{1,2})?$/.test(target.value) ? Math.round(Number(target.value) * 100) : NaN; } changed(); syncEntryAmounts(); updateDraftSummary(); }
+    if (target.dataset.entryAmount !== undefined) { const entry = draft.entries[Number(target.dataset.entryAmount)]; entry.amountRaw = target.value; entry.amountPaise = /^\d+(?:\.\d{1,2})?$/.test(target.value) ? Math.round(Number(target.value) * 100) : NaN; entry.manualAmount = true; changed(); updateDraftSummary(); }
+    if (target.dataset.entryReference !== undefined) { draft.entries[Number(target.dataset.entryReference)].transactionNumber = target.value; changed(); updateDraftSummary(); }
   });
   $('payment-create').onclick = () => document.dispatchEvent(new CustomEvent('oms:create-single-payment'));
   $('collection-create').onclick = openCreate; $('collection-refresh').onclick = load;
   for (const id of ['collection-search', 'collection-karyakarta', 'collection-customer', 'collection-type', 'collection-status', 'collection-from', 'collection-to']) $(id).addEventListener('input', renderList);
   document.addEventListener('oms:pagechange', (event) => { if (event.detail.page === 'payments') load(); });
   document.addEventListener('oms:payment-changed', load);
-  return { setSession(nextUser, nextProfile) { loadingRevision++; user = nextUser; profile = nextProfile; collections = []; payments = []; invoices = []; customers = []; if (user && profile) load(); else { $('collection-list').innerHTML = ''; $('collection-dialog').close(); } } };
+  return { setSession(nextUser, nextProfile) { loadingRevision++; user = nextUser; profile = nextProfile; collections = []; payments = []; invoices = []; ownerNames = new Map(); if (user && profile) load(); else { $('collection-list').innerHTML = ''; $('collection-dialog').close(); } } };
 }

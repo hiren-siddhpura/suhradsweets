@@ -684,6 +684,15 @@ body{color:var(--text);background:#f7f5f1}button,input,select,textarea{font:inhe
 .collection-entry .payment-form-grid{width:100%}.collection-entry .payment-upload{width:100%}
 .collection-summary{display:grid;gap:8px;margin:0;padding:14px;border:1px solid #edccaf;border-radius:11px;background:#fff3e8}.collection-summary strong{color:#713205}.collection-summary p{margin:0;font-size:13px;font-weight:700}.collection-summary small{color:#755b48;line-height:1.45}
 .collection-dialog textarea{min-height:78px;resize:vertical}
+.collection-dialog:has([data-bulk-filter]){width:min(96vw,1100px);max-height:95dvh}
+.bulk-filters{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.bulk-filter-actions{display:flex;flex-wrap:wrap;gap:8px}
+.bulk-invoice-list{max-height:38vh;overflow-y:auto;border:1px solid #e7d9cb;border-radius:10px}
+.bulk-invoice-row{display:grid;grid-template-columns:20px minmax(0,1fr) minmax(130px,auto);align-items:center;gap:10px;padding:11px 12px;border-bottom:1px solid #eee3d8;cursor:pointer}
+.bulk-invoice-row:last-child{border-bottom:0}.bulk-invoice-row:hover{background:#fff6ed}.bulk-invoice-row input{width:18px;height:18px}.bulk-invoice-row span,.bulk-selected-row span{min-width:0}.bulk-invoice-row small,.bulk-selected-row small{display:block;color:#765f4d;line-height:1.35}.bulk-invoice-values{text-align:right}.bulk-invoice-values b{display:block;color:#8d3b08}
+.bulk-selected-row{display:grid;grid-template-columns:minmax(150px,1fr) minmax(130px,170px) minmax(130px,170px) auto;gap:10px;align-items:end;padding:11px 0;border-top:1px solid #eee3d8}.bulk-selected-row:first-of-type{border-top:0}.bulk-selected-row button{min-height:44px}
+@media(max-width:700px){.bulk-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.bulk-invoice-row{grid-template-columns:20px minmax(0,1fr)}.bulk-invoice-values{grid-column:2;text-align:left}.bulk-selected-row{grid-template-columns:repeat(2,minmax(0,1fr))}.bulk-selected-row>span{grid-column:1/-1}.bulk-selected-row button{align-self:end}}
+@media(max-width:390px){.bulk-filters{grid-template-columns:1fr}.bulk-filter-actions .button{flex:1}.bulk-selected-row{grid-template-columns:1fr}.bulk-selected-row>span{grid-column:auto}}
 @media(max-width:760px){
   .payment-picker-dialog{width:100vw;max-width:none;max-height:min(90dvh,760px);margin:auto 0 0;border-radius:18px 18px 0 0;padding:18px 16px calc(16px + env(safe-area-inset-bottom))}
   .payment-entry-dialog,.collection-dialog{width:100vw;max-width:none;max-height:100dvh;height:100dvh;margin:0;border:0;border-radius:0;padding:18px 14px calc(18px + env(safe-area-inset-bottom));overflow-y:auto}

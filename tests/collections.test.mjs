@@ -99,6 +99,7 @@ test('duplicate invoice, overpayment and missing online receipt are rejected', a
   await assert.rejects(submitCollection(db, 'userA', input('duplicate', [rows[0], rows[0]])), /unique/);
   await assert.rejects(submitCollection(db, 'userA', input('excess', [{ invoiceId: 'invoiceA', amountPaise: 9000, paymentIndex: 0 }])), /balance/);
   await assert.rejects(submitCollection(db, 'userA', input('missing-proof', [rows[0]], [{ mode: 'upi', transactionNumber: 'UPI-88' }])), /receipt/);
+  await assert.rejects(submitCollection(db, 'userA', input('entry-mismatch', [rows[0]], [{ mode: 'cash', transactionNumber: '-', amountPaise: 2000 }])), /entry amounts/);
 });
 
 test('cancelled invoice cannot be collected or approved after cancellation', async () => {

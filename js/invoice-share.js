@@ -1,3 +1,5 @@
+import { invoicePdfFilename } from './invoice-filename.js';
+
 export function whatsappPhone(customer = {}) {
   const raw = String(customer.contact || '').trim();
   if (!raw || !/^[+\d\s().-]+$/.test(raw)) return null;
@@ -24,7 +26,7 @@ export function whatsappInvoiceMessage(invoice) {
 }
 
 export async function shareInvoicePdf(invoice, blob, { navigator: browserNavigator = navigator, open = (url) => window.open(url, '_blank', 'noopener,noreferrer'), download } = {}) {
-  const filename = `${String(invoice.invoiceNumber || `INV-${invoice.orderNumber || ''}`).replace(/[^A-Za-z0-9_-]/g, '_')}.pdf`;
+  const filename = invoicePdfFilename(invoice);
   if (typeof File === 'function' && typeof browserNavigator.share === 'function' && typeof browserNavigator.canShare === 'function') {
     let file;
     try {

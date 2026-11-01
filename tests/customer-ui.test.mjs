@@ -20,7 +20,7 @@ test('customer form shows Firestore denial, keeps the dialog open and reuses the
     saveCustomerDirect: async (_db, _auth, _data, options) => { submittedIds.push(options.customerId); throw { code: 'permission-denied' }; },
     callOperation: async () => { callableRequests++; },
   };
-  const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
+  const source = readFileSync(new URL('../js/order-bulk.js', import.meta.url), 'utf8').replace(/^export /gm, '') + '\n' + readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
   vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, Object.assign(context, { availableOrderUnits, itemUnitPrice, orderLineUnitLabel }));
   context.init({ db: {}, auth: { currentUser: { uid: 'admin' } }, functions: {} }).setSession({ uid: 'admin' }, { role: 'admin' });
   getElement('customer-new').listeners.click();
@@ -57,7 +57,7 @@ test('Delete confirms the escaped name and preserves the exact dependency error 
     callOperation: async (_functions, name, payload) => { requests.push({ name, payload }); throw new Error(linkedMessage); },
     saveCustomerDirect: () => { throw new Error('Deletion must not use direct writes.'); },
   };
-  const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
+  const source = readFileSync(new URL('../js/order-bulk.js', import.meta.url), 'utf8').replace(/^export /gm, '') + '\n' + readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
   vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, Object.assign(context, { availableOrderUnits, itemUnitPrice, orderLineUnitLabel }));
   const ui = context.init({ db: {}, functions: {}, mode: 'live' });
   ui.setSession({ uid: 'admin' }, { role: 'admin' });

@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { hasPermission, isStaff, validateProfile } from '../js/permissions.js';
 import { availableOrderUnits, itemUnitPrice, orderLineUnitLabel } from '../js/order-units.js';
 
-const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8')
+const source = readFileSync(new URL('../js/order-bulk.js', import.meta.url), 'utf8').replace(/^export /gm, '') + '\n' + readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8')
   .replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 

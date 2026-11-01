@@ -2,6 +2,7 @@ import { callOperation } from './operations-data.js';
 import { analyticsColumns, analyticsCsv, matchingOrders, quantities, quantityText, sortAnalyticsRows, statusSortValue, totalText } from './order-analytics-data.js';
 import { userOrderWorkbook } from './order-analytics-export.js';
 import { openAnalyticsExport } from './analytics-share.js';
+import { sortUsersByName } from './user-sort.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -136,7 +137,7 @@ export function initOrderAnalytics({ functions }) {
       data = result;
       loaded = true;
       const previousUser = $('analytics-user').value;
-      $('analytics-user').innerHTML = `<option value="">All users</option>${result.staff ? result.users.map((entry) => `<option value="${esc(entry.id)}">${esc(entry.name)}</option>`).join('') : ''}`;
+      $('analytics-user').innerHTML = `<option value="">All users</option>${result.staff ? sortUsersByName(result.users).map((entry) => `<option value="${esc(entry.id)}">${esc(entry.name)}</option>`).join('') : ''}`;
       $('analytics-user').value = result.staff && result.users.some((entry) => entry.id === previousUser) ? previousUser : '';
       renderTable();
     } catch (error) {

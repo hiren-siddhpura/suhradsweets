@@ -33,7 +33,8 @@ async function actor(db, uid, tx) {
 function requireStaff(user) { if (!staffRole(user.role)) fail('Access denied: operational staff access is required.'); }
 function canManage(user, order) { return staffRole(user.role) || order.ownerUid === user.uid; }
 function editableOrder(order, user) {
-  if (!['draft', 'confirmed'].includes(order.status) && !(user.role === 'admin' && order.invoiceId && ['in_preparation', 'ready'].includes(order.status))) fail('Only an active Draft or Confirmed order can be edited.');
+  if (order.invoiceId && user.role !== 'admin') fail('This order cannot be edited because an invoice exists.');
+  if (!['draft', 'confirmed'].includes(order.status) && !(user.role === 'admin' && order.invoiceId && ['in_preparation', 'ready', 'invoiced'].includes(order.status))) fail('Only an active Draft or Confirmed order can be edited.');
   if (order.archivedAt) fail('Restore this archived order before editing it.');
 }
 async function financialLock(db, tx, orderId, user) {
@@ -233,6 +234,7 @@ export async function saveOrderDraft(db, uid, input) {
     if (old.exists) {
       editableOrder(old.data(), user);
       var linkedInvoice = await financialLock(db, tx, orderId, user);
+      if (!(await tx.get(db.collection('deliveries').where('orderId', '==', orderId).limit(1))).empty) fail('An order with delivery history cannot be edited.');
       if (old.data().status === 'confirmed' && user.role !== 'admin') fail('Only Admin may edit a confirmed order.');
     }
     if (old.exists && newCustomer) fail('New customer must be selected when the order is created.');
@@ -385,8 +387,10 @@ export async function cancelOrder(db, uid, orderId, reason) {
   return db.runTransaction(async (tx) => {
     const user = await actor(db, uid, tx);
     const order = await tx.get(ref);
-    if (user.role !== 'admin') fail('Only Admin may cancel orders.');
-    if (!order.exists || !['draft', 'confirmed', 'in_preparation', 'ready'].includes(order.data().status)) fail('This order cannot be cancelled. Delivered orders require a separate return workflow.');
+    if (!staffRole(user.role)) fail('Only staff may cancel orders.');
+    if (!order.exists) fail('This order cannot be cancelled.');
+    if (['delivered', 'invoiced'].includes(order.data().status)) fail('Delivered or invoiced orders require a separate credit or return workflow.');
+    if (!['draft', 'confirmed', 'in_preparation', 'ready'].includes(order.data().status)) fail('This order cannot be cancelled.');
     if (user.role === 'user' && order.data().lines?.some((line) => line.kind === 'special')) fail('Assigned Users may view special orders but cannot change them.');
     const draft = order.data().status === 'draft';
     if (!staffRole(user.role) && (!draft || order.data().ownerUid !== uid)) fail('Only staff can cancel a confirmed order.');
@@ -431,7 +435,7 @@ export async function cancelOrder(db, uid, orderId, reason) {
     });
     tx.update(ref, { status: 'cancelled', cancelledAt: FieldValue.serverTimestamp(), cancelledBy: uid, cancellationReason: reason.trim(), updatedBy: uid, updatedAt: FieldValue.serverTimestamp() });
     if (invoice.exists) tx.update(invoice.ref, { status: 'cancelled', cancelledAt: FieldValue.serverTimestamp(), cancelledBy: uid, cancellationReason: reason.trim(), paymentStatus: 'cancelled' });
-    orderEvent(tx, db, draft ? 'order.draft_cancelled' : 'order.cancelled', user, orderId, order.data(), { invoiceNumber: invoice.exists ? invoice.data().invoiceNumber : null, receivedPaise: invoice.exists ? invoice.data().verifiedPaidPaise || 0 : 0, status: { before: order.data().status, after: 'cancelled' }, inventory: { kind: deductions.length && reservations.length ? 'partial_restoration_and_release' : reservations.length ? 'reservation_released' : deductions.length ? 'stock_restored' : 'none', items: inventory } }, reason.trim());
+    orderEvent(tx, db, draft ? 'order.draft_cancelled' : 'order.cancelled', user, orderId, order.data(), { invoiceNumber: invoice.exists ? invoice.data().invoiceNumber || null : null, receivedPaise: invoice.exists ? invoice.data().verifiedPaidPaise || 0 : 0, status: { before: order.data().status, after: 'cancelled' }, inventory: { kind: deductions.length && reservations.length ? 'partial_restoration_and_release' : reservations.length ? 'reservation_released' : deductions.length ? 'stock_restored' : 'none', items: inventory } }, reason.trim());
     return { orderId, status: 'cancelled', receivedPaise: invoice.exists ? invoice.data().verifiedPaidPaise || 0 : 0 };
   });
 }
@@ -459,18 +463,7 @@ export async function updateInvoiceCustomerName(db, uid, input) {
 }
 
 export async function advanceOrder(db, uid, orderId, nextStatus) {
-  if (!validId(orderId)) fail('Invalid order ID.');
-  const transitions = { confirmed: 'in_preparation', in_preparation: 'ready', ready: 'delivered' };
-  const ref = db.doc(`orders/${orderId}`);
-  return db.runTransaction(async (tx) => {
-    const user = await actor(db, uid, tx); requireStaff(user);
-    const order = await tx.get(ref);
-    if (!order.exists || transitions[order.data().status] !== nextStatus) fail('Invalid order status transition.');
-    if (order.data().archivedAt) fail('Restore this archived order before changing its status.');
-    tx.update(ref, { status: nextStatus, updatedAt: FieldValue.serverTimestamp(), updatedBy: uid });
-    orderEvent(tx, db, 'order.status_changed', user, orderId, order.data(), { status: { before: order.data().status, after: nextStatus } });
-    return { orderId, status: nextStatus };
-  });
+  fail('Use Create Delivery to record delivery quantities and change order status.');
 }
 
 async function changeArchive(db, uid, orderId, archive, reason = '') {
@@ -482,6 +475,7 @@ async function changeArchive(db, uid, orderId, archive, reason = '') {
     if (!snap.exists || !canManage(user, snap.data())) fail('You may manage only your own order.');
     const order = snap.data();
     if (user.role === 'user' && order.lines?.some((line) => line.kind === 'special')) fail('Assigned Users may view special orders but cannot change them.');
+    if (order.invoiceId || order.status === 'invoiced') fail('This order cannot be archived because an invoice exists.');
     if (!['draft', 'confirmed', 'in_preparation', 'ready'].includes(order.status)) fail('This order status cannot be archived or restored.');
     if (Boolean(order.archivedAt) === archive) fail(archive ? 'Order is already archived.' : 'Order is not archived.');
     if (order.paymentRequestedAt) fail('This order is locked because payment was requested.');
@@ -533,19 +527,23 @@ export async function createInvoiceFromOrder(db, uid, orderId) {
     const user = await actor(db, uid, tx);
     const order = await tx.get(db.doc(`orders/${orderId}`));
     const invoice = await tx.get(invoiceRef);
-    if (!order.exists || order.data().status !== 'confirmed') fail('Only a Confirmed order can be invoiced.');
+    if (!order.exists) fail('Order does not exist.');
+    if (invoice.exists) fail('An invoice already exists for this order.');
+    if (!['confirmed', 'delivered', 'in_preparation', 'ready'].includes(order.data().status)) fail('Only an active order can be invoiced.');
     if (!staffRole(user.role) && order.data().ownerUid !== uid) fail('You may invoice only your own order.');
     if (order.data().archivedAt) fail('Restore this archived order before invoicing.');
-    if (invoice.exists) fail('An invoice already exists for this order.');
     const data = order.data();
     if (!Array.isArray(data.stockDeductions) || !data.stockDeductions.length) fail('Confirmed stock snapshot is missing.');
+    if (!text(data.orderNumber, 100) || !text(data.customerId, 128) || !text(data.customerSnapshot?.fullName, 120) || !validDate(data.orderDate)) fail('Order or customer details are incomplete.');
+    if (!Array.isArray(data.lines) || !data.lines.length || data.lines.some((line) => !Number.isSafeInteger(line.quantityQty) || line.quantityQty <= 0 || !Number.isSafeInteger(line.unitPricePaise) || line.unitPricePaise < 0 || !Number.isSafeInteger(line.lineTotalPaise) || line.lineTotalPaise !== saleTotal(line.quantityQty, line.unitPricePaise) || !(line.kind === 'item' ? text(line.itemSnapshot?.name, 120) : line.kind === 'special' && text(line.specialSnapshot?.name, 120)))) fail('Order item or price details are invalid.');
+    if (!Number.isSafeInteger(data.subtotal) || !Number.isSafeInteger(data.grandTotal) || data.subtotal < 0 || data.grandTotal < 0 || data.lines.reduce((sum, line) => sum + line.lineTotalPaise, 0) !== data.subtotal) fail('Order totals are invalid.');
     // Sabha, birth date and customer ownership are deliberately absent.
     const lines = data.lines.map((line) => ({ kind: line.kind, description: line.kind === 'item' ? line.itemSnapshot.name : line.specialSnapshot.name, quantityQty: line.quantityQty, unit: line.kind === 'item' ? line.orderUnitName || line.itemSnapshot.unitSymbol : 'combo', unitPricePaise: line.unitPricePaise, lineTotalPaise: line.lineTotalPaise }));
     tx.create(invoiceRef, { invoiceNumber: `INV-${data.orderNumber}`, orderId, orderNumber: data.orderNumber, ownerUid: data.ownerUid, customerId: data.customerId, customerSnapshot: customerSnapshot(data.customerSnapshot), lines, subtotal: data.subtotal, totalPaise: data.grandTotal, verifiedPaidPaise: 0, paymentStatus: 'unpaid', issuedAt: FieldValue.serverTimestamp(), createdBy: uid, paidAt: null, paidBy: null });
-    tx.update(order.ref, { invoiceId: orderId, editLockedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), updatedBy: uid });
+    tx.update(order.ref, { invoiceId: orderId, status: 'invoiced', editLockedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), updatedBy: uid });
     audit(tx, db, 'invoice.created', uid, 'invoice', orderId, { orderId, totalPaise: data.grandTotal }, user.name);
     orderEvent(tx, db, 'order.invoice_created', user, orderId, data, { invoiceId: { before: null, after: orderId } });
     orderEvent(tx, db, 'order.locked', user, orderId, data, { editLocked: { before: false, after: true } }, 'Invoice created');
-    return { invoiceId: orderId };
+    return { invoiceId: orderId, invoiceNumber: `INV-${data.orderNumber}` };
   });
 }

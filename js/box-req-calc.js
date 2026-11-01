@@ -1,7 +1,7 @@
 import { ORDER_UNITS, orderUnitLabel } from './order-units.js';
 
 export const BOX_UNITS = Object.freeze(['250gm', '500gm', 'kg'].map((id) => Object.freeze([id, id === 'kg' ? '1 KG' : ORDER_UNITS.find((unit) => unit.id === id).label])));
-const ACTIVE_STATUSES = new Set(['confirmed', 'in_preparation', 'ready', 'delivered']);
+const ACTIVE_STATUSES = new Set(['confirmed', 'in_preparation', 'ready', 'delivered', 'invoiced']);
 const EMPTY_COUNTS = () => ({ '250gm': 0, '500gm': 0, kg: 0 });
 const normalized = (name) => String(name || '').trim().toLocaleLowerCase();
 const packing = (name) => ['gift packing', 'gift wrapping'].includes(normalized(name));

@@ -10,6 +10,9 @@ import { actionLabel, activityDate, changeSummary, references } from './activity
 import { listActivity } from './activity-data.js';
 import { uniqueId } from './unique-id.js';
 import { paymentInvoiceSummary, paymentUpload } from './payment-form-ui.js';
+import { listMasterRecords } from './master-data.js';
+import { sortUsersByName } from './user-sort.js';
+import { cardIcon, cardButton, cardMore } from './mobile-card.js';
 import { getStorage, ref as storageRef, uploadBytesResumable } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-storage.js';
 
 const $ = (id) => document.getElementById(id);
@@ -27,7 +30,10 @@ async function exportRows(name, rows) {
 }
 
 export function initFinanceUi({ db, functions }) {
-  let user = null, profile = null, invoices = [], payments = [], paymentsLoaded = false, revision = 0, action = '', target = '', resolvedNames = new Map(), paymentOperationId = '', paymentPage = 1;
+  let user = null, profile = null, invoices = [], payments = [], paymentUsers = [], paymentsLoaded = false, revision = 0, action = '', target = '', resolvedNames = new Map(), paymentOperationId = '', paymentPage = 1;
+  let appliedPaymentFilters = {};
+  const paymentFilterIds = ['search', 'user', 'customer', 'mode', 'status', 'from', 'to', 'order', 'invoice', 'submitter', 'verifier'];
+  const readPaymentFilters = () => Object.fromEntries(paymentFilterIds.map((field) => [field, String($(`payment-${field}`).value || '').trim()]));
   let recordLoadToken = null, activityLoadToken = null;
   const stopRecordLoad = () => { if (recordLoadToken) globalThis.omsLoading?.stop(recordLoadToken); recordLoadToken = null; };
   const stopActivityLoad = () => { if (activityLoadToken) globalThis.omsLoading?.stop(activityLoadToken); activityLoadToken = null; };
@@ -61,13 +67,15 @@ export function initFinanceUi({ db, functions }) {
   const statusBadge = (status) => `<span class="status-badge is-${esc(String(status || 'unknown').replace(/_/g, '-'))}">${esc(statusLabel(status))}</span>`;
   const matching = (kind) => {
     const rows = kind === 'invoice' ? invoices : payments;
-    const search = $(`${kind}-search`).value.trim().toLowerCase(), status = $(`${kind}-status`).value, from = $(`${kind}-from`).value, to = $(`${kind}-to`).value;
-    const extra = kind === 'payment' ? Object.fromEntries(['customer', 'order', 'invoice', 'mode', 'submitter', 'verifier'].map((field) => [field, $( `payment-${field}` ).value.trim().toLowerCase()])) : {};
+    const filters = kind === 'payment' ? appliedPaymentFilters : null;
+    const search = (filters?.search ?? $(`${kind}-search`).value).trim().toLowerCase(), status = filters?.status ?? $(`${kind}-status`).value, from = filters?.from ?? $(`${kind}-from`).value, to = filters?.to ?? $(`${kind}-to`).value;
+    const extra = kind === 'payment' ? Object.fromEntries(['customer', 'order', 'invoice', 'mode', 'submitter', 'verifier'].map((field) => [field, String(filters?.[field] || '').toLowerCase()])) : {};
     return rows.filter((row) => {
       const haystack = `${row.invoiceNumber} ${row.orderNumber} ${row.customerSnapshot?.fullName} ${row.customerSnapshot?.contact} ${row.transactionNumber || ''} ${kind === 'payment' ? `${customerName(row)} ${paymentName(row, 'submittedBy')} ${paymentName(row, 'verifiedBy')}` : ''}`.toLowerCase();
       const day = iso(kind === 'invoice' ? row.issuedAt : row.submittedAt);
       return (!search || haystack.includes(search)) && (!status || (kind === 'invoice' ? invoiceStatus(row) : row.reversalId ? 'reversed' : row.verificationStatus) === status) && (!from || day >= from) && (!to || day <= to)
-        && (kind !== 'payment' || (!extra.customer || `${customerName(row)} ${row.customerSnapshot?.contact || ''}`.toLowerCase().includes(extra.customer))
+        && (kind !== 'payment' || (!filters?.user || row.ownerUid === filters.user)
+          && (!extra.customer || `${customerName(row)} ${row.customerSnapshot?.contact || ''}`.toLowerCase().includes(extra.customer))
           && (!extra.order || String(row.orderNumber || '').toLowerCase().includes(extra.order))
           && (!extra.invoice || String(row.invoiceNumber || '').toLowerCase().includes(extra.invoice))
           && (!extra.mode || row.mode === extra.mode)
@@ -85,10 +93,14 @@ export function initFinanceUi({ db, functions }) {
     if (!rows.length && !invoices.length) $('invoice-body').innerHTML = '<tr><td colspan="9" class="empty-cell">No invoice has been created yet. An Admin or Account Admin must choose Create invoice on a confirmed order.</td></tr>';
     $('invoice-mobile-list').innerHTML = rows.length ? rows.map((row) => {
       const status = invoiceStatus(row);
-      return `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${esc(row.invoiceNumber || `INV-${row.orderNumber}`)}</strong>${statusBadge(status)}</div><p>${esc(row.customerSnapshot?.fullName)}<small>${esc(date(row.issuedAt))} · ${esc(row.orderNumber)}</small></p><div class="mobile-record-bottom"><b>${esc(cash(row.totalPaise))}</b><div class="mobile-record-actions"><button type="button" data-finance="preview" data-id="${esc(row.id)}">View</button><button type="button" data-finance="pdf" data-id="${esc(row.id)}">PDF</button><button type="button" data-finance="share" data-id="${esc(row.id)}">Share</button>${paymentsLoaded && !['paid', 'in_process', 'cancelled', 'overpaid'].includes(status) && row.totalPaise > row.verifiedPaidPaise && (canVerify() || row.ownerUid === user?.uid) ? `<button type="button" data-finance="submit" data-id="${esc(row.id)}"><span aria-hidden="true">₹</span> Payment</button>` : ''}</div></div></article>`;
+      const owner = paymentUsers.find((entry) => entry.id === row.ownerUid);
+      const ownerName = row.assignedUserName || owner?.displayName || owner?.fullName || owner?.name;
+      const payable = paymentsLoaded && !['paid', 'in_process', 'cancelled', 'overpaid'].includes(status) && row.totalPaise > row.verifiedPaidPaise && (canVerify() || row.ownerUid === user?.uid);
+      const editName = profile?.role === 'admin' && status !== 'cancelled' ? `<button type="button" class="invoice-customer-edit" data-finance="customerName" data-id="${esc(row.id)}" aria-label="Edit customer name for ${esc(row.invoiceNumber || row.orderNumber)}" title="Edit customer name">${cardIcon('edit')}</button>` : '';
+      return `<article class="order-mobile-card"><div class="order-card-header"><strong>${esc(row.invoiceNumber || `INV-${row.orderNumber}`)}</strong>${statusBadge(status)}</div><h3 class="order-card-customer invoice-card-customer"><span>${esc(row.customerSnapshot?.fullName || 'Customer unavailable')}</span>${editName}</h3><div class="order-card-meta"><span>${cardIcon('calendar')}${esc(date(row.issuedAt))}</span>${ownerName ? `<span>${cardIcon('user')}${esc(ownerName)}</span>` : ''}<span>${cardIcon('order')}${esc(row.orderNumber)}</span></div><div class="mobile-card-balances"><span>Paid <b>${esc(cash(row.verifiedPaidPaise))}</b></span><span>Outstanding <b>${esc(cash(Math.max(0, row.totalPaise - row.verifiedPaidPaise)))}</b></span></div><div class="order-card-total"><span>Invoice Total</span><strong>${esc(cash(row.totalPaise))}</strong></div><div class="order-card-actions">${cardButton('preview', row.id, 'View invoice', 'view', 'data-finance', 'View')}${cardButton('pdf', row.id, 'Download invoice', 'download', 'data-finance', 'Download')}${payable ? cardButton('submit', row.id, 'Record payment', 'payment', 'data-finance', 'Payment') : ''}${cardButton('share', row.id, 'Share invoice', 'share')}</div></article>`;
     }).join('') : '<p class="mobile-record-empty">No invoices match the current filters.</p>';
     if (profile?.role === 'admin') {
-      for (const containerId of ['invoice-body', 'invoice-mobile-list']) {
+      for (const containerId of ['invoice-body']) {
         $(containerId).querySelectorAll?.('[data-finance="preview"]').forEach((button) => {
           const row = rows.find((entry) => entry.id === button.dataset.id);
           if (row && invoiceStatus(row) !== 'cancelled') button.insertAdjacentHTML('beforebegin', `<button type="button" data-finance="customerName" data-id="${esc(row.id)}">Edit Customer Name</button>`);
@@ -110,15 +122,17 @@ export function initFinanceUi({ db, functions }) {
       tr.querySelector('td:last-child')?.insertAdjacentHTML('beforebegin', `<td>${esc(date(visibleRows[index].verifiedAt))}</td>`);
     });
     if (canVerify()) $('payment-body').querySelectorAll?.('[data-finance="verify"]').forEach((button) => button.insertAdjacentHTML('beforebegin', `<button type="button" data-finance="correct" data-id="${esc(button.dataset.id)}">Correct mode</button>`));
-    $('payment-mobile-list').innerHTML = visibleRows.length ? visibleRows.map((row) => `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${esc(row.transactionNumber || row.invoiceNumber || 'Payment')}</strong><span class="mobile-status">${esc(row.reversalId ? 'reversed' : row.verificationStatus)}</span></div><p>${esc(customerName(row))}<small>${esc(date(row.submittedAt))} · ${esc(row.mode)}</small></p><div class="mobile-record-bottom"><b>${esc(cash(row.amountPaise))}</b><div class="mobile-record-actions">${row.attachment ? `<button type="button" data-finance="receipt" data-id="${esc(row.id)}">Receipt</button>` : ''}${canVerify() && row.verificationStatus === 'unverified' ? `<button type="button" data-finance="verify" data-id="${esc(row.id)}">Verify</button><button type="button" data-finance="reject" data-id="${esc(row.id)}">Reject</button>` : ''}${canVerify() && row.verificationStatus === 'verified' && !row.reversalId && !row.collectionId ? `<button type="button" data-finance="reverse" data-id="${esc(row.id)}">Reverse</button>` : ''}</div></div></article>`).join('') : '<p class="mobile-record-empty">No payments match the current filters.</p>';
+    $('payment-mobile-list').innerHTML = visibleRows.length ? visibleRows.map((row) => {
+      const status = row.reversalId ? 'reversed' : row.verificationStatus;
+      const extras = [canVerify() && status === 'unverified' ? `<button type="button" data-finance="correct" data-id="${esc(row.id)}">Correct mode</button>` : '', canVerify() && status === 'verified' && !row.collectionId ? `<button type="button" data-finance="reverse" data-id="${esc(row.id)}">Reverse payment</button>` : ''].filter(Boolean);
+      return `<article class="order-mobile-card"><div class="order-card-header"><strong>${esc(row.transactionNumber || row.collectionNumber || row.invoiceNumber || 'Payment')}</strong><span class="mobile-status is-${esc(status)}">${esc(status)}</span></div><h3 class="order-card-customer">${esc(customerName(row))}</h3><div class="order-card-meta"><span>${cardIcon('calendar')}${esc(date(row.submittedAt))}</span><span>${cardIcon('payment')}${esc(({ cash: 'Cash', upi: 'UPI', bank_transfer: 'Online' })[row.mode] || row.mode || 'Mode unavailable')}</span><span>${cardIcon('invoice')}${esc(row.invoiceNumber)}</span>${row.collectionNumber ? `<span>${cardIcon('receipt')}Collection ${esc(row.collectionNumber)}</span>` : ''}</div>${row.reviewReason ? `<p class="mobile-card-note">${esc(row.reviewReason)}</p>` : ''}<div class="order-card-total"><span>Payment Amount</span><strong>${esc(cash(row.amountPaise))}</strong></div><div class="order-card-actions">${cardButton('paymentDetails', row.id, 'View payment', 'view')}${row.attachment ? cardButton('receipt', row.id, 'View receipt', 'receipt') : ''}${canVerify() && status === 'unverified' ? cardButton('verify', row.id, 'Approve payment', 'check') + cardButton('reject', row.id, 'Reject payment', 'reject') : ''}${cardMore(esc(row.transactionNumber || row.invoiceNumber), extras)}</div></article>`;
+    }).join('') : '<p class="mobile-record-empty">No payments match the current filters.</p>';
     visibleRows.forEach((row, index) => {
       if (row.collectionNumber) {
         $('payment-body').querySelectorAll('tr')[index]?.querySelectorAll('td')[4]?.insertAdjacentHTML('beforeend', `<small>Collection: ${esc(row.collectionNumber)}</small>`);
-        $('payment-mobile-list').querySelectorAll('.mobile-record-card')[index]?.insertAdjacentHTML('beforeend', `<p>Collection: ${esc(row.collectionNumber)}</p>`);
       }
       if (row.reviewReason) {
         $('payment-body').querySelectorAll('tr')[index]?.querySelectorAll('td')[9]?.insertAdjacentHTML('beforeend', `<small>${esc(row.reviewReason)}</small>`);
-        $('payment-mobile-list').querySelectorAll('.mobile-record-card')[index]?.insertAdjacentHTML('beforeend', `<p>Rejection reason: ${esc(row.reviewReason)}</p>`);
       }
     });
     if ($('payment-page')) { $('payment-page').textContent = `Page ${paymentPage} of ${pageCount}`; $('payment-prev').disabled = paymentPage === 1; $('payment-next').disabled = paymentPage >= pageCount; }
@@ -132,11 +146,15 @@ export function initFinanceUi({ db, functions }) {
     const token = ['invoices', 'payments'].includes(activePage) ? globalThis.omsLoading?.start('Loading invoices and payments…') || null : null;
     recordLoadToken = token;
     try {
-    const [invoiceResult, paymentResult] = await Promise.allSettled([listInvoices(db, owner), listPayments(db, owner)]);
+    const [invoiceResult, paymentResult, usersResult] = await Promise.allSettled([listInvoices(db, owner), listPayments(db, owner), privileged() ? listMasterRecords(db, 'users') : Promise.resolve([{ id: user.uid, displayName: profile?.displayName || profile?.fullName || profile?.name || 'My payments' }])]);
     if (current !== revision) return;
     invoices = invoiceResult.status === 'fulfilled' ? invoiceResult.value : [];
     payments = paymentResult.status === 'fulfilled' ? paymentResult.value : [];
     paymentsLoaded = paymentResult.status === 'fulfilled';
+    paymentUsers = usersResult.status === 'fulfilled' ? sortUsersByName(usersResult.value.filter((row) => row.active !== false)) : [];
+    const selectedUser = $('payment-user').value;
+    $('payment-user').innerHTML = `<option value="">All users</option>${paymentUsers.map((row) => `<option value="${esc(row.id)}">${esc(row.displayName || row.fullName || row.name || row.email || row.id)}</option>`).join('')}`;
+    $('payment-user').value = selectedUser;
     resolvedNames = new Map();
     if (paymentResult.status === 'fulfilled') {
       for (let offset = 0; offset < payments.length; offset += 100) {
@@ -195,6 +213,13 @@ export function initFinanceUi({ db, functions }) {
   async function act(kind, id) {
     try {
       if (['verify', 'reject', 'reverse', 'correct'].includes(kind) && !canVerify()) throw new Error('Access denied: payment review requires a privileged OMS role.');
+      if (kind === 'paymentDetails') {
+        const row = payments.find((payment) => payment.id === id);
+        if (!row) throw new Error('Payment is unavailable. Refresh and try again.');
+        const dialog = document.createElement('dialog'); dialog.className = 'app-dialog';
+        dialog.innerHTML = `<div class="dialog-header"><h2>Payment ${esc(row.transactionNumber || row.invoiceNumber || '')}</h2><button type="button" data-close class="icon-button" aria-label="Close">×</button></div><p><strong>Customer:</strong> ${esc(customerName(row))}</p><p><strong>Invoice:</strong> ${esc(row.invoiceNumber)} · <strong>Order:</strong> ${esc(row.orderNumber)}</p><p><strong>Date:</strong> ${esc(date(row.submittedAt))} · <strong>Mode:</strong> ${esc(row.mode)}</p><p><strong>Amount:</strong> ${esc(cash(row.amountPaise))} · <strong>Status:</strong> ${esc(row.reversalId ? 'reversed' : row.verificationStatus)}</p>${row.collectionNumber ? `<p><strong>Collection:</strong> ${esc(row.collectionNumber)}</p>` : ''}${row.reviewReason ? `<p><strong>Reason:</strong> ${esc(row.reviewReason)}</p>` : ''}`;
+        dialog.querySelector('[data-close]').onclick = () => dialog.close(); dialog.onclose = () => dialog.remove(); document.body.append(dialog); dialog.showModal(); return;
+      }
       if (kind === 'order') { document.querySelector('[data-page="orders"]')?.click(); $('order-search').value = id; $('order-search').dispatchEvent(new Event('input')); return; }
       if (kind === 'customerName') {
         if (profile?.role !== 'admin') throw new Error('Only Admin may update an invoice customer name.');
@@ -255,23 +280,21 @@ export function initFinanceUi({ db, functions }) {
     } catch (error) { showToast(message(error), 'toast-error'); }
   }
   ['invoice', 'payment'].forEach((kind) => {
-    ['search', 'status', 'from', 'to'].forEach((field) => $(`${kind}-${field}`).addEventListener('input', () => { if (kind === 'invoice') renderInvoices(); else { paymentPage = 1; renderPayments(); } }));
+    if (kind === 'invoice') ['search', 'status', 'from', 'to'].forEach((field) => $(`${kind}-${field}`).addEventListener('input', renderInvoices));
+    else $('payment-search').addEventListener('input', () => { appliedPaymentFilters.search = $('payment-search').value.trim(); paymentPage = 1; renderPayments(); });
     $(`${kind}-body`).addEventListener('click', (event) => { const button = event.target.closest('[data-finance]'); if (button) act(button.dataset.finance, button.dataset.id); });
     $(`${kind}-mobile-list`).addEventListener('click', (event) => { const button = event.target.closest('[data-finance]'); if (button) act(button.dataset.finance, button.dataset.id); });
     $(`${kind}-export`).addEventListener('click', () => exportRows(kind === 'invoice' ? 'Invoices' : 'Payments', matching(kind).map((row) => kind === 'invoice' ? { Invoice: row.invoiceNumber, Order: row.orderNumber, Customer: row.customerSnapshot?.fullName, Date: date(row.issuedAt), Total: row.totalPaise / 100, Verified: row.verifiedPaidPaise / 100, Balance: (row.totalPaise - row.verifiedPaidPaise) / 100, Status: statusLabel(invoiceStatus(row)) } : { Submitted: date(row.submittedAt), Customer: customerName(row), Contact: row.customerSnapshot?.contact, Order: row.orderNumber, Invoice: row.invoiceNumber, Collection: row.collectionNumber || '', Amount: row.amountPaise / 100, Mode: row.mode, Reference: row.transactionNumber, SubmittedBy: paymentName(row, 'submittedBy'), Status: row.reversalId ? 'reversed' : row.verificationStatus, Verifier: paymentName(row, 'verifiedBy'), VerifiedAt: date(row.verifiedAt), Attachment: row.attachment?.path || '', AttachmentName: row.attachment?.name || '', RejectionReason: row.reviewReason || '' })));
   });
-  const paymentToolbar = $('payment-search').parentElement;
   const invoiceToolbar = $('invoice-search').parentElement;
   if (invoiceToolbar?.insertAdjacentHTML) {
     invoiceToolbar.insertAdjacentHTML('beforeend', '<button id="invoice-refresh" type="button" class="button button-outline">Refresh</button>');
     $('invoice-refresh').onclick = refresh;
   }
   $('payment-body').closest?.('table')?.querySelector('thead tr th:last-child')?.insertAdjacentHTML('beforebegin', '<th>Verified at</th>');
-  if (paymentToolbar?.insertAdjacentHTML) {
-    paymentToolbar.insertAdjacentHTML('beforeend', '<input id="payment-customer" type="search" placeholder="Customer" aria-label="Customer"><input id="payment-order" type="search" placeholder="Order" aria-label="Order"><input id="payment-invoice" type="search" placeholder="Invoice" aria-label="Invoice"><select id="payment-mode" aria-label="Payment mode"><option value="">All modes</option><option value="cash">Cash</option><option value="upi">UPI</option><option value="bank_transfer">Bank transfer</option></select><input id="payment-submitter" type="search" placeholder="Submitted by" aria-label="Submitted by"><input id="payment-verifier" type="search" placeholder="Verified by" aria-label="Verified by"><button id="payment-refresh" type="button" class="button button-outline">Refresh</button>');
-    ['customer', 'order', 'invoice', 'mode', 'submitter', 'verifier'].forEach((field) => $(`payment-${field}`).addEventListener('input', () => { paymentPage = 1; renderPayments(); }));
-    $('payment-refresh').onclick = refresh;
-  }
+  $('payment-apply').onclick = () => { appliedPaymentFilters = readPaymentFilters(); paymentPage = 1; renderPayments(); };
+  $('payment-clear').onclick = () => { paymentFilterIds.forEach((field) => { $(`payment-${field}`).value = ''; }); appliedPaymentFilters = {}; paymentPage = 1; renderPayments(); };
+  $('payment-refresh').onclick = refresh;
   const paymentPanel = $('payment-body').closest?.('.ops-panel');
   if (paymentPanel?.insertAdjacentHTML) {
     paymentPanel.insertAdjacentHTML('beforeend', '<div class="master-pagination"><button id="payment-prev" type="button" class="button button-outline">Previous</button><span id="payment-page">Page 1</span><button id="payment-next" type="button" class="button button-outline">Next</button></div>');
@@ -282,12 +305,30 @@ export function initFinanceUi({ db, functions }) {
   document.addEventListener('oms:create-single-payment', () => {
     const available = invoices.filter((row) => row.customerId && row.totalPaise > row.verifiedPaidPaise && !['paid', 'in_process', 'cancelled', 'overpaid'].includes(invoiceStatus(row)) && (canVerify() || row.ownerUid === user?.uid));
     const dialog = document.createElement('dialog'); dialog.className = 'app-dialog payment-picker-dialog';
-    dialog.innerHTML = `<div class="dialog-header"><h2>Create Payment</h2><button type="button" data-close class="icon-button" aria-label="Close">×</button></div><div class="payment-picker-body"><label class="ops-field" for="single-payment-search">Select Invoice<input id="single-payment-search" type="search" placeholder="Search invoice number or customer" autocomplete="off"></label><label class="ops-field" for="single-payment-invoice">Available invoices<select id="single-payment-invoice"><option value="">Choose an invoice</option>${available.map((row) => `<option value="${esc(row.id)}">${esc(row.invoiceNumber)} · ${esc(row.customerSnapshot?.fullName)} · ${esc(cash(row.totalPaise - row.verifiedPaidPaise))} due</option>`).join('')}</select></label><div id="single-payment-summary" aria-live="polite"></div>${available.length ? '' : '<p class="payment-form-note">No payable invoices are available.</p>'}</div><div class="dialog-actions"><button type="button" data-continue class="button button-primary" disabled>Continue</button></div>`;
+    dialog.innerHTML = `<div class="dialog-header"><h2>Create Payment</h2><button type="button" data-close class="icon-button" aria-label="Close">×</button></div><div class="payment-picker-body"><label class="ops-field">User<select id="single-payment-user"><option value="">Choose a user</option></select></label><label class="ops-field">Customer<select id="single-payment-customer" disabled><option value="">Choose a customer</option></select></label><label class="ops-field" for="single-payment-search">Search invoice<input id="single-payment-search" type="search" placeholder="Search invoice number or customer" autocomplete="off"></label><label class="ops-field" for="single-payment-invoice">Available invoices<select id="single-payment-invoice" disabled><option value="">Choose an invoice</option></select></label><div id="single-payment-summary" aria-live="polite"></div>${available.length ? '' : '<p class="payment-form-note">No payable invoices are available.</p>'}</div><div class="dialog-actions"><button type="button" data-continue class="button button-primary" disabled>Continue</button></div>`;
     dialog.querySelector('[data-close]').onclick = () => dialog.close();
-    const select = dialog.querySelector('#single-payment-invoice');
-    dialog.querySelector('#single-payment-search').oninput = (event) => { const term = event.target.value.trim().toLowerCase(); select.innerHTML = `<option value="">Choose an invoice</option>${available.filter((row) => `${row.invoiceNumber} ${row.customerSnapshot?.fullName || ''}`.toLowerCase().includes(term)).map((row) => `<option value="${esc(row.id)}">${esc(row.invoiceNumber)} · ${esc(row.customerSnapshot?.fullName)} · ${esc(cash(row.totalPaise - row.verifiedPaidPaise))} due</option>`).join('')}`; select.dispatchEvent(new Event('change')); };
-    select.onchange = () => { const invoice = available.find((row) => row.id === select.value); dialog.querySelector('#single-payment-summary').innerHTML = paymentInvoiceSummary(invoice); dialog.querySelector('[data-continue]').disabled = !invoice; };
-    dialog.querySelector('[data-continue]').onclick = () => { const id = select.value; if (!available.some((row) => row.id === id)) return; dialog.close(); openDialog('submit', id); };
+    const select = dialog.querySelector('#single-payment-invoice'), userSelect = dialog.querySelector('#single-payment-user'), customerSelect = dialog.querySelector('#single-payment-customer');
+    const owners = [...new Set(available.map((row) => row.ownerUid).filter(Boolean))];
+    const ownerName = (id) => { const entry = paymentUsers.find((row) => row.id === id); return entry?.displayName || entry?.fullName || entry?.name || entry?.email || id; };
+    owners.sort((a, b) => new Intl.Collator('en', { sensitivity: 'base' }).compare(ownerName(a), ownerName(b)));
+    userSelect.innerHTML += owners.map((id) => `<option value="${esc(id)}">${esc(ownerName(id))}</option>`).join('');
+    const updateInvoices = () => {
+      const term = dialog.querySelector('#single-payment-search').value.trim().toLowerCase();
+      const choices = available.filter((row) => row.ownerUid === userSelect.value && row.customerId === customerSelect.value && `${row.invoiceNumber} ${row.customerSnapshot?.fullName || ''}`.toLowerCase().includes(term));
+      select.innerHTML = `<option value="">Choose an invoice</option>${choices.map((row) => `<option value="${esc(row.id)}">${esc(row.invoiceNumber)} · ${esc(row.customerSnapshot?.fullName)} · ${esc(cash(row.totalPaise - row.verifiedPaidPaise))} due</option>`).join('')}`;
+      select.disabled = !customerSelect.value;
+      select.onchange();
+    };
+    userSelect.onchange = () => {
+      const customers = [...new Map(available.filter((row) => row.ownerUid === userSelect.value).map((row) => [row.customerId, row.customerSnapshot?.fullName || row.customerId])).entries()].sort((a, b) => new Intl.Collator('en', { sensitivity: 'base' }).compare(a[1], b[1]));
+      customerSelect.innerHTML = `<option value="">Choose a customer</option>${customers.map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join('')}`;
+      customerSelect.disabled = !userSelect.value;
+      updateInvoices();
+    };
+    customerSelect.onchange = updateInvoices;
+    dialog.querySelector('#single-payment-search').oninput = updateInvoices;
+    select.onchange = () => { const invoice = available.find((row) => row.id === select.value && row.ownerUid === userSelect.value && row.customerId === customerSelect.value); dialog.querySelector('#single-payment-summary').innerHTML = paymentInvoiceSummary(invoice); dialog.querySelector('[data-continue]').disabled = !invoice; };
+    dialog.querySelector('[data-continue]').onclick = () => { const id = select.value; if (!available.some((row) => row.id === id && row.ownerUid === userSelect.value && row.customerId === customerSelect.value)) return; dialog.close(); openDialog('submit', id); };
     dialog.onclose = () => dialog.remove(); document.body.append(dialog); dialog.showModal();
   });
   document.addEventListener('oms:single-payment-action', (event) => act(event.detail.kind, event.detail.id));
@@ -297,6 +338,13 @@ export function initFinanceUi({ db, functions }) {
   function renderPaymentActivity() {
     if (!activityMounted) return;
     $('payment-activity-body').innerHTML = activityRows.length ? activityRows.map((row) => { const ref = references(row); return `<tr><td>${esc(activityDate(row.at))}</td><td>${esc(actionLabel(row.type))}</td><td>${esc(ref.customer)}</td><td>${esc(ref.order)}</td><td>${esc(ref.invoice)}</td><td>${esc(ref.amount == null ? 'Not available' : `₹${(Number(ref.amount) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)}</td><td>${esc(ref.mode ? ({ cash: 'Cash', upi: 'UPI', bank_transfer: 'Bank transfer' }[ref.mode] || ref.mode) : 'Not available')}</td><td>${esc(ref.actor)}</td><td>${esc(changeSummary(row))}</td></tr>`; }).join('') : '<tr><td colspan="9" class="empty-cell">No payment activity matches these filters.</td></tr>';
+    $('payment-activity-cards').innerHTML = activityRows.length ? activityRows.map((row) => {
+      const ref = references(row);
+      const amount = ref.amount == null ? 'Not available' : `₹${(Number(ref.amount) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const field = (label, value, extra = '') => `<div class="payment-activity-card-field ${extra}"><dt>${label}</dt><dd>${esc(value)}</dd></div>`;
+      const outcome = row.outcome ? `<span class="payment-activity-outcome">${esc(row.outcome)}</span>` : '';
+      return `<article class="payment-activity-card"><header><div><h4>${esc(actionLabel(row.type))}</h4><time>${esc(activityDate(row.at))}</time></div>${outcome}</header><dl>${field('Actor', ref.actor)}${field('Customer', ref.customer)}${field('Order', ref.order, 'payment-activity-reference')}${field('Invoice', ref.invoice, 'payment-activity-reference')}</dl><div class="payment-activity-card-amount"><span>Amount</span><strong>${esc(amount)}</strong></div>${ref.mode ? `<p class="payment-activity-card-note">Method: ${esc(({ cash: 'Cash', upi: 'UPI', bank_transfer: 'Bank transfer' })[ref.mode] || ref.mode)}</p>` : ''}<p class="payment-activity-card-note">${esc(changeSummary(row))}</p></article>`;
+    }).join('') : '<p class="payment-activity-cards-empty">No payment activity matches these filters.</p>';
     $('payment-activity-page').textContent = `Page ${activityPage}`;
     $('payment-activity-prev').disabled = activityPage === 1;
     $('payment-activity-next').disabled = !activityHasMore;
@@ -319,7 +367,7 @@ export function initFinanceUi({ db, functions }) {
     finally { if (activityLoadToken === token) stopActivityLoad(); }
   }
   if (activityMounted) {
-    paymentView.insertAdjacentHTML('beforeend', `<div class="section-heading"><div><p class="eyebrow">HISTORY</p><h3>Payment Activity Log</h3></div></div><div class="card ops-panel"><div class="ops-toolbar"><input id="payment-activity-actor" type="search" placeholder="Actor" aria-label="Activity actor"><input id="payment-activity-customer" type="search" placeholder="Customer" aria-label="Activity customer"><input id="payment-activity-order" type="search" placeholder="Order" aria-label="Activity order"><input id="payment-activity-invoice" type="search" placeholder="Invoice" aria-label="Activity invoice"><select id="payment-activity-type" aria-label="Activity action"><option value="">All actions</option><option value="payment.submitted">Submitted</option><option value="payment.mode_changed">Mode changed</option><option value="payment.verified">Verified</option><option value="payment.rejected">Rejected</option><option value="payment.reversed">Reversed</option></select><input id="payment-activity-from" type="date" aria-label="Activity from"><input id="payment-activity-to" type="date" aria-label="Activity to"><button id="payment-activity-apply" type="button" class="button button-outline">Apply</button><button id="payment-activity-export" type="button" class="button button-outline">Export XLSX</button></div><p id="payment-activity-message" class="ops-message" role="status"></p><div class="table-scroll"><table><thead><tr><th>When</th><th>Action</th><th>Customer</th><th>Order</th><th>Invoice</th><th>Amount</th><th>Method</th><th>Actor</th><th>Changes / reason</th></tr></thead><tbody id="payment-activity-body"></tbody></table></div><div class="master-pagination"><button id="payment-activity-prev" type="button" class="button button-outline">Previous</button><span id="payment-activity-page">Page 1</span><button id="payment-activity-next" type="button" class="button button-outline">Next</button></div></div>`);
+    paymentView.insertAdjacentHTML('beforeend', `<div class="section-heading"><div><p class="eyebrow">HISTORY</p><h3>Payment Activity Log</h3></div></div><div id="payment-activity-panel" class="card ops-panel"><div class="ops-toolbar"><input id="payment-activity-actor" type="search" placeholder="Search actor" aria-label="Search payment activity by actor"><input id="payment-activity-customer" type="search" placeholder="Customer" aria-label="Activity customer"><input id="payment-activity-order" type="search" placeholder="Order" aria-label="Activity order"><input id="payment-activity-invoice" type="search" placeholder="Invoice" aria-label="Activity invoice"><select id="payment-activity-type" aria-label="Activity action"><option value="">All actions</option><option value="payment.submitted">Submitted</option><option value="payment.mode_changed">Mode changed</option><option value="payment.verified">Verified</option><option value="payment.rejected">Rejected</option><option value="payment.reversed">Reversed</option></select><input id="payment-activity-from" type="date" aria-label="Activity from"><input id="payment-activity-to" type="date" aria-label="Activity to"><button id="payment-activity-apply" type="button" class="button button-outline">Apply</button><button id="payment-activity-export" type="button" class="button button-outline">Export XLSX</button></div><p id="payment-activity-message" class="ops-message" role="status"></p><div class="table-scroll payment-activity-table-scroll"><table class="payment-activity-table"><thead><tr><th>When</th><th>Action</th><th>Customer</th><th>Order</th><th>Invoice</th><th>Amount</th><th>Method</th><th>Actor</th><th>Changes / reason</th></tr></thead><tbody id="payment-activity-body"></tbody></table></div><div id="payment-activity-cards" class="payment-activity-cards" aria-label="Payment activity entries"></div><div class="master-pagination"><button id="payment-activity-prev" type="button" class="button button-outline">Previous</button><span id="payment-activity-page">Page 1</span><button id="payment-activity-next" type="button" class="button button-outline">Next</button></div></div>`);
     $('payment-activity-apply').onclick = () => { activityPage = 1; activityCursors = [null]; loadPaymentActivity(); };
     $('payment-activity-prev').onclick = () => { if (activityPage > 1) { activityPage--; loadPaymentActivity(); } };
     $('payment-activity-next').onclick = () => { if (activityHasMore) { activityPage++; loadPaymentActivity(); } };

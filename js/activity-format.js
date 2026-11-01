@@ -8,7 +8,7 @@ const ACTIONS = {
 };
 const LABELS = { assignedUserId: 'Assigned user', amountPaise: 'Payment amount', verifiedPaidPaise: 'Verified payment total', totalPaise: 'Invoice total', grandTotal: 'Order total', unitPricePaise: 'Unit price', mode: 'Payment method', verificationStatus: 'Payment verification status', invoiceStatus: 'Invoice status', editLocked: 'Order editing status', status: 'Order status', quantityQty: 'Quantity', orderUnitId: 'Unit', stockDeductions: 'Stock changes' };
 const PAISE = new Set(['amountPaise', 'verifiedPaidPaise', 'totalPaise', 'grandTotal', 'unitPricePaise']);
-const STATUS = { unverified: 'Pending verification', verified: 'Verified', rejected: 'Rejected', reversed: 'Reversed', unpaid: 'Unpaid', in_process: 'In process', partial: 'Partly paid', paid: 'Paid', draft: 'Draft', confirmed: 'Confirmed', in_preparation: 'In preparation', ready: 'Ready', delivered: 'Delivered', cancelled: 'Cancelled' };
+const STATUS = { unverified: 'Pending verification', verified: 'Verified', rejected: 'Rejected', reversed: 'Reversed', unpaid: 'Unpaid', in_process: 'In process', partial: 'Partly paid', paid: 'Paid', draft: 'Draft', confirmed: 'Confirmed', in_preparation: 'In preparation', ready: 'Ready', delivered: 'Delivered', invoiced: 'Invoiced', cancelled: 'Cancelled' };
 const MODES = { cash: 'Cash', upi: 'UPI', bank_transfer: 'Bank transfer' };
 
 export const actionLabel = (type) => ACTIONS[type] || String(type || 'Activity').replace(/[._-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());

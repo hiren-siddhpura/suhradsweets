@@ -1,4 +1,5 @@
 import { paymentUpload } from './payment-form-ui.js';
+import { sortUsersByName } from './user-sort.js';
 
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const money = (paise) => `₹${((paise || 0) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -8,7 +9,7 @@ const modeName = (mode) => ({ cash: 'Cash', upi: 'UPI', bank_transfer: 'Online' 
 export function bulkDraftHtml({ draft, invoices, names, eligible, reference, collectedBy, collectionDate }) {
   const available = draft.invoiceLoading || draft.invoiceError ? [] : invoices.filter(eligible);
   const filters = draft.filters;
-  const ownerOptions = [...new Set(available.map((row) => row.ownerUid).filter(Boolean))].sort((a, b) => String(names.get(a) || a).localeCompare(String(names.get(b) || b)));
+  const ownerOptions = sortUsersByName([...new Set(available.map((row) => row.ownerUid).filter(Boolean))].map((id) => ({ id, name: names.get(id) || '' }))).map((row) => row.id);
   const visible = available.filter((row) => (!filters.owner || row.ownerUid === filters.owner)
     && (!filters.number || String(row.invoiceNumber || '').toLowerCase().includes(filters.number.toLowerCase()))
     && (!filters.customer || String(row.customerSnapshot?.fullName || '').toLowerCase().includes(filters.customer.toLowerCase()))

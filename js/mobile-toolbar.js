@@ -3,6 +3,12 @@ const mobile = () => matchMedia('(max-width: 760px)').matches;
 const control = (node) => node?.matches?.('input,select,textarea') ? node : node?.querySelector?.('input,select,textarea');
 const labelText = (node) => node.getAttribute?.('aria-label') || node.labels?.[0]?.textContent?.trim() || node.querySelector?.('.order-filter-label')?.textContent || node.querySelector?.('input,select')?.getAttribute('aria-label') || (node.matches?.('label') ? [...node.childNodes].filter((child) => child.nodeType === 3).map((child) => child.textContent.trim()).join(' ') : '') || node.querySelector?.('input,select')?.placeholder || node.getAttribute?.('placeholder') || 'Filter';
 
+export function applyMobileFilterSource(toolbar, actionNodes) {
+  if (toolbar.matches('form')) { toolbar.requestSubmit(); return; }
+  const applyButton = actionNodes.flatMap((node) => node.matches('button') ? [node] : [...node.querySelectorAll('button')]).find((button) => /apply/i.test(button.textContent));
+  applyButton?.click();
+}
+
 export function initMobileToolbars() {
   const instances = new Set();
   let toolbarSequence = 0;
@@ -11,7 +17,7 @@ export function initMobileToolbars() {
   const unlockPage = () => { openSheets = Math.max(0, openSheets - 1); if (!openSheets) document.documentElement.classList.remove('mobile-filter-open'); };
   const selectors = '.ops-toolbar,.master-filters,.table-tools,.box-req-toolbar,.order-analytics-filters,.order-filter-form';
   function setup(toolbar) {
-    if (toolbar.dataset.mobileToolbar || toolbar.closest('dialog') || toolbar.closest('.ops-panel')?.querySelector('#payment-body')) return;
+    if (toolbar.dataset.mobileToolbar || toolbar.closest('dialog')) return;
     const special = toolbar.matches('.order-filter-form,.order-analytics-filters');
     const desktopCompact = toolbar.matches('.order-analytics-filters') || Boolean(toolbar.closest('.collections-section'));
     const compact = () => mobile() || desktopCompact;
@@ -35,10 +41,10 @@ export function initMobileToolbars() {
       searchWrap.append(searchNode, clearSearch); dock.append(searchWrap);
       clearSearch.onclick = () => { search.value = ''; search.dispatchEvent(new Event('input', { bubbles: true })); search.focus(); };
       const updateSearch = () => { clearSearch.hidden = !search.value; }; search.addEventListener('input', updateSearch); updateSearch();
-      if (toolbar.matches('.order-filter-form')) { let timer; search.addEventListener('input', () => { if (!mobile()) return; clearTimeout(timer); timer = setTimeout(() => toolbar.querySelector('#order-apply')?.click(), 180); }); }
+      if (toolbar.matches('.order-filter-form')) { let timer; search.addEventListener('input', () => { if (!mobile()) return; clearTimeout(timer); timer = setTimeout(() => applyMobileFilterSource(toolbar, actionNodes), 180); }); }
       searchNode._mobileAnchor = anchor;
     }
-    const trigger = document.createElement('button'); trigger.type = 'button'; trigger.className = 'button button-outline mobile-filter-trigger'; trigger.innerHTML = '☷ <span>Filter</span><b hidden>0</b>';
+    const trigger = document.createElement('button'); trigger.type = 'button'; trigger.className = 'button button-outline mobile-filter-trigger'; trigger.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg><span>Filter</span><b hidden>0</b>';
     if (filterNodes.length) dock.append(trigger);
     const chips = document.createElement('div'); chips.className = 'mobile-filter-chips'; chips.setAttribute('aria-label', 'Active filters');
     const dialog = document.createElement('dialog'); dialog.className = 'mobile-filter-sheet'; if (desktopCompact) dialog.classList.add('is-desktop-compact'); dialog.setAttribute('aria-label', `${title} filters`);
@@ -66,17 +72,17 @@ export function initMobileToolbars() {
         const chip = document.createElement('button'); chip.type = 'button'; chip.className = 'mobile-filter-chip';
         const value = field.tagName === 'SELECT' ? field.selectedOptions[0]?.textContent : field.value;
         chip.textContent = `${labelText(node)}: ${value} ×`;
-        chip.onclick = () => { field.value = defaults.get(field); applied.set(field, field.value); dispatch(field); updateChips(); };
+        chip.onclick = () => { field.value = defaults.get(field); applied.set(field, field.value); dispatch(field); submitSource(); updateChips(); };
         chips.append(chip);
       }
       if (active.length) { const clear = document.createElement('button'); clear.type = 'button'; clear.className = 'mobile-filter-clear-link'; clear.textContent = 'Clear All'; clear.onclick = clearAll; chips.append(clear); }
     }
+    const submitSource = () => applyMobileFilterSource(toolbar, actionNodes);
     function apply() {
       for (const field of fields) if (field.value !== applied.get(field)) { applied.set(field, field.value); dispatch(field); }
-      const applyButton = actionNodes.flatMap((node) => node.matches('button') ? [node] : [...node.querySelectorAll('button')]).find((button) => /apply/i.test(button.textContent));
-      applyButton?.click(); updateChips(); closeSheet();
+      submitSource(); updateChips(); closeSheet();
     }
-    function clearAll() { for (const field of fields) { if (field.value !== defaults.get(field) || applied.get(field) !== defaults.get(field)) { field.value = defaults.get(field); applied.set(field, field.value); dispatch(field); } } const applyButton = actionNodes.flatMap((node) => node.matches('button') ? [node] : [...node.querySelectorAll('button')]).find((button) => /apply/i.test(button.textContent)); applyButton?.click(); updateChips(); closeSheet(); }
+    function clearAll() { for (const field of fields) { if (field.value !== defaults.get(field) || applied.get(field) !== defaults.get(field)) { field.value = defaults.get(field); applied.set(field, field.value); dispatch(field); } } submitSource(); updateChips(); closeSheet(); }
     trigger.onclick = () => {
       if (!compact() || dialog.open) return;
       // The page can reset controls when the active user or module changes.

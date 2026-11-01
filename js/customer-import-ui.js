@@ -3,12 +3,13 @@ import { customerContactHash, normalizeCustomerContact } from './customer-valida
 import { saveCustomerDirect } from './customer-data.js';
 import { IMPORT_FIELDS, importCounts, parseCsv, prepareCustomerRows, suggestMapping, workbookSheets } from './customer-import.js';
 import { loadSheetJs } from './xlsx-export.js';
+import { sortUsersByName } from './user-sort.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const note = (error) => error?.message || 'Import failed. Check your connection and retry.';
 const isAdmin = (profile) => profile?.active === true && profile.role === 'admin';
-const activeUsers = (rows) => rows.filter((row) => row.active === true && ['admin', 'account_admin', 'user'].includes(row.role));
+const activeUsers = (rows) => sortUsersByName(rows.filter((row) => row.active === true && ['admin', 'account_admin', 'user'].includes(row.role)));
 const pause = () => new Promise((resolve) => setTimeout(resolve, 0));
 const sha256 = async (value) => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', value)), (byte) => byte.toString(16).padStart(2, '0')).join('');
 

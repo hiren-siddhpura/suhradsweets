@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
+import { sortUsersByName } from '../js/user-sort.js';
 import { analyticsColumns, analyticsCsv, lineQuantity, matchingOrders, quantities, quantityText, sortAnalyticsRows, statusSortValue, totalText } from '../js/order-analytics-data.js';
 import { getOrderAnalytics } from '../functions/order-analytics.js';
 import { userExcelFilename, userOrderWorkbook } from '../js/order-analytics-export.js';
@@ -30,7 +31,7 @@ test('weight and pieces remain separate; summary and detail totals use the same 
 
 test('search, date, status and user filters select one order before aggregation', () => {
   assert.deepEqual(matchingOrders(source, { user: 'a', from: '2026-10-10', to: '2026-10-10', status: 'confirmed', search: 'Ajay' }).map((order) => order.id), ['one']);
-  assert.deepEqual(matchingOrders(source, { user: 'b', status: 'confirmed' }), []);
+  assert.deepEqual(matchingOrders(source, { user: 'b', status: 'confirmed' }).map((order) => order.id), ['two']);
   assert.deepEqual(matchingOrders(source, { search: 'Rahul' }).map((order) => order.id), ['two']);
 });
 
@@ -52,7 +53,7 @@ test('user XLSX data respects assigned user, filters, separate products and nume
   assert.deepEqual(workbook.rows.slice(0, -1).map((row) => row[4]), ['SS-1', 'SS-3']);
   assert.deepEqual(workbook.headers.filter((header) => /Kaju Katri|Anjir/.test(header)), ['Anjir Cake (KG)', 'Anjir Cake (PCS)', 'Anjir Roll (KG)', 'Kaju Katri (KG)', 'Kesar Kaju Katri (KG)']);
   assert.equal(workbook.rows.at(-1).at(-1), 350);
-  assert.equal(userOrderWorkbook(data, { status: 'ready' }, 'a', (order) => order.status).orderCount, 1);
+  assert.equal(userOrderWorkbook(data, { status: 'confirmed' }, 'a', (order) => order.status).orderCount, 2);
   assert.equal(userOrderWorkbook(data, { status: 'delivered' }, 'a', (order) => order.status).orderCount, 0);
   assert.equal(userOrderWorkbook(data, {}, 'b', (order) => order.status).orderCount, 1);
   assert.throws(() => userOrderWorkbook({ ...data, staff: false }, {}, 'b', () => ''), /cannot export/);
@@ -167,7 +168,7 @@ test('analytics loader, filters, detail Back, CSV, error, retry and empty states
   const actual = { ...source, viewerUid: 'admin', staff: true, customers: [{ id: 'ca', name: 'Ajay', phone: '123', area: 'West' }], invoices: [], payments: [] };
   actual.orders = source.orders.map((order) => ({ ...order, customerId: order.ownerUid === 'a' ? 'ca' : 'cb' }));
   const js = readFileSync(new URL('../js/order-analytics-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderAnalytics', 'function initOrderAnalytics');
-  const context = { document, window, history, Blob, URL: { createObjectURL(blob) { exportedBlob = blob; return 'blob:test'; }, revokeObjectURL() {} }, setTimeout, clearTimeout, requestAnimationFrame(callback) { callback(); }, console,
+  const context = { sortUsersByName, document, window, history, Blob, URL: { createObjectURL(blob) { exportedBlob = blob; return 'blob:test'; }, revokeObjectURL() {} }, setTimeout, clearTimeout, requestAnimationFrame(callback) { callback(); }, console,
     callOperation: () => queue.shift()(), analyticsColumns, analyticsCsv, matchingOrders, quantities, quantityText, sortAnalyticsRows, statusSortValue, totalText };
   vm.runInNewContext(`${js}\nthis.initOrderAnalytics = initOrderAnalytics;`, context);
   const ui = context.initOrderAnalytics({ functions: {} });
@@ -257,7 +258,7 @@ test('analytics stops loading after a slow request times out and blocks duplicat
   const document = { getElementById: node, querySelector: () => nav };
   const window = { location: { href: 'https://example.test/' }, addEventListener() {} };
   const js = readFileSync(new URL('../js/order-analytics-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderAnalytics', 'function initOrderAnalytics');
-  const context = { document, window, history: { state: null }, setTimeout: (callback, delay) => setTimeout(callback, delay >= 20000 ? 20 : delay), clearTimeout, console, callOperation: () => { calls++; return new Promise(() => {}); }, analyticsColumns, analyticsCsv, matchingOrders, quantities, quantityText, sortAnalyticsRows, statusSortValue, totalText };
+  const context = { sortUsersByName, document, window, history: { state: null }, setTimeout: (callback, delay) => setTimeout(callback, delay >= 20000 ? 20 : delay), clearTimeout, console, callOperation: () => { calls++; return new Promise(() => {}); }, analyticsColumns, analyticsCsv, matchingOrders, quantities, quantityText, sortAnalyticsRows, statusSortValue, totalText };
   vm.runInNewContext(`${js}\nthis.initOrderAnalytics = initOrderAnalytics;`, context);
   context.initOrderAnalytics({ functions: {} }).setSession({ uid: 'a' }, { active: true, role: 'user' });
   nav.listeners.click();

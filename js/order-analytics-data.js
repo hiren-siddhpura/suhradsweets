@@ -24,7 +24,7 @@ export function matchingOrders(data, filters = {}) {
   const search = String(filters.search || '').trim().toLocaleLowerCase();
   return (data.orders || []).filter((order) => (!filters.user || order.assignedUserId === filters.user)
     && (!filters.from || order.orderDate >= filters.from) && (!filters.to || order.orderDate <= filters.to)
-    && (!filters.status || order.status === filters.status || filters.status === 'invoiced' && Boolean(order.invoiceId))
+    && (!filters.status || (order.invoiceId ? 'invoiced' : ['in_preparation', 'ready'].includes(order.status) ? 'confirmed' : order.status) === filters.status)
     && (!search || [order.orderNumber, order.customerName, order.status, (data.users || []).find((user) => user.id === order.assignedUserId)?.name].some((value) => String(value || '').toLocaleLowerCase().includes(search))));
 }
 
@@ -51,7 +51,7 @@ export function totalText(values, columns) {
 // Status order for the detail table: Draft, Confirmed, In preparation, Ready,
 // Delivered, then any unfamiliar status. Payment states within an order status
 // run Unpaid, Payment in process, Partially paid, Paid.
-const STATUS_ORDER = ['draft', 'confirmed', 'in_preparation', 'ready', 'delivered'];
+const STATUS_ORDER = ['draft', 'confirmed', 'in_preparation', 'ready', 'delivered', 'invoiced'];
 export function statusSortValue(status, display = '') {
   const index = STATUS_ORDER.indexOf(status);
   const payment = /paid$/i.test(display) && !/partially paid$/i.test(display) && !/unpaid$/i.test(display) ? 3

@@ -7,6 +7,9 @@ import { uniqueId } from './unique-id.js';
 import { showToast } from './ui.js';
 import { eligibleCollectionInvoice } from './collection-eligibility.js';
 import { bulkDraftHtml } from './bulk-draft-render.js';
+import { downloadXlsx } from './xlsx-export.js';
+import { sortUsersByName } from './user-sort.js';
+import { cardIcon, cardButton } from './mobile-card.js';
 
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '<': '&lt;', "'": '&#39;' })[char]);
 const rupees = (paise) => `₹${((paise || 0) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -28,26 +31,35 @@ export function initCollectionsUi({ db, functions }) {
   const parent = document.getElementById('payments-view');
   const root = document.createElement('section'); root.className = 'collections-section'; root.innerHTML = `
     <div class="payment-actions"><button id="payment-create" class="button button-primary" type="button"><span aria-hidden="true">＋</span> Create Payment</button><button id="collection-create" class="button button-primary" type="button"><span aria-hidden="true">▦</span> Create Bulk Payment</button></div>
-    <div id="collection-cards" class="ops-cards"></div><div class="card ops-panel"><h3>Payment Records</h3><div class="ops-toolbar"><input id="collection-search" type="search" placeholder="Payment / collection reference" aria-label="Payment or collection reference"><input id="collection-karyakarta" type="search" placeholder="Karyakarta" aria-label="Filter Karyakarta"><input id="collection-customer" type="search" placeholder="Customer" aria-label="Filter customer"><select id="collection-type" aria-label="Payment type"><option value="">All payment types</option><option value="single">Single Payment</option><option value="bulk">Bulk Payment</option></select><select id="collection-status" aria-label="Payment status"><option value="">All statuses</option><option value="pending">Pending verification</option><option value="verified">Approved</option><option value="rejected">Rejected</option><option value="reversed">Reversed</option></select><input id="collection-from" type="date" aria-label="Payments from"><input id="collection-to" type="date" aria-label="Payments to"><button id="collection-refresh" class="button button-outline" type="button">Refresh</button></div><p id="collection-message" role="status"></p><div id="collection-list" class="collection-list"></div></div>
+    <div id="collection-cards" class="ops-cards"></div><div class="card ops-panel"><h3>Payment Records</h3><div class="ops-toolbar payment-filters"><input id="collection-search" type="search" placeholder="Payment / collection reference" aria-label="Search payment records"><label class="payment-filter-field">User<select id="collection-user"><option value="">All users</option></select></label><label class="payment-filter-field">Customer<input id="collection-customer" type="search" placeholder="Customer"></label><label class="payment-filter-field">Payment Mode<select id="collection-mode"><option value="">All modes</option><option value="cash">Cash</option><option value="upi">UPI</option><option value="bank_transfer">Online</option></select></label><label class="payment-filter-field">Payment type<select id="collection-type"><option value="">All payment types</option><option value="single">Single Payment</option><option value="bulk">Bulk Payment</option></select></label><label class="payment-filter-field">Status<select id="collection-status"><option value="">All statuses</option><option value="pending">Pending verification</option><option value="verified">Approved</option><option value="rejected">Rejected</option><option value="reversed">Reversed</option></select></label><label class="payment-filter-field">From date<input id="collection-from" type="date"></label><label class="payment-filter-field">To date<input id="collection-to" type="date"></label><button id="collection-apply" class="button button-primary" type="button">Apply Filters</button><button id="collection-clear" class="button button-outline" type="button">Clear All</button><button id="collection-refresh" class="button button-outline" type="button">Refresh</button><button id="collection-export" class="button button-outline" type="button">Export XLSX</button></div><p id="collection-message" role="status"></p><div id="collection-list" class="collection-list"></div></div>
     <dialog id="collection-dialog" class="app-dialog collection-dialog" aria-label="Collection details"><div id="collection-dialog-content"></div></dialog>`;
   const heading = parent.querySelector(':scope > .section-heading');
   if (heading) heading.after(root); else parent.append(root);
   const $ = (id) => root.querySelector(`#${id}`);
   const filterValue = (id) => String($(id)?.value ?? '');
-  let user = null, profile = null, collections = [], payments = [], invoices = [], ownerNames = new Map(), draft = null, viewingId = null, loadingRevision = 0, busy = false;
+  let user = null, profile = null, collections = [], payments = [], invoices = [], ownerNames = new Map(), draft = null, viewingId = null, loadingRevision = 0, busy = false, exportedRows = [], appliedFilters = {};
   const own = () => isStaff(profile) ? null : user?.uid;
   const invoiceAvailable = eligibleCollectionInvoice;
   function renderList() {
     const singles = payments.filter((row) => !row.collectionId && !row.collectionNumber);
     const records = [
-      ...singles.map((row) => ({ type: 'single', row, status: row.reversalId ? 'reversed' : row.verificationStatus === 'unverified' ? 'pending' : row.verificationStatus, amount: row.amountPaise, method: paymentName(row.mode), day: row.submittedAt?.toDate?.()?.toISOString().slice(0, 10) || '', at: row.submittedAt?.seconds || 0, reference: row.transactionNumber || row.invoiceNumber || row.id, collector: row.submittedByName || '', customer: row.customerSnapshot?.fullName || '' })),
-      ...collections.map((row) => ({ type: 'bulk', row, status: row.status, amount: row.totalPaise, method: new Set(row.entries?.map((entry) => entry.mode)).size > 1 ? 'Mixed' : paymentName(row.entries?.[0]?.mode) || '—', day: row.collectionDate || '', at: row.submittedAt?.seconds || 0, reference: shortCollectionNumber(row.collectionNumber || row.id), collector: row.submittedByName || '', customer: row.allocations?.map((item) => item.customerName).join(' ') || '' })),
+      ...singles.map((row) => ({ type: 'single', row, ownerUid: row.ownerUid, modes: [row.mode], status: row.reversalId ? 'reversed' : row.verificationStatus === 'unverified' ? 'pending' : row.verificationStatus, amount: row.amountPaise, method: paymentName(row.mode), day: row.submittedAt?.toDate?.()?.toISOString().slice(0, 10) || '', at: row.submittedAt?.seconds || 0, reference: row.transactionNumber || row.invoiceNumber || row.id, collector: row.submittedByName || '', customer: row.customerSnapshot?.fullName || '' })),
+      ...collections.map((row) => ({ type: 'bulk', row, ownerUid: row.ownerUid, modes: row.entries?.map((entry) => entry.mode) || [], status: row.status, amount: row.totalPaise, method: new Set(row.entries?.map((entry) => entry.mode)).size > 1 ? 'Mixed' : paymentName(row.entries?.[0]?.mode) || '—', day: row.collectionDate || '', at: row.submittedAt?.seconds || 0, reference: shortCollectionNumber(row.collectionNumber || row.id), collector: row.submittedByName || '', customer: row.allocations?.map((item) => item.customerName).join(' ') || '' })),
     ];
     $('collection-cards').innerHTML = `<div class="card ops-stat"><span>Pending Verification</span><strong>${records.filter((item) => item.status === 'pending').length}</strong></div><div class="card ops-stat"><span>Approved Payments</span><strong>${records.filter((item) => item.status === 'verified').length}</strong></div><div class="card ops-stat"><span>Approved Total</span><strong>${rupees(records.filter((item) => item.status === 'verified').reduce((sum, item) => sum + (item.type === 'bulk' ? item.row.approvedPaise ?? item.amount : item.amount), 0))}</strong></div>`;
-    const search = filterValue('collection-search').trim().toLowerCase(), collector = filterValue('collection-karyakarta').trim().toLowerCase(), customer = filterValue('collection-customer').trim().toLowerCase(), type = filterValue('collection-type'), status = filterValue('collection-status'), from = filterValue('collection-from'), to = filterValue('collection-to');
-    const rows = records.filter((item) => (!type || item.type === type) && (!status || item.status === status) && (!from || item.day >= from) && (!to || item.day <= to) && (!search || `${item.reference} ${item.row.invoiceNumber || ''} ${item.row.collectionNumber || ''}`.toLowerCase().includes(search)) && (!collector || item.collector.toLowerCase().includes(collector)) && (!customer || item.customer.toLowerCase().includes(customer))).sort((a, b) => b.at - a.at);
+    const { search = '', user: selectedUser = '', customer = '', mode = '', type = '', status = '', from = '', to = '' } = appliedFilters;
+    const rows = records.filter((item) => (!type || item.type === type) && (!selectedUser || item.ownerUid === selectedUser) && (!mode || item.modes.includes(mode)) && (!status || item.status === status) && (!from || item.day >= from) && (!to || item.day <= to) && (!search || `${item.reference} ${item.row.invoiceNumber || ''} ${item.row.collectionNumber || ''}`.toLowerCase().includes(search.toLowerCase())) && (!customer || item.customer.toLowerCase().includes(customer.toLowerCase()))).sort((a, b) => b.at - a.at);
+    exportedRows = rows;
     const actions = (item) => `<button type="button" data-${item.type === 'bulk' ? 'collection' : 'single'}-view="${esc(item.row.id)}">View</button>${hasPermission(profile, 'verifyPayments') && item.status === 'pending' ? `<button type="button" data-${item.type === 'bulk' ? 'collection' : 'single'}-approve="${esc(item.row.id)}">Approve</button><button type="button" data-${item.type === 'bulk' ? 'collection' : 'single'}-reject="${esc(item.row.id)}">Reject</button>` : ''}`;
     $('collection-list').innerHTML = rows.length ? `<div class="table-scroll mobile-table"><table><thead><tr><th>Reference</th><th>Type</th><th>Customer / Customers</th><th>Amount</th><th>Method</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead><tbody>${rows.map((item) => `<tr><td><strong>${esc(item.reference)}</strong></td><td>${item.type === 'bulk' ? 'Bulk Payment' : 'Single Payment'}</td><td>${esc(item.type === 'bulk' ? `${item.row.customerCount || 0} customers` : item.customer)}<small>${esc(item.collector)}</small></td><td class="payment-amount">${rupees(item.amount)}</td><td>${esc(item.method)}</td><td><span class="payment-record-status is-${esc(item.status)}">${esc(statusName(item.status))}</span></td><td>${esc(item.day)}</td><td class="ops-actions">${actions(item)}</td></tr>`).join('')}</tbody></table></div><div class="mobile-record-list">${rows.map((item) => `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${esc(item.reference)}</strong><span class="mobile-status">${esc(statusName(item.status))}</span></div><p>${item.type === 'bulk' ? 'Bulk Payment' : 'Single Payment'} · ${esc(item.customer)}<small>${esc(item.day)} · ${esc(item.collector)} · ${esc(item.method)}</small></p><div class="mobile-record-bottom"><b>${rupees(item.amount)}</b><div class="mobile-record-actions">${actions(item)}</div></div></article>`).join('')}</div>` : `<div class="payment-empty-state"><div class="payment-empty-icon" aria-hidden="true">₹</div><h4>No payment records found</h4><p>${records.length ? 'Try adjusting the current filters.' : 'Create a payment or bulk payment to see records here.'}</p>${records.length ? '' : '<div><button type="button" data-empty-create class="button button-primary">＋ Create Payment</button><button type="button" data-empty-bulk class="button button-outline">▦ Create Bulk Payment</button></div>'}</div>`;
+    const mobileList = $('collection-list').querySelector?.('.mobile-record-list');
+    if (mobileList) mobileList.innerHTML = rows.map((item) => {
+      const bulk = item.type === 'bulk';
+      const viewAttribute = bulk ? 'data-collection-view' : 'data-single-view';
+      const view = `<button type="button" class="order-card-action" ${viewAttribute}="${esc(item.row.id)}" aria-label="View ${bulk ? 'collection' : 'payment'} ${esc(item.reference)}" title="View details">${cardIcon('view')}<span>View</span></button>`;
+      const review = hasPermission(profile, 'verifyPayments') && item.status === 'pending' ? `${cardButton('approve', item.row.id, 'Approve payment', 'check', bulk ? 'data-collection-action' : 'data-single-action')}${cardButton('reject', item.row.id, 'Reject payment', 'reject', bulk ? 'data-collection-action' : 'data-single-action')}` : '';
+      return `<article class="order-mobile-card"><div class="order-card-header"><strong>${esc(item.reference)}</strong><span class="mobile-status is-${esc(item.status)}">${esc(statusName(item.status))}</span></div><h3 class="order-card-customer">${esc(item.customer || (bulk ? `${item.row.customerCount || 0} customers` : 'Customer unavailable'))}</h3><div class="order-card-meta"><span>${cardIcon('calendar')}${esc(item.day)}</span><span>${cardIcon('payment')}${esc(item.method)}</span>${bulk ? `<span>${cardIcon('invoice')}Bulk collection · ${item.row.allocations?.length || 0} invoices</span>` : `<span>${cardIcon('invoice')}${esc(item.row.invoiceNumber)}</span>`}</div><div class="order-card-total"><span>${bulk ? 'Collection Amount' : 'Payment Amount'}</span><strong>${rupees(item.amount)}</strong></div><div class="order-card-actions">${view}${!bulk && item.row.attachment ? `<button type="button" class="order-card-action" data-single-receipt="${esc(item.row.id)}" aria-label="View receipt" title="View receipt">${cardIcon('receipt')}<span>Receipt</span></button>` : ''}${review}</div></article>`;
+    }).join('');
 
   }
   async function load() {
@@ -58,6 +70,14 @@ export function initCollectionsUi({ db, functions }) {
       const [collectionRows, paymentRows, invoiceRows] = await Promise.all([listCollections(db, owner), listPayments(db, owner), listInvoices(db, owner)]);
       if (revision !== loadingRevision) return;
       collections = collectionRows; payments = paymentRows; invoices = invoiceRows;
+      let userRows = [{ id: user.uid, displayName: profile.displayName || profile.fullName || profile.name || 'My payments' }];
+      if (isStaff(profile)) {
+        try { userRows = (await getDocs(collection(db, 'users'))).docs.map((doc) => ({ id: doc.id, ...doc.data() })); }
+        catch { userRows = [...new Set([...payments, ...collections].map((row) => row.ownerUid).filter(Boolean))].map((id) => ({ id, displayName: ownerNames.get(id) || id })); }
+      }
+      const selectedUser = $('collection-user').value;
+      $('collection-user').innerHTML = `<option value="">All users</option>${sortUsersByName(userRows.filter((row) => row.active !== false)).map((row) => `<option value="${esc(row.id)}">${esc(row.displayName || row.fullName || row.name || row.email || row.id)}</option>`).join('')}`;
+      $('collection-user').value = selectedUser;
       $('collection-message').textContent = ''; renderList();
     } catch (error) { if (revision === loadingRevision) $('collection-message').textContent = `Could not load collections: ${error.message}`; }
     finally { globalThis.omsLoading?.stop(token); }
@@ -219,6 +239,11 @@ export function initCollectionsUi({ db, functions }) {
     } catch (error) { showToast(error.message, 'toast-error'); }
   }
   root.addEventListener('click', (event) => {
+    const quick = event.target.closest('[data-collection-action],[data-single-action]');
+    if (quick) {
+      if (quick.dataset.collectionAction) return review(quick.dataset.id, quick.dataset.collectionAction === 'approve' ? 'verified' : 'rejected');
+      document.dispatchEvent(new CustomEvent('oms:single-payment-action', { detail: { kind: quick.dataset.singleAction === 'approve' ? 'verify' : 'reject', id: quick.dataset.id } })); return;
+    }
     if (event.target.closest('[data-empty-create]')) { $('payment-create').click(); return; }
     if (event.target.closest('[data-empty-bulk]')) { $('collection-create').click(); return; }
     const single = event.target.closest('[data-single-view],[data-single-approve],[data-single-reject]');
@@ -263,7 +288,15 @@ export function initCollectionsUi({ db, functions }) {
   });
   $('payment-create').onclick = () => document.dispatchEvent(new CustomEvent('oms:create-single-payment'));
   $('collection-create').onclick = openCreate; $('collection-refresh').onclick = load;
-  for (const id of ['collection-search', 'collection-karyakarta', 'collection-customer', 'collection-type', 'collection-status', 'collection-from', 'collection-to']) $(id).addEventListener('input', renderList);
+  const collectionFilterIds = ['search', 'user', 'customer', 'mode', 'type', 'status', 'from', 'to'];
+  const applyCollectionFilters = () => { appliedFilters = Object.fromEntries(collectionFilterIds.map((field) => [field, filterValue(`collection-${field}`).trim()])); renderList(); };
+  $('collection-apply').onclick = applyCollectionFilters;
+  $('collection-clear').onclick = () => { collectionFilterIds.forEach((field) => { $(`collection-${field}`).value = ''; }); appliedFilters = {}; renderList(); };
+  $('collection-search').addEventListener('input', () => { appliedFilters.search = filterValue('collection-search').trim(); renderList(); });
+  $('collection-export').onclick = async () => {
+    try { await downloadXlsx('payment-records', [['Payment Records', exportedRows.map((item) => ({ Reference: item.reference, Type: item.type, Customer: item.customer, User: ownerNames.get(item.ownerUid) || item.ownerUid || '', Amount: item.amount / 100, Mode: item.method, Status: statusName(item.status), Date: item.day }))]]); }
+    catch { showToast('XLSX export could not load.', 'toast-error'); }
+  };
   document.addEventListener('oms:pagechange', (event) => { if (event.detail.page === 'payments') load(); });
   document.addEventListener('oms:payment-changed', load);
   return { setSession(nextUser, nextProfile) { loadingRevision++; user = nextUser; profile = nextProfile; collections = []; payments = []; invoices = []; ownerNames = new Map(); if (user && profile) load(); else { $('collection-list').innerHTML = ''; $('collection-dialog').close(); } } };

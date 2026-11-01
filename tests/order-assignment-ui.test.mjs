@@ -9,7 +9,7 @@ for (const role of ['admin','account_admin','user']) test(`Orders assignee contr
  let userReads=0, csvText=''; const exports=[];
  const profiles=[{id:'adminUID',fullName:'Admin Name',role:'admin',active:true},{id:'accountsUID',displayName:'Accounts',role:'account_admin',active:true},{id:'userUID',fullName:'User Name',role:'user',active:true},{id:'inactive',role:'admin',active:false},{id:'invalid',role:'invalid',active:true},{id:'userUID',fullName:'User Name',role:'user',active:true}];
  const ctx={document:{getElementById:el,addEventListener(){},querySelector(){return null},createElement(){return {click(){exports.push('csv-clicked')}}}},URL:{createObjectURL(){return 'blob:test'},revokeObjectURL(){}},Blob:class {constructor(parts){csvText=parts.join('')}},setTimeout(){},isStaff,validateProfile,hasPermission,showToast(){},listOrders:async()=>[{id:'order1',orderNumber:'SO-1',assignedUserId:'userUID',ownerUid:'userUID',customerSnapshot:{fullName:'Customer'},orderDate:'2026-10-12',status:'confirmed',grandTotal:10000}],listCustomers:async()=>[],listOrderProducts:async(_db,type)=>type==='units'?[{id:'kg',name:'1 KG',active:true},{id:'half',name:'500 GM',active:true},{id:'quarter',name:'250 GM',active:true}]:[],listInvoices:async()=>[],callOperation:async()=>({items:[],rows:[]}),getOrderTaking:async()=>true,listMasterRecords:async()=>{userReads++;return profiles},downloadXlsx:async(_name,sheets)=>{exports.push(sheets)}};
- const source=readFileSync(new URL('../js/order-ui.js',import.meta.url),'utf8').replace(/^import .*;\r?\n/gm,'').replace('export function initOrderUi','function initOrderUi');
+ const source=readFileSync(new URL('../js/order-bulk.js',import.meta.url),'utf8').replace(/^export /gm,'')+'\n'+readFileSync(new URL('../js/order-ui.js',import.meta.url),'utf8').replace(/^import .*;\r?\n/gm,'').replace('export function initOrderUi','function initOrderUi');
  vm.runInNewContext(source+'\nthis.init=initOrderUi;',Object.assign(ctx,{availableOrderUnits,itemUnitPrice,orderLineUnitLabel}));
  ctx.init({db:{},functions:{},auth:{},mode:'emulator'}).setSession({uid:role==='user'?'userUID':'actor'},{role,active:true,fullName:role==='user'?'User Name':'Staff Name'});
  await el('order-refresh').listeners.click(); el('order-new').listeners.click();
@@ -17,6 +17,15 @@ for (const role of ['admin','account_admin','user']) test(`Orders assignee contr
  assert.equal(el('order-user').hidden,role==='user'); assert.equal(userReads,role==='user'?0:1);
  assert.match(el('order-body').innerHTML,/User Name/);
  assert.doesNotMatch(el('order-body').innerHTML,/userUID/);
+ el('order-body').listeners.change({target:{dataset:{orderSelect:'order1'},checked:true}});
+ assert.match(el('order-selection-count').textContent,/1 selected/);
+ el('order-body').listeners.change({target:{dataset:{orderSelect:'order1'},checked:false}});
+ assert.match(el('order-selection-count').textContent,/0 selected/);
+ el('order-select-all').listeners.change({target:{checked:true}});
+ assert.match(el('order-selection-count').textContent,/1 selected.*1 matching/);
+ assert.match(el('order-body').innerHTML,/data-order-select="order1"[^>]*checked/);
+ el('order-deselect-all').listeners.click();
+ assert.match(el('order-selection-count').textContent,/0 selected/);
  el('order-export').listeners.click();
  assert.equal(exports[0],'csv-clicked');
  assert.match(csvText,/"SO-1","Customer","2026-10-12"/);
@@ -36,6 +45,10 @@ for (const role of ['admin','account_admin','user']) test(`Orders assignee contr
  assert.match(el('order-body').innerHTML,/No orders match/);
  el('order-to').value='2026-10-11'; el('order-filters').listeners.submit({preventDefault(){}});
  assert.match(el('order-message').textContent,/From Date/);
+ el('order-clear').listeners.click(); assert.match(el('order-body').innerHTML,/SO-1/);
+ el('order-search').value='Customer'; el('order-status').value='confirmed'; el('order-from').value='2026-10-12'; el('order-to').value='2026-10-12'; el('order-archive').value='active'; if(role!=='user')el('order-user').value='userUID'; el('order-filters').listeners.submit({preventDefault(){}});
+ assert.match(el('order-body').innerHTML,/SO-1/); assert.match(el('order-cards').innerHTML,/Visible orders<\/span><strong>1/);
+ el('order-archive').value='archived'; el('order-filters').listeners.submit({preventDefault(){}}); assert.match(el('order-body').innerHTML,/No orders match/);
  el('order-clear').listeners.click(); assert.match(el('order-body').innerHTML,/SO-1/);
  if(role!=='user') {el('order-user').value='otherUID'; el('order-filters').listeners.submit({preventDefault(){}}); assert.match(el('order-body').innerHTML,/No orders match/); el('order-clear').listeners.click()}
  if(role==='admin') {

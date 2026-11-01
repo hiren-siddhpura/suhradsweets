@@ -193,13 +193,14 @@ export function initUi() {
     byId('topbar-page-title').textContent = details.title;
     byId('page-description').textContent = details.description;
     setHidden('dashboard-view', page !== 'dashboard');
-    setHidden('feature-view', ['dashboard', 'master', 'boxReq', 'inventory', 'purchases', 'orders', 'orderAnalytics', 'customers', 'specials', 'invoices', 'payments', 'targets', 'announcements', 'loginLogs', 'auditLogs'].includes(page));
+    setHidden('feature-view', ['dashboard', 'master', 'boxReq', 'inventory', 'purchases', 'orders', 'deliveries', 'orderAnalytics', 'customers', 'specials', 'invoices', 'payments', 'targets', 'announcements', 'loginLogs', 'auditLogs'].includes(page));
     setHidden('orderAnalytics-view', page !== 'orderAnalytics');
     setHidden('boxReq-view', page !== 'boxReq');
     setHidden('master-view', page !== 'master');
     setHidden('inventory-view', page !== 'inventory');
     setHidden('purchases-view', page !== 'purchases');
     setHidden('orders-view', page !== 'orders');
+    setHidden('deliveries-view', page !== 'deliveries');
     setHidden('customers-view', page !== 'customers');
     if (page === 'master') document.querySelector('[data-master-tab="items"]').click();
     setHidden('invoices-view', page !== 'invoices');

@@ -1,6 +1,6 @@
 export const DASHBOARD_TARGET_ID = 'dashboard_sales_target';
 export const DASHBOARD_TARGET_KEY = 'dashboardSalesTargetKg';
-const eligible = new Set(['confirmed', 'in_preparation', 'ready', 'delivered']);
+const eligible = new Set(['confirmed', 'in_preparation', 'ready', 'delivered', 'invoiced']);
 
 export function quantityInKg(quantityQty, symbol) {
   if (!Number.isSafeInteger(quantityQty) || quantityQty < 0) return null;

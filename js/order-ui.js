@@ -1,7 +1,7 @@
 import { hasPermission, isStaff, validateProfile } from './permissions.js';
 import { showToast } from './ui.js';
 import { callOperation } from './operations-data.js';
-import { getOrderTaking, listCustomers, listOrderProducts, listOrders } from './order-data.js';
+import { getOrderTaking, listCustomers, listOrderProducts, listOrders, listDeliveries } from './order-data.js';
 import { listMasterRecords } from './master-data.js';
 import { downloadXlsx } from './xlsx-export.js';
 import { saveCustomerDirect } from './customer-data.js';
@@ -11,6 +11,8 @@ import { availableOrderUnits, itemUnitPrice, orderLineUnitLabel } from './order-
 import { actionLabel, activityDate, changeSummary, references } from './activity-format.js';
 import { listActivity } from './activity-data.js';
 import { uniqueId } from './unique-id.js';
+import { bulkEligibility, remainingDeliveryLines, retainFilteredSelection } from './order-bulk.js';
+import { cardIcon, cardButton, cardMore } from './mobile-card.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -30,7 +32,7 @@ const productImage = (name) => {
   const path = productImageByName.get(normalize(name).replace(/[^a-z0-9]/g, ''));
   return path ? encodeURI(path) : '';
 };
-const displayOrderStatus = (status) => status === 'confirmed' ? 'Confirmed' : status;
+const displayOrderStatus = (status) => ({ confirmed: 'Confirmed', delivered: 'Delivered', invoiced: 'Invoiced', in_preparation: 'Confirmed', ready: 'Confirmed', draft: 'Draft (history)', cancelled: 'Cancelled (history)' })[status] || status;
 const orderStatusBadge = (status, archived = false) => {
   const label = archived ? `${displayOrderStatus(status)} Â· Archived` : displayOrderStatus(status);
   const tone = archived ? 'archived' : String(status || 'unknown').replace(/_/g, '-');
@@ -54,7 +56,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
   const mobileNavigation = $('mobile-navigation');
   const mobileNavigationParent = mobileNavigation?.parentNode;
   const mobileNavigationNext = mobileNavigation?.nextSibling;
-  let invoiceIds = new Set(), invoicesByOrder = new Map(), stockAvailability = new Map(), stockMessage = '';
+  let invoiceIds = new Set(), invoicesByOrder = new Map(), deliveries = [], stockAvailability = new Map(), stockMessage = '';
   let activityPage = 1, activityCursors = [null], activityRows = [], activityNext = null, activityHasMore = false, activityRevision = 0;
   let activityLoadToken = null;
   const stopActivityLoad = () => { if (activityLoadToken) globalThis.omsLoading?.stop(activityLoadToken); activityLoadToken = null; };
@@ -64,6 +66,8 @@ export function initOrderUi({ db, functions, auth, mode }) {
   let ordersLoaded = false, orderRefreshPromise = null, orderInitialToken = null;
   const blankOrderFilters = () => ({ search: '', user: '', status: '', archive: '', from: '', to: '' });
   let appliedOrderFilters = blankOrderFilters();
+  let selectedOrderIds = new Set(), bulkPlan = [], bulkTarget = '', bulkRunning = false, bulkFailedIds = new Set(), bulkResults = new Map();
+  const bulkSubmissionIds = new Map();
   const orderFilterIds = { search: 'order-search', user: 'order-user', status: 'order-status', archive: 'order-archive', from: 'order-from', to: 'order-to' };
   const readOrderFilters = () => Object.fromEntries(Object.entries(orderFilterIds).map(([key, id]) => [key, $(id).value.trim()]));
   const writeOrderFilters = (filters) => { for (const [key, id] of Object.entries(orderFilterIds)) $(id).value = filters[key] || ''; };
@@ -162,6 +166,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
         ]);
         if (!current()) return;
         orders = scopedOrders; customers = customerRows; items = itemRows; specials = specialRows; acceptingOrders = control; users = userRows;
+        try { deliveries = await listDeliveries(db, scopedUid); } catch (error) { console.error('Could not load delivery history:', error); deliveries = []; }
         invoiceIds = new Set(invoiceRows.map((invoice) => invoice.orderId));
         invoicesByOrder = new Map(invoiceRows.map((invoice) => [invoice.orderId, invoice]));
         await refreshStock();
@@ -169,6 +174,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
         renderOrders();
         ordersLoaded = true;
         $('order-table-scroll').hidden = false;
+        $('order-mobile-list').hidden = false;
         $('order-export').disabled = false;
         loadActivity(true);
       } else if (page === 'specials' && staff()) {
@@ -202,12 +208,33 @@ export function initOrderUi({ db, functions, auth, mode }) {
     const filters = appliedOrderFilters;
     const search = filters.search.toLocaleLowerCase();
     return (!search || `${order.orderNumber || ''} ${order.customerSnapshot?.fullName || ''} ${order.customerSnapshot?.contact || ''} ${assignedUserName(order)}`.toLocaleLowerCase().includes(search))
-      && (!filters.status || order.status === filters.status)
+      && (!filters.status || (order.invoiceId || invoiceIds.has(order.id) ? 'invoiced' : ['in_preparation', 'ready'].includes(order.status) ? 'confirmed' : order.status) === filters.status)
       && (!filters.archive || (order.archivedAt ? 'archived' : 'active') === filters.archive)
       && (!staff() || !filters.user || (order.assignedUserId || order.ownerUid) === filters.user)
       && (!filters.from || order.orderDate >= filters.from)
       && (!filters.to || order.orderDate <= filters.to);
-  }).sort((a, b) => b.orderDate.localeCompare(a.orderDate) || b.orderNumber.localeCompare(a.orderNumber));
+  }).sort((a, b) => String(b.orderDate || '').localeCompare(String(a.orderDate || '')) || String(b.orderNumber || '').localeCompare(String(a.orderNumber || '')));
+  const bulkDecision = (order, target) => bulkEligibility({ ...order, invoiceId: order.invoiceId || (invoiceIds.has(order.id) ? order.id : null) }, target, deliveries, profile);
+  function renderBulkSelection(rows) {
+    selectedOrderIds = retainFilteredSelection(selectedOrderIds, rows);
+    const count = selectedOrderIds.size;
+    $('order-selection-count').textContent = `${count} selected · ${rows.length} matching`;
+    $('order-bulk-count').textContent = `${count} selected`;
+    $('order-bulk-toolbar').hidden = !count;
+    $('order-deselect-all').disabled = !count;
+    for (const id of ['order-select-all', 'order-select-page']) {
+      $(id).checked = rows.length > 0 && count === rows.length;
+      $(id).indeterminate = count > 0 && count < rows.length;
+      $(id).disabled = !rows.length;
+    }
+    const selected = rows.filter((row) => selectedOrderIds.has(row.id));
+    const previous = $('order-bulk-status').value;
+    $('order-bulk-status').innerHTML = '<option value="">Choose action</option>'
+      + '<option value="delivered">Delivered · Create Delivery</option>'
+      + (staff() ? '<option value="invoiced">Invoiced · Create Invoice</option>' : '');
+    $('order-bulk-status').value = ['delivered', 'invoiced'].includes(previous) ? previous : '';
+    $('order-bulk-review').disabled = !$('order-bulk-status').value;
+  }
   function renderOrderFilterChips() {
     const filters = appliedOrderFilters;
     const userName = users.find((row) => row.id === filters.user);
@@ -242,8 +269,8 @@ export function initOrderUi({ db, functions, auth, mode }) {
     $('customer-new').hidden = !staff();
     const rows = filteredCustomers();
     $('customer-summary').innerHTML = `<div class="card ops-stat"><span>Visible customers</span><strong>${rows.length}</strong></div>${staff() ? `<div class="card ops-stat"><span>Sabha customers</span><strong>${rows.filter((c) => c.sabha).length}</strong></div><div class="card ops-stat"><span>Areas</span><strong>${new Set(rows.map((c) => c.area)).size}</strong></div>` : ''}`;
-      $('customer-body').innerHTML = rows.length ? rows.map((c) => `<tr><td>${esc(c.fullName)}</td><td>${esc(c.contact)}</td><td>${esc(c.area)}</td><td>${esc(c.address)}</td><td>${esc(customerAssigneeName(c))}</td><td>${staff() ? c.sabha ? 'Yes' : 'No' : 'â€”'}</td><td>${staff() ? esc(c.ownerUserIds?.length || 0) : 'â€”'}</td><td>${staff() ? `<button class="ops-link" type="button" data-id="${esc(c.id)}" data-action="editCustomer">Edit</button> ${mode === 'emulator' ? `<button class="ops-link" type="button" data-id="${esc(c.id)}" data-action="deleteCustomer">Delete</button>` : ''}` : ''}</td></tr>`).join('') : empty(8, 'No customers match your search or order access.');
-    $('customer-mobile-list').innerHTML = rows.length ? rows.map((c) => `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${esc(c.fullName)}</strong><span>${esc(c.area)}</span></div><p>${esc(c.contact)}<small>${esc(c.address)}</small></p>${staff() ? `<div class="mobile-record-actions"><button type="button" data-id="${esc(c.id)}" data-action="editCustomer">View / Edit</button>${mode === 'emulator' ? `<button type="button" data-id="${esc(c.id)}" data-action="deleteCustomer">Delete</button>` : ''}</div>` : ''}</article>`).join('') : '<p class="mobile-record-empty">No customers match the current search.</p>';
+      $('customer-body').innerHTML = rows.length ? rows.map((c) => `<tr><td>${esc(c.fullName)}</td><td>${esc(c.contact)}</td><td>${esc(c.area)}</td><td>${esc(c.address)}</td><td>${esc(customerAssigneeName(c))}</td><td>${staff() ? c.sabha ? 'Yes' : 'No' : '—'}</td><td>${staff() ? esc(c.ownerUserIds?.length || 0) : '—'}</td><td>${staff() ? `<button class="ops-link" type="button" data-id="${esc(c.id)}" data-action="editCustomer">Edit</button> ${mode === 'emulator' ? `<button class="ops-link" type="button" data-id="${esc(c.id)}" data-action="deleteCustomer">Delete</button>` : ''}` : ''}</td></tr>`).join('') : empty(8, 'No customers match your search or order access.');
+    $('customer-mobile-list').innerHTML = rows.length ? rows.map((c) => `<article class="order-mobile-card"><div class="order-card-header"><h3 class="order-card-customer">${esc(c.fullName || 'Customer name unavailable')}</h3></div><div class="order-card-meta">${c.contact ? `<span>${cardIcon('phone')}${esc(c.contact)}</span>` : ''}${c.area ? `<span>${cardIcon('order')}${esc(c.area)}</span>` : ''}${c.address ? `<span>${cardIcon('order')}${esc(c.address)}</span>` : ''}<span>${cardIcon('user')}${esc(customerAssigneeName(c))}</span></div><div class="order-card-actions">${cardButton('viewCustomer', c.id, 'View customer', 'view', 'data-action')}${staff() ? cardButton('editCustomer', c.id, 'Edit customer', 'edit', 'data-action') : ''}${c.contact ? `<a class="order-card-action" href="tel:${esc(String(c.contact).replace(/[^+\d]/g, ''))}" aria-label="Call ${esc(c.fullName)}" title="Call customer">${cardIcon('phone')}<span>Call</span></a>` : ''}${cardMore(esc(c.fullName), mode === 'emulator' && staff() ? [`<button type="button" data-action="deleteCustomer" data-id="${esc(c.id)}">Delete customer</button>`] : [])}</div></article>`).join('') : '<p class="mobile-record-empty">No customers match the current search.</p>';
   }
   function renderOrders() {
     $('order-intake').hidden = !hasPermission(profile, 'systemSettings');
@@ -252,33 +279,148 @@ export function initOrderUi({ db, functions, auth, mode }) {
     $('order-user').hidden = !staff();
     $('order-user-field').hidden = !staff();
     const selectedUser = $('order-user').value;
-    const orderUsers = [...new Map([...eligibleUsers(), ...orders.map((order) => ({ id: order.assignedUserId || order.ownerUid, displayName: assignedUserName(order) }))].filter((row) => row.id).map((row) => [row.id, row])).values()];
+    const orderUsers = [...new Map([...eligibleUsers(), ...orders.map((order) => ({ id: order.assignedUserId || order.ownerUid, displayName: assignedUserName(order) })), ...(selectedUser ? [{ id: selectedUser, displayName: users.find((row) => row.id === selectedUser)?.displayName || selectedUser }] : [])].filter((row) => row.id).map((row) => [row.id, row])).values()];
     $('order-user').innerHTML = '<option value="">All users</option>' + orderUsers.map((u) => `<option value="${esc(u.id)}">${esc(u.displayName || u.fullName || u.id)}</option>`).join('');
     $('order-user').value = selectedUser;
     renderOrderFilterChips();
     const rows = filteredOrders();
-    $('order-cards').innerHTML = `<div class="card ops-stat"><span>Visible orders</span><strong>${rows.length}</strong></div><div class="card ops-stat"><span>Open orders</span><strong>${rows.filter((o) => !['cancelled', 'delivered'].includes(o.status)).length}</strong></div><div class="card ops-stat"><span>Processed value</span><strong>${rupees(rows.filter((o) => !['draft', 'cancelled'].includes(o.status)).reduce((sum, o) => sum + (o.grandTotal || 0), 0))}</strong></div>`;
+    renderBulkSelection(rows);
+    $('order-cards').innerHTML = `<div class="card ops-stat"><span>Visible orders</span><strong>${rows.length}</strong></div><div class="card ops-stat"><span>Open orders</span><strong>${rows.filter((o) => !['cancelled', 'delivered', 'invoiced'].includes(o.status) && !o.invoiceId && !invoiceIds.has(o.id)).length}</strong></div><div class="card ops-stat"><span>Processed value</span><strong>${rupees(rows.filter((o) => !['draft', 'cancelled'].includes(o.status)).reduce((sum, o) => sum + (o.grandTotal || 0), 0))}</strong></div>`;
     const orderActions = (o) => {
       const manageable = staff() || o.ownerUid === user?.uid;
       const specialOrder = o.lines?.some((line) => line.kind === 'special');
-      const mayEdit = o.status === 'draft' ? manageable && (!specialOrder || special()) : ['confirmed', 'in_preparation', 'ready'].includes(o.status) && admin() && (!specialOrder || special());
+      const mayEdit = o.status === 'draft' ? manageable && (!specialOrder || special()) : ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && admin() && (!specialOrder || special());
       const editableStatus = ['draft', 'confirmed', 'in_preparation', 'ready'].includes(o.status);
       const financialReason = invoiceIds.has(o.id) || o.invoiceId ? 'An invoice exists for this order.' : '';
-      const lockReason = (financialReason && !admin() ? financialReason : '') || (o.archivedAt ? 'Restore this order to edit it.' : '');
+      const lockReason = deliveries.some((row) => row.orderId === o.id) ? 'Orders with delivery history cannot be edited.' : (financialReason && !admin() ? financialReason : '') || (o.archivedAt ? 'Restore this order to edit it.' : '');
       const button = (kind, label, reason = '') => `<button type="button" data-action="${kind}" data-id="${esc(o.id)}" ${reason ? `disabled title="${esc(reason)}"` : ''}>${label}</button>`;
       return [button('viewOrder', 'View'), mayEdit ? button('editOrder', 'Edit', lockReason) : '',
         o.status === 'draft' && manageable && (!specialOrder || special()) ? button('confirmOrder', 'Confirm', o.archivedAt ? 'Restore this order first.' : '') : '',
         manageable && editableStatus && (!specialOrder || staff()) ? o.archivedAt ? button('restoreOrder', 'Restore', financialReason) : button('archiveOrder', 'Archive', financialReason) : '',
         editableStatus && admin() ? button('cancelOrder', 'Cancel Order') : '',
-        staff() && ['confirmed', 'in_preparation', 'ready'].includes(o.status) ? button('advanceOrder', 'Next status', o.archivedAt ? 'Restore this order first.' : '') : '',
-        manageable && o.status === 'confirmed' && !invoiceIds.has(o.id) && !o.invoiceId ? button('invoiceOrder', 'Create invoice', o.archivedAt ? 'Restore this order first.' : '') : '',
+        manageable && ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && (o.lines || []).some((line, index) => deliveries.filter((row) => row.orderId === o.id).reduce((sum, row) => sum + (row.lines?.[index]?.deliveredQty || 0), 0) < line.quantityQty) ? button('createDelivery', 'Create Delivery', o.archivedAt ? 'Restore this order first.' : '') : '',
+        manageable && ['confirmed', 'delivered', 'in_preparation', 'ready'].includes(o.status) && !invoiceIds.has(o.id) && !o.invoiceId ? button('invoiceOrder', 'Create invoice', o.archivedAt ? 'Restore this order first.' : '') : '',
         manageable && (invoiceIds.has(o.id) || o.invoiceId) ? button('viewInvoice', 'View invoice') : '',
         ].filter(Boolean).join('');
     };
+    const icon = (name) => {
+      const paths = {
+        view: '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+        edit: '<path d="m4 20 4.2-.8L19 8.4 15.6 5 4.8 15.8 4 20Z"/><path d="m13.8 6.8 3.4 3.4"/>',
+        delivery: '<path d="M3 7h10v10H3zM13 10h4l4 4v3h-8z"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>',
+        invoice: '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h7M9 16h7"/>',
+        more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+        calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18"/>',
+        user: '<circle cx="12" cy="8" r="3"/><path d="M5 20v-1a7 7 0 0 1 14 0v1"/>',
+      };
+      return `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
+    };
+    const mobileOrderActions = (o) => {
+      const manageable = staff() || o.ownerUid === user?.uid;
+      const specialOrder = o.lines?.some((line) => line.kind === 'special');
+      const hasInvoice = Boolean(o.invoiceId || invoiceIds.has(o.id));
+      const hasDelivery = deliveries.some((row) => row.orderId === o.id);
+      const remainingDelivery = (o.lines || []).some((line, index) => deliveries.filter((row) => row.orderId === o.id).reduce((sum, row) => sum + (row.lines?.[index]?.deliveredQty || 0), 0) < line.quantityQty);
+      const mayEdit = !o.archivedAt && !hasDelivery && (o.status === 'draft' && manageable && (!specialOrder || special()) || ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && admin() && (!specialOrder || special())) && (!hasInvoice || admin());
+      const canDeliver = manageable && !o.archivedAt && ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && remainingDelivery;
+      const canInvoice = manageable && !o.archivedAt && !hasInvoice && ['confirmed', 'delivered', 'in_preparation', 'ready'].includes(o.status);
+      const canArchive = manageable && !hasInvoice && ['draft', 'confirmed', 'in_preparation', 'ready'].includes(o.status) && (!specialOrder || staff());
+      const canCancel = admin() && !o.archivedAt && ['draft', 'confirmed', 'in_preparation', 'ready'].includes(o.status);
+      const action = (kind, label, symbol) => `<button type="button" class="order-card-action" data-action="${kind}" data-id="${esc(o.id)}" aria-label="${label} ${esc(o.orderNumber)}" title="${label}">${icon(symbol)}<span>${label}</span></button>`;
+      const more = [o.status === 'draft' && manageable && !o.archivedAt && (!specialOrder || special()) ? `<button type="button" data-action="confirmOrder" data-id="${esc(o.id)}">Confirm order</button>` : '', canArchive ? `<button type="button" data-action="${o.archivedAt ? 'restoreOrder' : 'archiveOrder'}" data-id="${esc(o.id)}">${o.archivedAt ? 'Restore' : 'Archive'}</button>` : '', canCancel ? `<button type="button" data-action="cancelOrder" data-id="${esc(o.id)}">Cancel order</button>` : ''].filter(Boolean);
+      return `<div class="order-card-actions">${action('viewOrder', 'View', 'view')}${mayEdit ? action('editOrder', 'Edit', 'edit') : ''}${canDeliver ? action('createDelivery', 'Delivery', 'delivery') : ''}${canInvoice ? action('invoiceOrder', 'Invoice', 'invoice') : hasInvoice && manageable ? action('viewInvoice', 'View invoice', 'invoice') : ''}${more.length ? `<details class="order-card-more"><summary aria-label="More actions for ${esc(o.orderNumber)}" title="More actions">${icon('more')}<span>More</span></summary><div class="order-card-menu">${more.join('')}</div></details>` : ''}</div>`;
+    };
     $('order-body').innerHTML = rows.length ? rows.map((o) => {
-      return `<tr><td>${esc(o.orderNumber)}</td><td>${esc(o.customerSnapshot?.fullName)}</td><td>${esc(o.orderDate)}</td><td>${esc(assignedUserName(o))}</td><td>${orderStatusBadge(o.status, !!o.archivedAt)}</td><td>${rupees(o.grandTotal)}</td><td class="ops-actions">${orderActions(o)}</td></tr>`;
-    }).join('') : empty(7, 'No orders match these filters.');
-    $('order-mobile-list').innerHTML = rows.length ? rows.map((o) => `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${esc(o.orderNumber)}</strong>${orderStatusBadge(o.status, !!o.archivedAt)}</div><p>${esc(o.customerSnapshot?.fullName)}<small>${esc(o.orderDate)} &middot; ${esc(assignedUserName(o))}</small></p><div class="mobile-record-bottom"><b>${rupees(o.grandTotal)}</b><div class="mobile-record-actions">${orderActions(o)}</div></div></article>`).join('') : '<p class="mobile-record-empty">No orders match the current filters.</p>';
+      return `<tr><td><input type="checkbox" data-order-select="${esc(o.id)}" aria-label="Select order ${esc(o.orderNumber)}" ${selectedOrderIds.has(o.id) ? 'checked' : ''}></td><td>${esc(o.orderNumber)}</td><td>${esc(o.customerSnapshot?.fullName)}</td><td>${esc(o.orderDate)}</td><td>${esc(assignedUserName(o))}</td><td>${orderStatusBadge(o.invoiceId || invoiceIds.has(o.id) ? 'invoiced' : o.status, !!o.archivedAt)}</td><td>${rupees(o.grandTotal)}</td><td class="ops-actions">${orderActions(o)}</td></tr>`;
+    }).join('') : empty(8, 'No orders match these filters.');
+    $('order-mobile-list').innerHTML = rows.length ? rows.map((o) => `<article class="order-mobile-card"><div class="order-card-header"><label class="order-card-select"><input type="checkbox" data-order-select="${esc(o.id)}" aria-label="Select order ${esc(o.orderNumber || 'number unavailable')}" ${selectedOrderIds.has(o.id) ? 'checked' : ''}><strong>${esc(o.orderNumber || 'Order number unavailable')}</strong></label>${orderStatusBadge(o.invoiceId || invoiceIds.has(o.id) ? 'invoiced' : o.status, !!o.archivedAt)}</div><h3 class="order-card-customer">${esc(o.customerSnapshot?.fullName || 'Customer unavailable')}</h3><div class="order-card-meta"><span>${icon('calendar')}${esc(o.orderDate || 'Date unavailable')}</span><span>${icon('user')}${esc(assignedUserName(o))}</span></div><div class="order-card-total"><span>Order Total</span><strong>${Number.isSafeInteger(o.grandTotal) ? rupees(o.grandTotal) : 'Amount unavailable'}</strong></div>${mobileOrderActions(o)}</article>`).join('') : '<p class="mobile-record-empty">No orders match the current filters.</p>';
+  }
+  function clearBulkSelection() { selectedOrderIds.clear(); $('order-bulk-status').value = ''; renderOrders(); }
+  function setAllFiltered(selected) {
+    if (!user || !profile || bulkRunning) return;
+    selectedOrderIds = selected ? new Set(filteredOrders().map((order) => order.id)) : new Set();
+    renderOrders();
+  }
+  function bulkItemLabel(line) { return line.kind === 'special' ? line.specialSnapshot?.name || 'Combination' : line.itemSnapshot?.name || 'Item'; }
+  function bulkLineLabel(line) { return line.kind === 'special' ? 'combo' : orderLineUnitLabel(line) || line.itemSnapshot?.unitSymbol || ''; }
+  function bulkPreviewHtml(entry) {
+    const { order, decision } = entry;
+    const lines = entry.target === 'delivered' && decision.operation ? remainingDeliveryLines(order, deliveries)
+      .map(({ line, remainingQty }) => `<li>${esc(bulkItemLabel(line))}: ${esc(qtyText(remainingQty))} ${esc(bulkLineLabel(line))} remaining</li>`).join('') : entry.target === 'invoiced' ? (order.lines || []).map((line) => `<li>${esc(bulkItemLabel(line))}: ${esc(qtyText(line.quantityQty))} ${esc(bulkLineLabel(line))} · ${rupees(line.lineTotalPaise)}</li>`).join('') : '';
+    const invoiceDetail = entry.target === 'invoiced' ? `<p>Assigned: ${esc(assignedUserName(order))} · Order date: ${esc(order.orderDate || 'Unavailable')}</p><p>Subtotal: ${rupees(order.subtotal)}${Number.isSafeInteger(order.discountPaise) && order.discountPaise > 0 ? ` · Discount: −${rupees(order.discountPaise)}` : ''} · Other charges: ${rupees((order.grandTotal || 0) - (order.subtotal || 0) + (order.discountPaise || 0))} · Invoice total: <strong>${rupees(order.grandTotal)}</strong></p>` : '';
+    return `<article class="order-bulk-entry"><strong>${esc(order.orderNumber)} · ${esc(order.customerSnapshot?.fullName || 'Unknown customer')}</strong><p>${decision.operation ? 'Eligible' : `Cannot process: ${esc(decision.reason)}`}</p>${invoiceDetail}${lines ? `<ul>${lines}</ul>` : ''}</article>`;
+  }
+  async function openBulkReview() {
+    const target = $('order-bulk-status').value;
+    if (!['delivered', 'invoiced'].includes(target) || !selectedOrderIds.size || bulkRunning || target === 'invoiced' && !staff()) return;
+    try { await refresh('orders'); }
+    catch (error) { showToast(`Could not verify orders: ${cleanError(error)}`, 'toast-error'); return; }
+    if (!ordersLoaded) { showToast('Could not verify orders. Refresh and try again.', 'toast-error'); return; }
+    bulkTarget = target;
+    bulkPlan = filteredOrders().filter((order) => selectedOrderIds.has(order.id)).map((order) => ({ order, target, decision: bulkDecision(order, target) }));
+    const eligible = bulkPlan.filter((entry) => entry.decision.operation).length;
+    $('order-bulk-title').textContent = target === 'delivered' ? 'Review bulk Create Delivery' : 'Review bulk Create Invoice';
+    $('order-bulk-summary').textContent = `${bulkPlan.length} selected · ${eligible} eligible · ${bulkPlan.length - eligible} cannot be processed. Each order is processed separately.`;
+    $('order-bulk-details').innerHTML = bulkPlan.map(bulkPreviewHtml).join('');
+    $('order-bulk-progress').textContent = '';
+    $('order-bulk-submit').hidden = !eligible;
+    $('order-bulk-submit').disabled = false;
+    $('order-bulk-retry').hidden = true;
+    bulkFailedIds = new Set();
+    bulkResults = new Map();
+    if (!$('order-bulk-dialog').open) $('order-bulk-dialog').showModal();
+  }
+  async function processBulk(retry = false) {
+    if (bulkRunning || !bulkPlan.length) return;
+    const entries = bulkPlan.filter((entry) => entry.decision.operation && (!retry || bulkFailedIds.has(entry.order.id)));
+    if (!entries.length) return;
+    let retryInvoices = new Map();
+    if (retry && bulkTarget === 'invoiced') {
+      try { retryInvoices = new Map((await listInvoices(db, null)).map((invoice) => [invoice.orderId, invoice])); }
+      catch (error) { showToast(`Could not verify invoices before retry: ${cleanError(error)}`, 'toast-error'); return; }
+    }
+    bulkRunning = true;
+    $('order-bulk-submit').disabled = true;
+    $('order-bulk-retry').disabled = true;
+    $('order-bulk-close').disabled = true;
+    $('order-bulk-cancel').disabled = true;
+    const results = retry ? new Map(bulkResults) : new Map(bulkPlan.filter((entry) => !entry.decision.operation).map((entry) => [entry.order.id, { entry, kind: 'skipped', reason: entry.decision.reason }]));
+    let done = 0;
+    try {
+      for (const entry of entries) {
+        $('order-bulk-progress').textContent = `Processing ${++done} of ${entries.length}: ${entry.order.orderNumber}`;
+        try {
+          if (retryInvoices.has(entry.order.id)) {
+            results.set(entry.order.id, { entry, kind: 'success', invoiceNumber: retryInvoices.get(entry.order.id).invoiceNumber });
+            selectedOrderIds.delete(entry.order.id);
+            continue;
+          }
+          let result;
+          if (entry.decision.operation === 'createDelivery') {
+            if (!bulkSubmissionIds.has(entry.order.id)) bulkSubmissionIds.set(entry.order.id, uniqueId());
+            result = await callOperation(functions, 'createDelivery', { orderId: entry.order.id, submissionId: bulkSubmissionIds.get(entry.order.id), lines: entry.decision.lines, remarks: 'Bulk delivery' });
+          } else result = await callOperation(functions, entry.decision.operation, entry.decision.payload);
+          results.set(entry.order.id, { entry, kind: 'success', invoiceNumber: entry.decision.operation === 'createInvoiceFromOrder' ? result?.invoiceNumber || entry.decision.invoiceNumber : null });
+          selectedOrderIds.delete(entry.order.id);
+        } catch (error) { results.set(entry.order.id, { entry, kind: 'failed', reason: cleanError(error) }); }
+      }
+      bulkFailedIds = new Set([...results.values()].filter((result) => result.kind === 'failed').map((result) => result.entry.order.id));
+      bulkResults = results;
+      const list = [...results.values()];
+      const counts = { success: list.filter((row) => row.kind === 'success').length, failed: bulkFailedIds.size, skipped: list.filter((row) => row.kind === 'skipped').length };
+      $('order-bulk-summary').textContent = `${counts.success} successful · ${counts.failed} failed · ${counts.skipped} skipped`;
+      $('order-bulk-details').innerHTML = list.map(({ entry, kind, reason, invoiceNumber }) => `<article class="order-bulk-entry"><strong>${esc(entry.order.orderNumber)} · ${esc(entry.order.customerSnapshot?.fullName || '')}</strong><p>${kind === 'success' ? `Successful${invoiceNumber ? ` · Invoice ${esc(invoiceNumber)}` : ''}` : `${kind === 'failed' ? 'Failed' : 'Skipped'}: ${esc(reason)}`}</p></article>`).join('');
+      $('order-bulk-progress').textContent = 'Processing complete.';
+      $('order-bulk-submit').hidden = true;
+      $('order-bulk-retry').hidden = !counts.failed;
+      await refresh('orders');
+    } finally {
+      bulkRunning = false;
+      $('order-bulk-submit').disabled = false;
+      $('order-bulk-retry').disabled = false;
+      $('order-bulk-close').disabled = false;
+      $('order-bulk-cancel').disabled = false;
+    }
   }
   function renderSpecials() {
     const rows = filteredSpecials();
@@ -408,7 +550,9 @@ export function initOrderUi({ db, functions, auth, mode }) {
       return `<tr><th scope="row">${esc(name || 'Item unavailable')}</th><td data-label="Unit / Qty">${quantity}</td><td data-label="Rate">${rate}</td><td data-label="Amount">${amount}</td></tr>`;
     }).join('');
     const discount = Number.isSafeInteger(o.discountPaise) && o.discountPaise > 0 ? `<div><span>Discount</span><strong>−${rupees(o.discountPaise)}</strong></div>` : '';
-    return `<div class="order-view"><div class="order-view-summary"><div class="order-view-identity"><strong>${esc(o.orderNumber)}</strong>${orderStatusBadge(o.status, !!o.archivedAt)}</div><dl><div><dt>Customer</dt><dd>${esc(o.customerSnapshot?.fullName || 'Unavailable')}</dd></div><div><dt>Assigned user</dt><dd>${esc(assignedUserName(o))}</dd></div><div><dt>Order date</dt><dd>${esc(o.orderDate || 'Unavailable')}</dd></div><div><dt>Invoice</dt><dd>${invoiced ? 'Created' : 'Not created'}</dd></div></dl>${admin() ? `<div class="order-reassignment"><label class="ops-field">Assigned User<select id="order-reassign-user">${eligibleUsers().map((row) => `<option value="${esc(row.id)}" ${row.id === (o.assignedUserId || o.ownerUid) ? 'selected' : ''}>${esc(row.displayName || row.fullName || 'Unnamed user')}</option>`).join('')}</select></label><button type="button" class="button button-outline" id="order-reassign-save" data-id="${esc(o.id)}">Save assignment</button></div>` : ''}</div><section aria-labelledby="order-view-items-title"><h3 id="order-view-items-title">Items</h3><table class="order-view-table"><thead><tr><th scope="col">Item</th><th scope="col">Unit / Qty</th><th scope="col">Rate</th><th scope="col">Amount</th></tr></thead><tbody>${lines || '<tr><td colspan="4">No items recorded.</td></tr>'}</tbody></table></section><div class="order-view-total">${Number.isSafeInteger(o.subtotal) ? `<div><span>Subtotal</span><strong>${rupees(o.subtotal)}</strong></div>` : ''}${discount}<div class="order-view-grand"><span>Total</span><strong>${Number.isSafeInteger(o.grandTotal) ? rupees(o.grandTotal) : 'Unavailable'}</strong></div></div>${o.notes ? `<section class="order-view-notes"><h3>Notes</h3><p>${esc(o.notes)}</p></section>` : ''}</div>`;
+    const history = deliveries.filter((row) => row.orderId === o.id).sort((a, b) => (a.deliveredAt?.seconds || 0) - (b.deliveredAt?.seconds || 0));
+    const historyHtml = `<section><h3>Delivery history</h3>${history.length ? `<ul>${history.map((row) => `<li><strong>${esc(row.deliveryNumber)}</strong> · ${esc(row.deliveredAt?.toDate?.().toLocaleString('en-IN') || '')} · ${row.complete ? 'Complete' : 'Partial'}<ul>${row.lines.filter((line) => line.deliveredQty).map((line) => `<li>${esc(line.name)}: ${esc(qtyText(line.deliveredQty))} ${esc(line.unit)}</li>`).join('')}</ul></li>`).join('')}</ul>` : '<p>No delivery recorded.</p>'}</section>`;
+    return `<div class="order-view"><div class="order-view-summary"><div class="order-view-identity"><strong>${esc(o.orderNumber)}</strong>${orderStatusBadge(invoiced ? 'invoiced' : o.status, !!o.archivedAt)}</div><dl><div><dt>Customer</dt><dd>${esc(o.customerSnapshot?.fullName || 'Unavailable')}</dd></div><div><dt>Assigned user</dt><dd>${esc(assignedUserName(o))}</dd></div><div><dt>Order date</dt><dd>${esc(o.orderDate || 'Unavailable')}</dd></div><div><dt>Invoice</dt><dd>${invoiced ? 'Created' : 'Not created'}</dd></div></dl>${admin() ? `<div class="order-reassignment"><label class="ops-field">Assigned User<select id="order-reassign-user">${eligibleUsers().map((row) => `<option value="${esc(row.id)}" ${row.id === (o.assignedUserId || o.ownerUid) ? 'selected' : ''}>${esc(row.displayName || row.fullName || 'Unnamed user')}</option>`).join('')}</select></label><button type="button" class="button button-outline" id="order-reassign-save" data-id="${esc(o.id)}">Save assignment</button></div>` : ''}</div><section aria-labelledby="order-view-items-title"><h3 id="order-view-items-title">Items</h3><table class="order-view-table"><thead><tr><th scope="col">Item</th><th scope="col">Unit / Qty</th><th scope="col">Rate</th><th scope="col">Amount</th></tr></thead><tbody>${lines || '<tr><td colspan="4">No items recorded.</td></tr>'}</tbody></table></section><div class="order-view-total">${Number.isSafeInteger(o.subtotal) ? `<div><span>Subtotal</span><strong>${rupees(o.subtotal)}</strong></div>` : ''}${discount}<div class="order-view-grand"><span>Total</span><strong>${Number.isSafeInteger(o.grandTotal) ? rupees(o.grandTotal) : 'Unavailable'}</strong></div></div>${historyHtml}${o.notes ? `<section class="order-view-notes"><h3>Notes</h3><p>${esc(o.notes)}</p></section>` : ''}</div>`;
   }
 
   function openDialog(nextAction, id = '') {
@@ -422,24 +566,25 @@ export function initOrderUi({ db, functions, auth, mode }) {
     if (nextAction === 'order' && !parkedOrder) pendingCustomerDetails = null;
     if (nextAction === 'customer') pendingCustomerId = id || uniqueId();
     action = nextAction; targetId = id; $('order-form-error').hidden = true;
-    $('order-dialog-save').hidden = nextAction === 'viewOrder';
-    $('order-dialog-cancel').textContent = nextAction === 'viewOrder' ? 'Close' : 'Cancel';
+    $('order-dialog-save').hidden = nextAction === 'viewOrder' || nextAction === 'viewCustomer';
+    $('order-dialog-cancel').textContent = nextAction === 'viewOrder' || nextAction === 'viewCustomer' ? 'Close' : 'Cancel';
     $('order-view-actions').hidden = nextAction !== 'viewOrder';
     $('order-view-actions').innerHTML = '';
     $('order-dialog-save').textContent = nextAction === 'deleteCustomer' ? 'Delete customer' : 'Save';
     const c = customers.find((row) => row.id === id), o = orders.find((row) => row.id === id), s = specials.find((row) => row.id === id);
-    $('order-dialog-title').textContent = ({ customer: c ? 'Edit customer' : 'Add customer', order: o ? `Edit ${o.orderNumber}` : 'Create Order', viewOrder: `Order ${o?.orderNumber || ''}`, special: s ? 'Edit combination' : 'Add combination', cancel: 'Cancel order', archive: 'Archive order', restore: 'Restore order', request: 'Record payment request', intake: 'Order-taking', invoice: 'Create invoice' })[nextAction];
+    $('order-dialog-title').textContent = ({ customer: c ? 'Edit customer' : 'Add customer', viewCustomer: c?.fullName || 'Customer', order: o ? `Edit ${o.orderNumber}` : 'Create Order', viewOrder: `Order ${o?.orderNumber || ''}`, special: s ? 'Edit combination' : 'Add combination', cancel: 'Cancel order', archive: 'Archive order', restore: 'Restore order', request: 'Record payment request', intake: 'Order-taking', invoice: 'Create invoice' })[nextAction];
     if (nextAction === 'viewOrder' && o) {
       $('order-fields').innerHTML = viewOrderContent(o);
       const actions = $('order-view-actions');
       const invoiced = invoiceIds.has(o.id) || Boolean(o.invoiceId);
       const own = staff() || o.ownerUid === user?.uid;
       const specialOrder = o.lines?.some((line) => line.kind === 'special');
-      const canEdit = !o.archivedAt && (!invoiced || admin()) && (!o.editLockedAt || admin()) && (!o.paymentRequestedAt || admin()) && (o.status === 'draft' && own && (!specialOrder || special()) || ['confirmed', 'in_preparation', 'ready'].includes(o.status) && admin() && (!specialOrder || special()));
-      const canInvoice = own && o.status === 'confirmed' && !invoiced && !o.archivedAt;
-      actions.innerHTML = `${canEdit ? '<button type="button" class="button button-outline" data-view-action="editOrder"><span aria-hidden="true">✎</span> Edit</button>' : ''}${canInvoice ? '<button type="button" class="button button-primary" data-view-action="invoiceOrder"><span aria-hidden="true">＋</span> Create Invoice</button>' : ''}${own && invoiced ? '<button type="button" class="button button-primary" data-view-action="viewInvoice"><span aria-hidden="true">▣</span> View Invoice</button>' : ''}${admin() && ['draft', 'confirmed', 'in_preparation', 'ready'].includes(o.status) ? '<button type="button" class="button button-outline" data-view-action="cancelOrder">Cancel Order</button>' : ''}`;
+      const canEdit = !deliveries.some((row) => row.orderId === o.id) && !o.archivedAt && (!invoiced || admin()) && (!o.editLockedAt || admin()) && (!o.paymentRequestedAt || admin()) && (o.status === 'draft' && own && (!specialOrder || special()) || ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && admin() && (!specialOrder || special()));
+      const canInvoice = own && ['confirmed', 'delivered', 'in_preparation', 'ready'].includes(o.status) && !invoiced && !o.archivedAt;
+      actions.innerHTML = `${canEdit ? '<button type="button" class="button button-outline" data-view-action="editOrder"><span aria-hidden="true">✎</span> Edit</button>' : ''}${own && ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && !o.archivedAt && (o.lines || []).some((line, index) => deliveries.filter((row) => row.orderId === o.id).reduce((sum, row) => sum + (row.lines?.[index]?.deliveredQty || 0), 0) < line.quantityQty) ? '<button type="button" class="button button-outline" data-view-action="createDelivery">Create Delivery</button>' : ''}${canInvoice ? '<button type="button" class="button button-primary" data-view-action="invoiceOrder"><span aria-hidden="true">ï¼‹</span> Create Invoice</button>' : ''}${own && invoiced ? '<button type="button" class="button button-primary" data-view-action="viewInvoice"><span aria-hidden="true">▣</span> View Invoice</button>' : ''}${admin() && ['draft', 'confirmed', 'in_preparation', 'ready'].includes(o.status) ? '<button type="button" class="button button-outline" data-view-action="cancelOrder">Cancel Order</button>' : ''}`;
     }
     if (nextAction === 'customer') $('order-fields').innerHTML = customerFields(c || (parkedOrder ? pendingCustomerDetails || {} : {}));
+    if (nextAction === 'viewCustomer' && c) $('order-fields').innerHTML = `<p><strong>Phone:</strong> ${esc(c.contact || 'Unavailable')}</p><p><strong>Area:</strong> ${esc(c.area || 'Unavailable')}</p><p><strong>Address:</strong> ${esc(c.address || 'Unavailable')}</p><p><strong>Assigned Karyakarta:</strong> ${esc(customerAssigneeName(c))}</p>`;
     if (nextAction === 'deleteCustomer') {
       if (!staff() || !c) return;
       $('order-dialog-title').textContent = 'Delete customer';
@@ -465,7 +610,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
       toggleNewCustomer();
       refreshStock();
     }
-    if (nextAction === 'special') $('order-fields').innerHTML = `${field('Name', 'name', 'text', s?.name, 'required maxlength="120"')}${field('Final selling price (â‚¹)', 'price', 'number', s ? s.finalPricePaise / 100 : '', 'min="0" step="0.01" required')}<label class="ops-field">Description<textarea name="description" maxlength="500">${esc(s?.description || '')}</textarea></label><label class="ops-field">Status<select name="active"><option value="true" ${s?.active !== false ? 'selected' : ''}>Active</option><option value="false" ${s?.active === false ? 'selected' : ''}>Inactive</option></select></label><div class="ops-lines"><strong>Recipe: 2 to 4 distinct items</strong><div id="special-components">${(s?.components || [{}, {}]).map(componentLine).join('')}</div><button id="special-add-component" class="button button-outline" type="button">Add component</button></div>`;
+    if (nextAction === 'special') $('order-fields').innerHTML = `${field('Name', 'name', 'text', s?.name, 'required maxlength="120"')}${field('Final selling price (₹)', 'price', 'number', s ? s.finalPricePaise / 100 : '', 'min="0" step="0.01" required')}<label class="ops-field">Description<textarea name="description" maxlength="500">${esc(s?.description || '')}</textarea></label><label class="ops-field">Status<select name="active"><option value="true" ${s?.active !== false ? 'selected' : ''}>Active</option><option value="false" ${s?.active === false ? 'selected' : ''}>Inactive</option></select></label><div class="ops-lines"><strong>Recipe: 2 to 4 distinct items</strong><div id="special-components">${(s?.components || [{}, {}]).map(componentLine).join('')}</div><button id="special-add-component" class="button button-outline" type="button">Add component</button></div>`;
     if (nextAction === 'archive') $('order-fields').innerHTML = `<p>Archive ${esc(o?.orderNumber)}? The order and its financial history remain available. Stock is not restored by archiving.</p>${field('Reason (optional)', 'reason', 'text', '', 'maxlength="500"')}`;
     if (nextAction === 'restore') $('order-fields').innerHTML = `<p>Restore ${esc(o?.orderNumber)} to active orders?</p>`;
     if (nextAction === 'request') $('order-fields').innerHTML = `<p>Record that payment was requested for ${esc(o?.orderNumber)}? This locks editing and archiving. It does not send a message or submit a payment.</p>`;
@@ -736,6 +881,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     if (nextAction === 'requestPayment') return openDialog('request', id);
     if (nextAction === 'invoiceOrder') return openDialog('invoice', id);
     if (nextAction === 'viewInvoice') return viewInvoice(o.orderNumber);
+    if (nextAction === 'createDelivery') return document.dispatchEvent(new CustomEvent('oms:createdelivery', { detail: { order: o } }));
     const key = `${nextAction}:${id}`;
     if (pendingOrderActions.has(key)) return;
     pendingOrderActions.add(key);
@@ -744,10 +890,6 @@ export function initOrderUi({ db, functions, auth, mode }) {
         const result = await callOperation(functions, 'confirmOrder', { orderId: id });
         showToast(`Order ${o.orderNumber} ${result?.status || 'confirmed'}.`);
         await refresh('orders'); return;
-      }
-      if (nextAction === 'advanceOrder') {
-        const transitions = { confirmed: 'in_preparation', in_preparation: 'ready', ready: 'delivered' };
-        await callOperation(functions, 'advanceOrder', { orderId: id, nextStatus: transitions[o.status] });
       }
       showToast('Order updated.'); await refresh('orders');
     } catch (error) { showToast(cleanError(error), 'toast-error'); }
@@ -826,6 +968,25 @@ export function initOrderUi({ db, functions, auth, mode }) {
   $('order-filters').addEventListener('input', markOrderFiltersPending);
   $('order-filters').addEventListener('change', markOrderFiltersPending);
   $('order-clear').addEventListener('click', () => applyOrderFilters(blankOrderFilters()));
+  $('order-select-all').addEventListener('change', (event) => setAllFiltered(event.target.checked));
+  $('order-select-page').addEventListener('change', (event) => setAllFiltered(event.target.checked));
+  const toggleOrderSelection = (event) => {
+    const id = event.target?.dataset?.orderSelect;
+    if (!id || !filteredOrders().some((order) => order.id === id)) return;
+    if (event.target.checked) selectedOrderIds.add(id); else selectedOrderIds.delete(id);
+    renderOrders();
+  };
+  $('order-body').addEventListener('change', toggleOrderSelection);
+  $('order-mobile-list').addEventListener('change', toggleOrderSelection);
+  $('order-deselect-all').addEventListener('click', clearBulkSelection);
+  $('order-bulk-clear').addEventListener('click', clearBulkSelection);
+  $('order-bulk-status').addEventListener('change', () => { $('order-bulk-review').disabled = !$('order-bulk-status').value; });
+  $('order-bulk-review').addEventListener('click', openBulkReview);
+  $('order-bulk-submit').addEventListener('click', () => processBulk());
+  $('order-bulk-retry').addEventListener('click', () => processBulk(true));
+  $('order-bulk-dialog').addEventListener('cancel', (event) => { if (bulkRunning) event.preventDefault(); });
+  for (const id of ['order-bulk-close', 'order-bulk-cancel']) $(id).addEventListener('click', () => { if (!bulkRunning) $('order-bulk-dialog').close(); });
+  document.addEventListener('oms:deliverycreated', () => refresh('orders'));
   $('order-active-filters').addEventListener('click', (event) => {
     const button = event.target.closest?.('[data-filter]');
     if (!button) return;
@@ -836,7 +997,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
   });
   ['special-search', 'special-status'].forEach((id) => $(id).addEventListener('input', renderSpecials));
   $('customer-body').addEventListener('click', (event) => { const button = event.target.closest('[data-action]'); if (button && staff()) openDialog(button.dataset.action === 'deleteCustomer' ? 'deleteCustomer' : 'customer', button.dataset.id); });
-  $('customer-mobile-list').addEventListener('click', (event) => { const button = event.target.closest('[data-action]'); if (button && staff()) openDialog(button.dataset.action === 'deleteCustomer' ? 'deleteCustomer' : 'customer', button.dataset.id); });
+  $('customer-mobile-list').addEventListener('click', (event) => { const button = event.target.closest('[data-action]'); if (!button) return; if (button.dataset.action === 'viewCustomer') openDialog('viewCustomer', button.dataset.id); else if (staff()) openDialog(button.dataset.action === 'deleteCustomer' ? 'deleteCustomer' : 'customer', button.dataset.id); });
   $('special-body').addEventListener('click', (event) => { const button = event.target.closest('[data-action]'); if (button && staff()) openDialog('special', button.dataset.id); });
   $('order-body').addEventListener('click', (event) => { const button = event.target.closest('[data-action]'); if (button) runOrderAction(button.dataset.action, button.dataset.id); });
   $('order-mobile-list').addEventListener('click', (event) => { const button = event.target.closest('[data-action]'); if (button) runOrderAction(button.dataset.action, button.dataset.id); });
@@ -979,5 +1140,5 @@ export function initOrderUi({ db, functions, auth, mode }) {
   });
   $('special-export').addEventListener('click', () => exportBook('specials', [['Special Products', filteredSpecials().map((s) => ({ Name: s.name, FinalPriceRupees: s.finalPricePaise / 100, Active: s.active, Components: s.components?.map((p) => `${p.itemSnapshot?.name}: ${qtyText(p.quantityQty)} ${p.itemSnapshot?.unitSymbol}`).join('; ') }))]]));
 
-  return { setSession(nextUser, nextProfile) { sessionVersion++; activityRevision++; stopOrderInitialLoader(); stopActivityLoad(); for (const page of recordLoadTokens.keys()) stopRecordLoad(page); $('order-loading').hidden = true; orderRefreshPromise = null; ordersLoaded = false; user = nextUser; profile = nextProfile; orders = []; customers = []; items = []; specials = []; users = []; invoiceIds = new Set(); invoicesByOrder = new Map(); stockAvailability = new Map(); stockMessage = ''; activityRows = []; activityCursors = [null]; activityPage = 1; pendingOrderId = ''; pendingCustomerId = ''; pendingCustomerDetails = null; parkedOrder = null; appliedOrderFilters = blankOrderFilters(); writeOrderFilters(appliedOrderFilters); ['customer-body', 'order-body', 'special-body', 'customer-summary', 'order-cards', 'order-activity-body', 'order-activity-cards'].forEach((id) => { $(id).innerHTML = ''; }); $('order-user').hidden = !staff(); $('order-user-field').hidden = !staff(); $('order-active-filters').hidden = true; $('order-active-filters').innerHTML = ''; $('order-filter-pending').hidden = true; $('order-retry').hidden = true; $('order-export').disabled = true; if (profile) { const page = document.querySelector('[data-page].is-active')?.dataset.page; if (['customers', 'orders', 'specials'].includes(page)) refresh(page, page === 'orders'); } } };
+  return { setSession(nextUser, nextProfile) { selectedOrderIds.clear(); bulkPlan = []; bulkFailedIds.clear(); bulkResults.clear(); bulkSubmissionIds.clear(); if ($('order-bulk-dialog').open && !bulkRunning) $('order-bulk-dialog').close(); sessionVersion++; activityRevision++; stopOrderInitialLoader(); stopActivityLoad(); for (const page of recordLoadTokens.keys()) stopRecordLoad(page); $('order-loading').hidden = true; orderRefreshPromise = null; ordersLoaded = false; user = nextUser; profile = nextProfile; orders = []; customers = []; items = []; specials = []; users = []; deliveries = []; invoiceIds = new Set(); invoicesByOrder = new Map(); stockAvailability = new Map(); stockMessage = ''; activityRows = []; activityCursors = [null]; activityPage = 1; pendingOrderId = ''; pendingCustomerId = ''; pendingCustomerDetails = null; parkedOrder = null; appliedOrderFilters = blankOrderFilters(); writeOrderFilters(appliedOrderFilters); ['customer-body', 'order-body', 'special-body', 'customer-summary', 'order-cards', 'order-activity-body', 'order-activity-cards'].forEach((id) => { $(id).innerHTML = ''; }); $('order-user').hidden = !staff(); $('order-user-field').hidden = !staff(); $('order-active-filters').hidden = true; $('order-active-filters').innerHTML = ''; $('order-filter-pending').hidden = true; $('order-retry').hidden = true; $('order-export').disabled = true; if (profile) { const page = document.querySelector('[data-page].is-active')?.dataset.page; if (['customers', 'orders', 'specials'].includes(page)) refresh(page, page === 'orders'); } } };
 }

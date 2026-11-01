@@ -284,6 +284,11 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    match /deliveries/{deliveryId} {
+      allow get, list: if isStaff() || (activeProfile() && resource.data.assignedUserId == request.auth.uid);
+      allow create, update, delete: if false;
+    }
+
     match /invoices/{invoiceId} {
       allow get, list: if isStaff() || ownsRecord();
       // Even Account Admin must use the authenticated Mark as Paid backend operation.

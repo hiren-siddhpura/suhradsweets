@@ -5,6 +5,7 @@ import { callOperation } from './operations-data.js';
 import { BUSINESS_DETAILS_ID, validateBusinessDetails } from './business-settings.js';
 import { uniqueId } from './unique-id.js';
 import { isStaff } from './permissions.js';
+import { sortUsersByName } from './user-sort.js';
 
 function assertType(type) {
   if (!MASTER_TYPES.includes(type)) throw new Error('Unknown master-data collection.');
@@ -47,7 +48,8 @@ export async function saveBusinessDetails(db, input, actor) {
 export async function listMasterRecords(db, type) {
   assertType(type);
   const snapshot = await getDocs(collection(db, type));
-  return snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
+  const rows = snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
+  return type === 'users' ? sortUsersByName(rows) : rows;
 }
 
 async function requireActiveUnit(db, unitId) {

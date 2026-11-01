@@ -40,6 +40,8 @@ async function seed() {
     await setDoc(record(db, 'orders/orderB'), { ownerUid: 'userB', assignedUserId: 'userB', customerId: 'customerB', status: 'draft' });
     await setDoc(record(db, 'orders/orderLinked'), { ownerUid: 'userA', assignedUserId: 'userA', customerId: 'customerLinked', status: 'confirmed' });
     await setDoc(record(db, 'orders/orderReassigned'), { ownerUid: 'userB', assignedUserId: 'userA', customerId: 'customerB', status: 'confirmed' });
+    await setDoc(record(db, 'deliveries/deliveryA'), { orderId: 'orderA', ownerUid: 'userA', assignedUserId: 'userA', deliveryNumber: 'DEL-A' });
+    await setDoc(record(db, 'deliveries/deliveryB'), { orderId: 'orderB', ownerUid: 'userB', assignedUserId: 'userB', deliveryNumber: 'DEL-B' });
     await setDoc(record(db, 'customers/customerA'), { name: 'Customer A', assignedUserId: 'userA', orderLinks: { userA: 'orderA' } });
     await setDoc(record(db, 'customers/customerB'), { name: 'Customer B', assignedUserId: 'userB', orderLinks: { userB: 'orderB' } });
     await setDoc(record(db, 'customers/customerLinked'), { name: 'Linked Customer', assignedUserId: 'userB', ownerUserIds: ['userA'], orderLinks: { userA: 'orderLinked' } });
@@ -82,6 +84,17 @@ test('collections and their audit events are owner or staff read-only', async ()
   await assertFails(updateDoc(record(dbFor('userA'), 'collections/collectionA'), { status: 'verified' }));
   await assertSucceeds(getDoc(record(dbFor('userA'), 'auditLogs/collectionActivityA')));
   await assertSucceeds(getDocs(query(collection(dbFor('userA'), 'auditLogs'), where('ownerUid', '==', 'userA'), where('referenceType', '==', 'collection'), where('referenceId', '==', 'collectionA'))));
+});
+
+test('delivery records are scoped to assigned users and writable only by trusted operations', async () => {
+  await assertSucceeds(getDoc(record(dbFor('userA'), 'deliveries/deliveryA')));
+  await assertFails(getDoc(record(dbFor('userA'), 'deliveries/deliveryB')));
+  await assertSucceeds(getDocs(query(collection(dbFor('userA'), 'deliveries'), where('assignedUserId', '==', 'userA'))));
+  await assertFails(getDocs(collection(dbFor('userA'), 'deliveries')));
+  await assertSucceeds(getDocs(collection(dbFor('adminA'), 'deliveries')));
+  await assertSucceeds(getDocs(collection(dbFor('accountA'), 'deliveries')));
+  await assertFails(setDoc(record(dbFor('adminA'), 'deliveries/forged'), { orderId: 'orderA', assignedUserId: 'userA' }));
+  await assertFails(updateDoc(record(dbFor('userA'), 'deliveries/deliveryA'), { deliveryNumber: 'CHANGED' }));
 });
 test.beforeEach(async () => { await environment.clearFirestore(); await seed(); });
 test.after(async () => { if (environment) await environment.cleanup(); });

@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { saveCustomer, saveSpecialProduct, saveOrderDraft, confirmOrder, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment } from '../functions/order-operations.js';
 import { getOrderStock, listOrderActivity } from '../functions/order-reads.js';
 import { setInventoryControl } from '../functions/operations.js';
+import { createDelivery } from '../functions/delivery-operations.js';
 
 const require = createRequire(new URL('../functions/package.json', import.meta.url));
 const { initializeApp, deleteApp } = require('firebase-admin/app');
@@ -27,7 +28,7 @@ async function makeLegacyDraft(orderId) {
 }
 
 test.beforeEach(async () => {
-  for (const name of ['users', 'items', 'units', 'inventory', 'customers', 'customerContacts', 'orders', 'orderCounters', 'orderControls', 'specialProducts', 'inventoryMovements', 'auditLogs', 'invoices', 'payments']) {
+  for (const name of ['users', 'items', 'units', 'inventory', 'customers', 'customerContacts', 'orders', 'deliveries', 'orderCounters', 'orderControls', 'specialProducts', 'inventoryMovements', 'auditLogs', 'invoices', 'payments']) {
     const docs = await db.collection(name).get(); if (!docs.empty) { const batch = db.batch(); docs.forEach((doc) => batch.delete(doc.ref)); await batch.commit(); }
   }
   await Promise.all([
@@ -133,7 +134,7 @@ test('Admin edits a confirmed order; User invoices it without another stock dedu
   await createInvoiceFromOrder(db, 'userA', orderId);
   const order = (await db.doc(`orders/${orderId}`).get()).data();
   const invoice = (await db.doc(`invoices/${orderId}`).get()).data();
-  assert.equal(order.status, 'confirmed');
+  assert.equal(order.status, 'invoiced');
   assert.equal(order.invoiceId, orderId);
   assert.ok(order.editLockedAt);
   assert.equal(order.stockDeductions[0].quantityQty, 3000);
@@ -158,7 +159,6 @@ test('Admin, Account Admin, and assigned User invoice confirmed orders once', as
     assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, stockBeforeInvoice);
     assert.equal((await db.doc(`invoices/${created.orderId}`).get()).data().invoiceNumber, `INV-${created.orderNumber}`);
     await assert.rejects(createInvoiceFromOrder(db, issuer, created.orderId), /already exists/);
-    await assert.rejects(saveOrderDraft(db, 'adminA', { ...input, orderId: created.orderId }), /invoice exists/);
     assert.equal((await db.collection('invoices').where('orderId', '==', created.orderId).get()).size, 1);
     const events = (await db.collection('auditLogs').where('referenceId', '==', created.orderId).get()).docs.map((doc) => doc.data());
     assert.equal(events.filter((event) => event.type === 'invoice.created').length, 1);
@@ -311,6 +311,25 @@ test('two competing orders cannot oversell', async () => {
   assert.equal((await db.collection('inventoryMovements').get()).size, 1);
 });
 
+test('delivery records partial and complete quantities without overdelivery or duplicates', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, 'confirmed');
+  await assert.rejects(createDelivery(db, 'userB', { orderId, submissionId: 'deliveryunauthorized1', lines: [{ deliveredQty: 1000 }], remarks: '' }), /Access denied/);
+  const first = await createDelivery(db, 'adminA', { orderId, submissionId: 'deliverypartial1', lines: [{ deliveredQty: 1000 }], remarks: 'First trip' });
+  assert.equal(first.complete, false);
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, 'confirmed');
+  assert.equal((await createDelivery(db, 'adminA', { orderId, submissionId: 'deliverypartial1', lines: [{ deliveredQty: 1000 }], remarks: 'First trip' })).duplicate, true);
+  await assert.rejects(createDelivery(db, 'adminA', { orderId, submissionId: 'deliveryoverage1', lines: [{ deliveredQty: 1001 }], remarks: '' }), /exceeds/);
+  const second = await createDelivery(db, 'adminA', { orderId, submissionId: 'deliverycomplete1', lines: [{ deliveredQty: 1000 }], remarks: '' });
+  assert.equal(second.complete, true);
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, 'delivered');
+  assert.equal((await db.collection('deliveries').where('orderId', '==', orderId).get()).size, 2);
+  await assert.rejects(createDelivery(db, 'adminA', { orderId, submissionId: 'deliverythird1', lines: [{ deliveredQty: 1 }], remarks: '' }), /confirmed or invoiced order/);
+  await createInvoiceFromOrder(db, 'adminA', orderId);
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, 'invoiced');
+});
+
 test('cancellation restores once; delivered and invoiced orders cannot use ordinary cancellation', async () => {
   const { customerId } = await saveCustomer(db, 'adminA', customer);
   const first = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
@@ -326,9 +345,7 @@ test('cancellation restores once; delivered and invoiced orders cannot use ordin
   assert.equal(invoice.customerSnapshot.dateOfBirth, undefined);
   await assert.rejects(cancelOrder(db, 'adminA', second.orderId, 'Return'), /credit or return/);
   await assert.rejects(createInvoiceFromOrder(db, 'adminA', second.orderId), /already exists/);
-  await advanceOrder(db, 'adminA', second.orderId, 'in_preparation');
-  await advanceOrder(db, 'adminA', second.orderId, 'ready');
-  await advanceOrder(db, 'adminA', second.orderId, 'delivered');
+  await assert.rejects(advanceOrder(db, 'adminA', second.orderId, 'delivered'), /Create Delivery/);
   await assert.rejects(cancelOrder(db, 'adminA', second.orderId, 'Late'), /cannot be cancelled/);
 });
 
@@ -354,7 +371,7 @@ test('archived confirmed cancellation restores deducted stock once and keeps arc
   assert.equal(events.filter((event) => event.type === 'order.cancelled').length, 1);
   assert.deepEqual(events.find((event) => event.type === 'order.cancelled').detail.changedFields.inventory.items, [{ itemId: 'itemA', itemName: 'Sweet A', unitSymbol: 'kg', onHandQtyRestored: 2000 }]);
   await assert.rejects(saveOrderDraft(db, 'adminA', regularOrder(customerId, { orderId })), /Draft or Confirmed/);
-  await assert.rejects(advanceOrder(db, 'adminA', orderId, 'in_preparation'), /Invalid order status/);
+  await assert.rejects(advanceOrder(db, 'adminA', orderId, 'in_preparation'), /Create Delivery/);
   await assert.rejects(restoreOrder(db, 'adminA', { orderId }), /cannot be archived or restored/);
 });
 

@@ -46,7 +46,7 @@ test('searchable customer choice preserves order form through customer cancel an
     saveCustomerDirect: async (_db, _auth, input, options) => { saved.push({ input, options }); return { customerId: options.customerId }; },
     visualViewport, innerHeight: 844, requestAnimationFrame(callback) { callback(); },
   };
-  const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
+  const source = readFileSync(new URL('../js/order-bulk.js', import.meta.url), 'utf8').replace(/^export /gm, '') + '\n' + readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
   vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, Object.assign(context, { availableOrderUnits, itemUnitPrice, orderLineUnitLabel }));
   context.init({ db: {}, functions: {}, auth: { currentUser: { uid: 'admin' } } }).setSession({ uid: 'admin' }, { role: 'admin', active: true });
   await el('order-refresh').listeners.click();
@@ -225,7 +225,7 @@ test('Admin may edit special lines; assigned User can view the saved special ord
     listInvoices: async () => [], getOrderTaking: async () => true, listMasterRecords: async () => [],
     callOperation: async (_fn, name) => { if (name === 'getOrderStock') throw new Error('Network unavailable'); return { rows: [], hasMore: false }; },
   };
-  const source = readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
+  const source = readFileSync(new URL('../js/order-bulk.js', import.meta.url), 'utf8').replace(/^export /gm, '') + '\n' + readFileSync(new URL('../js/order-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOrderUi', 'function initOrderUi');
   vm.runInNewContext(`${source}\nthis.init = initOrderUi;`, Object.assign(context, { availableOrderUnits, itemUnitPrice, orderLineUnitLabel }));
   const ui = context.init({ db: {}, functions: {}, auth: {} });
   ui.setSession({ uid: 'admin-1' }, { role: 'admin', active: true });

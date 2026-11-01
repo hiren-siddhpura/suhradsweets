@@ -1,5 +1,6 @@
 import { collection, count, doc, documentId, getAggregateFromServer, getCountFromServer, getDoc, getDocs, limit, orderBy, query, startAfter, sum, Timestamp, where } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 import { DASHBOARD_TARGET_ID, quantityInKg, summarizeOrderKg, validateTargetKg } from './dashboard-metrics.js';
+import { sortUsersByName } from './user-sort.js';
 
 const row = (snap) => ({ id: snap.id, ...snap.data() });
 const dayStart = (day) => Timestamp.fromDate(new Date(`${day}T00:00:00+05:30`));
@@ -126,7 +127,7 @@ export async function currentTargets(db, ownerUid, today) {
 }
 
 export async function targetAchievement(db, target) {
-  const orders = query(collection(db, 'orders'), where('assignedUserId', '==', target.ownerUid), where('status', 'in', ['confirmed', 'in_preparation', 'ready', 'delivered']), where('confirmedAt', '>=', dayStart(target.periodStart)), where('confirmedAt', '<', dayStart(nextDay(target.periodEnd))));
+  const orders = query(collection(db, 'orders'), where('assignedUserId', '==', target.ownerUid), where('status', 'in', ['confirmed', 'in_preparation', 'ready', 'delivered', 'invoiced']), where('confirmedAt', '>=', dayStart(target.periodStart)), where('confirmedAt', '<', dayStart(nextDay(target.periodEnd))));
   const result = await getAggregateFromServer(orders, { eligibleSalesPaise: sum('grandTotal') });
   return Number(result.data().eligibleSalesPaise || 0);
 }
@@ -189,6 +190,5 @@ export async function recentActivity(db, role, uid) {
 
 export async function reportUsers(db) {
   const snap = await getDocs(query(collection(db, 'users'), orderBy(documentId()), limit(200)));
-  return snap.docs.map(row).filter((user) => user.role === 'user')
-    .sort((left, right) => (left.displayName || left.fullName || left.id).localeCompare(right.displayName || right.fullName || right.id));
+  return sortUsersByName(snap.docs.map(row).filter((user) => user.role === 'user'));
 }

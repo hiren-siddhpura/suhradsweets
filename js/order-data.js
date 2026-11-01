@@ -2,6 +2,7 @@ import { collection, doc, getDoc, getDocs, query, where } from 'https://www.gsta
 
 const unpack = (snapshot) => snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
 export const listOrders = async (db, assignedUserId = null) => unpack(await getDocs(assignedUserId ? query(collection(db, 'orders'), where('assignedUserId', '==', assignedUserId)) : collection(db, 'orders')));
+export const listDeliveries = async (db, assignedUserId = null) => unpack(await getDocs(assignedUserId ? query(collection(db, 'deliveries'), where('assignedUserId', '==', assignedUserId)) : collection(db, 'deliveries')));
 export const listCustomers = async (db, ownerUid = null, orders = []) => {
   if (!ownerUid) return unpack(await getDocs(collection(db, 'customers')));
   return unpack(await getDocs(query(collection(db, 'customers'), where('assignedUserId', '==', ownerUid))));

@@ -43,10 +43,17 @@ test('production build includes PWA assets and excludes emulator identifiers', (
 test('core business lists have mobile record containers and responsive card styles', () => {
   const html = read('index.html').toString();
   const css = read('css/styles.css').toString();
-  for (const id of ['customer-mobile-list', 'order-mobile-list', 'purchase-mobile-list', 'inventory-mobile-list', 'invoice-mobile-list', 'payment-mobile-list', 'master-mobile-list']) {
+  for (const id of ['customer-mobile-list', 'order-mobile-list', 'delivery-mobile-list', 'purchase-mobile-list', 'inventory-mobile-list', 'invoice-mobile-list', 'payment-mobile-list', 'master-mobile-list']) {
     assert.match(html, new RegExp(`id="${id}"`), id);
   }
   assert.match(css, /\.mobile-record-list\{display:none\}/);
   assert.match(css, /\.mobile-table\{display:none\}/);
   assert.match(css, /html,body\{overflow-x:hidden\}/);
+});
+
+test('delivery navigation uses a line truck icon and the page has distinct loading, empty and error states', () => {
+  const html = read('index.html').toString();
+  assert.match(html, /data-mobile-page="deliveries"><svg viewBox="0 0 24 24"/);
+  assert.doesNotMatch(html, /data-mobile-page="deliveries"[^<]*<span[^>]*>🚚/);
+  for (const id of ['delivery-loading', 'delivery-empty', 'delivery-error', 'delivery-retry', 'delivery-empty-clear']) assert.match(html, new RegExp(`id="${id}"`));
 });

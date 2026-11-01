@@ -4,6 +4,7 @@ export const PAGES = Object.freeze({
   orderAnalytics: { title: 'Order Analytics', description: 'Item quantities by user and customer.' },
   dashboard: { title: 'Dashboard', description: 'He Hari ! Bas Ek Tu Raji Tha' },
   orders: { title: 'Orders', description: 'Create, confirm and track customer orders.' },
+  deliveries: { title: 'Deliveries', description: 'Recorded order deliveries and item quantities.' },
   specials: { title: 'Special Products', description: 'Set combination recipes and final selling prices.' },
   customers: { title: 'Customers', description: 'Customer access will follow each user’s linked orders.' },
   inventory: { title: 'Inventory', description: 'Stock balances, low-stock controls and movement history.' },

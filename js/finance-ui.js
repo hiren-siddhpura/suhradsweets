@@ -218,6 +218,8 @@ export function initFinanceUi({ db, functions }) {
         if (!row) throw new Error('Payment is unavailable. Refresh and try again.');
         const dialog = document.createElement('dialog'); dialog.className = 'app-dialog';
         dialog.innerHTML = `<div class="dialog-header"><h2>Payment ${esc(row.transactionNumber || row.invoiceNumber || '')}</h2><button type="button" data-close class="icon-button" aria-label="Close">×</button></div><p><strong>Customer:</strong> ${esc(customerName(row))}</p><p><strong>Invoice:</strong> ${esc(row.invoiceNumber)} · <strong>Order:</strong> ${esc(row.orderNumber)}</p><p><strong>Date:</strong> ${esc(date(row.submittedAt))} · <strong>Mode:</strong> ${esc(row.mode)}</p><p><strong>Amount:</strong> ${esc(cash(row.amountPaise))} · <strong>Status:</strong> ${esc(row.reversalId ? 'reversed' : row.verificationStatus)}</p>${row.collectionNumber ? `<p><strong>Collection:</strong> ${esc(row.collectionNumber)}</p>` : ''}${row.reviewReason ? `<p><strong>Reason:</strong> ${esc(row.reviewReason)}</p>` : ''}`;
+        dialog.insertAdjacentHTML('beforeend', `<p><strong>Reviewed by:</strong> ${esc(paymentName(row, 'verifiedBy') || '—')} · ${esc(date(row.verifiedAt) || '—')}</p><div class="dialog-actions">${canVerify() && row.verificationStatus === 'unverified' ? '<button type="button" data-review="verify" class="button button-approve">Approve</button><button type="button" data-review="reject" class="button button-reject">Reject</button>' : ''}</div>`);
+        dialog.querySelectorAll('[data-review]').forEach((button) => { button.onclick = () => { dialog.close(); void act(button.dataset.review, id); }; });
         dialog.querySelector('[data-close]').onclick = () => dialog.close(); dialog.onclose = () => dialog.remove(); document.body.append(dialog); dialog.showModal(); return;
       }
       if (kind === 'order') { document.querySelector('[data-page="orders"]')?.click(); $('order-search').value = id; $('order-search').dispatchEvent(new Event('input')); return; }
@@ -237,8 +239,13 @@ export function initFinanceUi({ db, functions }) {
         const dialog = document.createElement('dialog'); dialog.className = 'app-dialog receipt-dialog';
         const title = document.createElement('h2'); title.textContent = 'Payment receipt'; dialog.append(title);
         const details = document.createElement('p'); details.textContent = `${row.invoiceNumber} · ${customerName(row)} · ${cash(row.amountPaise)} · ${row.transactionNumber} · ${row.attachment.name}`; dialog.append(details);
+        const status = document.createElement('p'); status.textContent = `Status: ${row.verificationStatus} · Reviewed by ${paymentName(row, 'verifiedBy') || '—'} · ${date(row.verifiedAt) || '—'}${row.reviewReason ? ` · Reason: ${row.reviewReason}` : ''}`; dialog.append(status);
         const preview = document.createElement(result.contentType === 'application/pdf' ? 'iframe' : 'img'); preview.src = url; preview.title = 'Receipt preview'; preview.alt = 'Receipt preview'; dialog.append(preview);
         const link = document.createElement('a'); link.className = 'button button-primary'; link.href = url; link.download = result.name || 'receipt'; link.textContent = 'Download'; dialog.append(link);
+        if (canVerify() && row.verificationStatus === 'unverified') for (const [decision, label] of [['verify', 'Approve'], ['reject', 'Reject']]) {
+          const button = document.createElement('button'); button.type = 'button'; button.className = decision === 'verify' ? 'button button-approve' : 'button button-reject'; button.textContent = label;
+          button.onclick = () => { dialog.close(); void act(decision, id); }; dialog.append(button);
+        }
         const close = document.createElement('button'); close.type = 'button'; close.className = 'button button-outline'; close.textContent = 'Close'; close.onclick = () => dialog.close(); dialog.append(close);
         dialog.onclose = () => { URL.revokeObjectURL(url); dialog.remove(); }; document.body.append(dialog); dialog.showModal(); return;
       }
@@ -270,13 +277,15 @@ export function initFinanceUi({ db, functions }) {
       if (!['paid', 'verify'].includes(kind)) return;
       const key = `${kind}:${id}`;
       if (pendingFinance.has(key)) return;
+      if (kind === 'verify' && globalThis.confirm && !globalThis.confirm('Approve this payment and apply it to the invoice balance?')) return;
       pendingFinance.add(key);
+      const reviewToken = kind === 'verify' ? globalThis.omsLoading?.start('Approving payment…') : null;
       try {
         if (kind === 'paid') await callOperation(functions, 'markInvoicePaid', { invoiceId: id });
         else await callOperation(functions, 'reviewPayment', { paymentId: id, decision: 'verified' });
         showToast(kind === 'paid' ? 'Invoice marked paid.' : 'Payment verified.');
         await refresh(); await loadPaymentActivity();
-      } finally { pendingFinance.delete(key); }
+      } finally { globalThis.omsLoading?.stop(reviewToken); pendingFinance.delete(key); }
     } catch (error) { showToast(message(error), 'toast-error'); }
   }
   ['invoice', 'payment'].forEach((kind) => {
@@ -437,7 +446,12 @@ export function initFinanceUi({ db, functions }) {
         if (fields.get('mode') !== 'cash' && !String(fields.get('reference') || '').trim()) throw new Error('UPI and bank transfers require a transaction reference.');
         await callOperation(functions, 'changePaymentMode', { paymentId: target, mode: fields.get('mode'), transactionNumber: fields.get('mode') === 'cash' ? '-' : fields.get('reference'), reason: fields.get('reason') });
       }
-      else await callOperation(functions, action === 'reject' ? 'reviewPayment' : 'reversePayment', action === 'reject' ? { paymentId: target, decision: 'rejected', reason: fields.get('reason') } : { paymentId: target, reason: fields.get('reason') });
+      else {
+        const reason = String(fields.get('reason') || '').trim();
+        if (!reason) throw new Error('A reason is required.');
+        if (action === 'reject' && globalThis.confirm && !globalThis.confirm('Reject this payment? It will not count toward the invoice balance.')) return;
+        await callOperation(functions, action === 'reject' ? 'reviewPayment' : 'reversePayment', action === 'reject' ? { paymentId: target, decision: 'rejected', reason } : { paymentId: target, reason });
+      }
       paymentOperationId = '';
       clearReceipt();
       $('finance-dialog').close(); showToast(action === 'submit' ? 'Payment submitted for verification.' : action === 'customerName' ? 'Invoice customer name updated.' : 'Payment history updated.'); await refresh(); if (action !== 'customerName') await loadPaymentActivity();

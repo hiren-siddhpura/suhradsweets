@@ -500,7 +500,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     }
     const message = $('order-stock-message'); if (message) message.textContent = stockMessage;
   }
-  function stockWarning(lines, existing = null) {
+  function stockWarning(lines, existing = orders.find((row) => row.id === targetId) || null) {
     const needed = new Map();
     for (const line of lines) {
       if (line.kind === 'item') needed.set(line.productId, (needed.get(line.productId) || 0) + line.quantityQty / (line.unitId === '500gm' ? 2 : line.unitId === '250gm' ? 4 : 1));
@@ -508,7 +508,10 @@ export function initOrderUi({ db, functions, auth, mode }) {
     }
     for (const [id, quantity] of needed) {
       const stock = stockAvailability.get(id);
-      const additional = Math.max(0, quantity - (existing?.stockDeductions?.find((part) => part.itemId === id)?.quantityQty || 0));
+      // Confirmed orders have already reduced onHandQty. Validate only the extra
+      // stock needed by this edit; draft orders have no confirmed deduction.
+      const deducted = existing?.status !== 'draft' ? (existing?.stockDeductions?.find((part) => part.itemId === id)?.quantityQty || 0) : 0;
+      const additional = Math.max(0, quantity - deducted);
       if (stock?.availableQty != null && additional > stock.availableQty) return 'Requested quantity exceeds available stock. Add stock or reduce the order quantity.';
       if (!admin() && stock?.status !== 'available') return 'An item is blocked or at or below its stock threshold.';
     }
@@ -666,7 +669,12 @@ export function initOrderUi({ db, functions, auth, mode }) {
     const proposed = lines.filter((line) => line !== existing).map((line) => ({ kind: line.kind, productId: line.productId, unitId: line.unitId, quantityQty: line.quantity * 1000 }));
     if (quantity) proposed.push({ kind, productId, unitId, quantityQty: quantity * 1000 });
     const warning = quantity > (existing?.quantity || 0) ? stockWarning(proposed) : '';
-    if (warning) { showToast(warning, 'toast-error'); return false; }
+    if (warning) {
+      if (input.lastStockWarning !== warning) showToast(warning, 'toast-error');
+      input.lastStockWarning = warning;
+      return false;
+    }
+    input.lastStockWarning = '';
     if (admin() && kind === 'item' && quantity > (existing?.quantity || 0) && itemRestrictionLabel(productId) && globalThis.confirm && !globalThis.confirm(`${itemRestrictionLabel(productId)}: ${items.find((item) => item.id === productId)?.name || 'item'}. Add it to this order? Stock will still be checked when saved.`)) return false;
     if (existing && quantity === 0) existing.row.remove();
     else if (existing) existing.row.querySelector('[name=quantity]').value = String(quantity);

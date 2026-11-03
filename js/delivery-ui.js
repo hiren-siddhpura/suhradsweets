@@ -1,4 +1,5 @@
-import { listDeliveries } from './order-data.js';
+import { listDeliveries, listOrders } from './order-data.js';
+import { deliveryStatistics } from './delivery-stats.js';
 import { callOperation } from './operations-data.js';
 import { uniqueId } from './unique-id.js';
 import { isStaff } from './permissions.js';
@@ -12,17 +13,30 @@ const quantity = (value) => ((value || 0) / 1000).toLocaleString('en-IN', { maxi
 const dateText = (value) => value?.toDate?.().toLocaleString('en-IN') || '';
 
 export function initDeliveryUi({ db, functions }) {
-  let user = null, profile = null, records = [], currentOrder = null, currentRecord = null, submissionId = '', saving = false, loadVersion = 0;
+  let user = null, profile = null, records = [], orders = [], currentOrder = null, currentRecord = null, submissionId = '', saving = false, loadVersion = 0;
   const ids = ['delivery-search', 'delivery-user', 'delivery-customer', 'delivery-from', 'delivery-to', 'delivery-order', 'delivery-item'];
   const filters = () => Object.fromEntries(ids.map((id) => [id, $(id).value.trim()]));
   let applied = {};
   const assignedName = (record) => record.assignedUserName || record.assignedUserId || 'Unknown';
   const deliveredQuantity = (record) => { const lines = record.lines || []; const units = [...new Set(lines.map((line) => line.unit).filter(Boolean))]; return `${quantity(lines.reduce((sum, line) => sum + (line.deliveredQty || 0), 0))}${units.length === 1 ? ` ${units[0]}` : ''}`; };
+  const dayOf = (record) => {
+    const delivered = record.deliveredAt?.toDate?.();
+    return delivered ? `${delivered.getFullYear()}-${String(delivered.getMonth() + 1).padStart(2, '0')}-${String(delivered.getDate()).padStart(2, '0')}` : '';
+  };
+  function renderStats(selectedOrders) {
+    const stats = deliveryStatistics(selectedOrders, records);
+    const cards = [
+      ['Order Delivered', stats.deliveredOrders, 'Orders', stats.deliveredOrderPercent, 'delivered', '✓'],
+      ['Order Pending', stats.pendingOrders, 'Orders', stats.pendingOrderPercent, 'pending', '◷'],
+      ['KG Delivered', stats.deliveredKg, 'KG', stats.deliveredKgPercent, 'delivered', '✓'],
+      ['KG Pending', stats.pendingKg, 'KG', stats.pendingKgPercent, 'pending', '◷'],
+    ];
+    $('delivery-stats').innerHTML = cards.map(([title, value, unit, share, tone, icon]) => `<article class="delivery-stat-card is-${tone}"><div class="delivery-stat-heading"><span>${title}</span><span class="delivery-stat-icon" aria-hidden="true">${icon}</span></div><strong>${Number(value).toLocaleString('en-IN', { maximumFractionDigits: 3 })} <small>${unit}</small></strong><span class="delivery-stat-percent">${share.toFixed(2)}% of total</span><div class="delivery-stat-track" role="progressbar" aria-label="${title}" aria-valuenow="${share.toFixed(2)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${share.toFixed(2)}%"></span></div></article>`).join('');
+  }
   function render() {
     const f = applied;
     const rows = records.filter((record) => {
-      const delivered = record.deliveredAt?.toDate?.();
-      const day = delivered ? `${delivered.getFullYear()}-${String(delivered.getMonth() + 1).padStart(2, '0')}-${String(delivered.getDate()).padStart(2, '0')}` : '';
+      const day = dayOf(record);
       const search = f['delivery-search']?.toLowerCase();
       return (!search || `${record.deliveryNumber} ${record.orderNumber} ${record.customerSnapshot?.fullName}`.toLowerCase().includes(search))
         && (!f['delivery-user'] || record.assignedUserId === f['delivery-user'])
@@ -31,6 +45,20 @@ export function initDeliveryUi({ db, functions }) {
         && (!f['delivery-order'] || record.orderNumber?.toLowerCase().includes(f['delivery-order'].toLowerCase()))
         && (!f['delivery-item'] || record.lines?.some((line) => line.name?.toLowerCase().includes(f['delivery-item'].toLowerCase())));
     }).sort((a, b) => (b.deliveredAt?.seconds || 0) - (a.deliveredAt?.seconds || 0));
+    const matchingRecordOrders = new Set(rows.map((record) => record.orderId));
+    const selectedOrders = orders.filter((order) => {
+      const search = f['delivery-search']?.toLowerCase();
+      const itemNames = (order.lines || []).map((line) => line.kind === 'special' ? line.specialSnapshot?.name : line.itemSnapshot?.name).join(' ').toLowerCase();
+      const matches = (!search || `${order.orderNumber} ${order.customerSnapshot?.fullName}`.toLowerCase().includes(search) || matchingRecordOrders.has(order.id))
+        && (!f['delivery-user'] || (order.assignedUserId || order.ownerUid) === f['delivery-user'])
+        && (!f['delivery-customer'] || order.customerId === f['delivery-customer'])
+        && (!f['delivery-order'] || order.orderNumber?.toLowerCase().includes(f['delivery-order'].toLowerCase()))
+        && (!f['delivery-item'] || itemNames.includes(f['delivery-item'].toLowerCase()));
+      const day = order.deliveryDate || order.orderDate || '';
+      const dateMatches = (!f['delivery-from'] || day >= f['delivery-from']) && (!f['delivery-to'] || day <= f['delivery-to']);
+      return matches && (matchingRecordOrders.has(order.id) || dateMatches);
+    });
+    renderStats(selectedOrders);
     $('delivery-count').textContent = `${rows.length} delivery record${rows.length === 1 ? '' : 's'}`;
     const filtered = Object.values(applied).some(Boolean);
     $('delivery-empty').hidden = rows.length > 0;
@@ -52,9 +80,10 @@ export function initDeliveryUi({ db, functions }) {
     $('delivery-mobile-list').hidden = true;
     $('delivery-count').textContent = '';
     try {
-      const rows = await listDeliveries(db, isStaff(profile) ? null : user.uid);
+      const owner = isStaff(profile) ? null : user.uid;
+      const [rows, orderRows] = await Promise.all([listDeliveries(db, owner), listOrders(db, owner)]);
       if (version !== loadVersion) return;
-      records = rows;
+      records = rows; orders = orderRows;
       const selectedUser = $('delivery-user').value, selectedCustomer = $('delivery-customer').value;
       const userOptions = sortUsersByName([...new Map(rows.map((row) => [row.assignedUserId, assignedName(row)])).entries()].filter(([id]) => id).map(([id, name]) => ({ id, name })));
       $('delivery-user').innerHTML = '<option value="">All users</option>' + userOptions.map(({ id, name }) => `<option value="${esc(id)}">${esc(name)}</option>`).join('');
@@ -63,7 +92,7 @@ export function initDeliveryUi({ db, functions }) {
       $('delivery-customer').innerHTML = '<option value="">All customers</option>' + customers.map(([id, name]) => `<option value="${esc(id)}">${esc(name)}</option>`).join('');
       $('delivery-customer').value = customers.some(([id]) => id === selectedCustomer) ? selectedCustomer : '';
       render();
-    } catch (error) { if (version === loadVersion) { records = []; $('delivery-error-message').textContent = error.message || 'Please try again.'; $('delivery-error').hidden = false; $('delivery-count').textContent = ''; } }
+    } catch (error) { if (version === loadVersion) { records = []; orders = []; renderStats([]); $('delivery-error-message').textContent = error.message || 'Please try again.'; $('delivery-error').hidden = false; $('delivery-count').textContent = ''; } }
     finally { globalThis.omsLoading?.stop(loadToken); if (version === loadVersion) $('delivery-loading').hidden = true; }
   }
   function openRecord(record) {
@@ -110,5 +139,5 @@ export function initDeliveryUi({ db, functions }) {
   $('delivery-retry').addEventListener('click', refresh);
   document.addEventListener('oms:pagechange', (event) => { if (event.detail?.page === 'deliveries') refresh(); });
   document.addEventListener('oms:createdelivery', async (event) => { await refresh(); openCreate(event.detail.order); });
-  return { setSession(nextUser, nextProfile) { loadVersion++; user = nextUser; profile = nextProfile; records = []; currentOrder = null; applied = {}; ids.forEach((id) => { $(id).value = ''; }); $('delivery-body').innerHTML = ''; $('delivery-mobile-list').innerHTML = ''; $('delivery-count').textContent = ''; $('delivery-table').hidden = true; $('delivery-mobile-list').hidden = true; $('delivery-empty').hidden = true; $('delivery-error').hidden = true; $('delivery-loading').hidden = true; if (profile && document.querySelector('[data-page="deliveries"].is-active')) refresh(); } };
+  return { setSession(nextUser, nextProfile) { loadVersion++; user = nextUser; profile = nextProfile; records = []; orders = []; currentOrder = null; applied = {}; ids.forEach((id) => { $(id).value = ''; }); $('delivery-body').innerHTML = ''; $('delivery-mobile-list').innerHTML = ''; $('delivery-count').textContent = ''; $('delivery-stats').innerHTML = ''; $('delivery-table').hidden = true; $('delivery-mobile-list').hidden = true; $('delivery-empty').hidden = true; $('delivery-error').hidden = true; $('delivery-loading').hidden = true; if (profile && document.querySelector('[data-page="deliveries"].is-active')) refresh(); } };
 }

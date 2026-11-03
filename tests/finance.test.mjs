@@ -26,7 +26,7 @@ test.beforeEach(async () => {
   await Promise.all([
     db.doc('users/adminA').set({ role: 'admin', active: true }), db.doc('users/opsAdmin').set({ role: 'user', active: true }), db.doc('users/accountA').set({ role: 'account_admin', active: true }),
     db.doc('users/userA').set({ role: 'user', active: true }), db.doc('users/userB').set({ role: 'user', active: true }),
-    db.doc('orders/orderA').set({ status: 'confirmed', ownerUid: 'userA', orderNumber: 'SS-2026-000001', customerId: 'customerA', customerSnapshot: { fullName: 'Asha', contact: '123', address: 'Road', area: 'West', sabha: true }, lines: [{ kind: 'item', itemSnapshot: { name: 'Sweet', unitSymbol: 'kg' }, quantityQty: 1000, unitPricePaise: 10000, lineTotalPaise: 10000 }], stockDeductions: [{ itemId: 'sweet', quantityQty: 1000 }], subtotal: 10000, grandTotal: 10000 }),
+    db.doc('orders/orderA').set({ status: 'confirmed', ownerUid: 'userA', orderNumber: 'SS-2026-000001', orderDate: '2026-10-10', customerId: 'customerA', customerSnapshot: { fullName: 'Asha', contact: '123', address: 'Road', area: 'West', sabha: true }, lines: [{ kind: 'item', itemSnapshot: { name: 'Sweet', unitSymbol: 'kg' }, quantityQty: 1000, unitPricePaise: 10000, lineTotalPaise: 10000 }], stockDeductions: [{ itemId: 'sweet', quantityQty: 1000 }], subtotal: 10000, grandTotal: 10000 }),
   ]);
   await createInvoiceFromOrder(db, 'adminA', 'orderA');
 });

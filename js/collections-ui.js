@@ -212,6 +212,7 @@ export function initCollectionsUi({ db, functions }) {
   }
   async function review(id, decision) {
     if (!hasPermission(profile, 'verifyPayments') || busy) return;
+    if (decision === 'verified' && globalThis.confirm && !globalThis.confirm('Approve this collection and apply its payments to invoice balances?')) return;
     let reason = '';
     if (decision === 'rejected') {
       if (!$('collection-dialog').open || viewingId !== id) await view(id);
@@ -222,10 +223,12 @@ export function initCollectionsUi({ db, functions }) {
         $('collection-confirm-rejection').onclick = () => review(id, 'rejected'); input.focus(); return;
       }
       reason = input.value.trim(); if (!reason) return showToast('A rejection reason is required.', 'toast-error');
+      if (globalThis.confirm && !globalThis.confirm('Reject this collection? Its payments will not count toward invoice balances.')) return;
     }
     busy = true;
+    const reviewToken = globalThis.omsLoading?.start(decision === 'verified' ? 'Approving collection…' : 'Rejecting collection…');
     try { await callOperation(functions, 'reviewCollection', { collectionId: id, decision, reason }); $('collection-dialog').close(); showToast(decision === 'verified' ? 'Collection approved.' : 'Collection rejected.'); await load(); }
-    catch (error) { showToast(error.message, 'toast-error'); } finally { busy = false; }
+    catch (error) { showToast(error.message, 'toast-error'); } finally { globalThis.omsLoading?.stop(reviewToken); busy = false; }
   }
   async function showReceipt(id, index) {
     try {
@@ -234,6 +237,12 @@ export function initCollectionsUi({ db, functions }) {
       const title = document.createElement('h2'); title.textContent = 'Collection receipt'; dialog.append(title);
       const preview = document.createElement(result.contentType === 'application/pdf' ? 'iframe' : 'img'); preview.src = url; preview.title = 'Receipt preview'; preview.alt = 'Receipt preview'; dialog.append(preview);
       const link = document.createElement('a'); link.className = 'button button-primary'; link.href = url; link.download = result.name || 'receipt'; link.textContent = 'Download'; dialog.append(link);
+      const collection = collections.find((row) => row.id === id);
+      const status = document.createElement('p'); status.textContent = `Status: ${statusName(collection?.status)} · Reviewed by ${collection?.verifiedByName || '—'} · ${dateTime(collection?.verifiedAt)}${collection?.rejectionReason ? ` · Reason: ${collection.rejectionReason}` : ''}`; dialog.append(status);
+      if (hasPermission(profile, 'verifyPayments') && collection?.status === 'pending') for (const [decision, label] of [['verified', 'Approve'], ['rejected', 'Reject']]) {
+        const button = document.createElement('button'); button.type = 'button'; button.className = decision === 'verified' ? 'button button-approve' : 'button button-reject'; button.textContent = label;
+        button.onclick = () => { dialog.close(); void review(id, decision); }; dialog.append(button);
+      }
       const close = document.createElement('button'); close.className = 'button button-outline'; close.type = 'button'; close.textContent = 'Close'; close.onclick = () => dialog.close(); dialog.append(close);
       dialog.onclose = () => { URL.revokeObjectURL(url); dialog.remove(); }; document.body.append(dialog); dialog.showModal();
     } catch (error) { showToast(error.message, 'toast-error'); }
@@ -252,8 +261,10 @@ export function initCollectionsUi({ db, functions }) {
       if (single.dataset.singleView) {
         const row = payments.find((item) => item.id === id); if (!row) return;
         $('collection-dialog-content').innerHTML = `<div class="dialog-header"><h2>Single Payment</h2><button id="single-close" class="icon-button" type="button" aria-label="Close">×</button></div><p>Reference: ${esc(row.transactionNumber || '—')}</p><p>Customer: ${esc(row.customerSnapshot?.fullName)} · Order: ${esc(row.orderNumber)} · Invoice: ${esc(row.invoiceNumber)}</p><p>Amount: ${rupees(row.amountPaise)} · Method: ${esc(paymentName(row.mode))}</p><p>Submitted by: ${esc(row.submittedByName || row.submittedBy)} · ${esc(dateTime(row.submittedAt))}</p><p>Status: ${esc(statusName(row.reversalId ? 'reversed' : row.verificationStatus === 'unverified' ? 'pending' : row.verificationStatus))}</p><p>Verified by: ${esc(row.verifiedByName || row.verifiedBy || '—')} · ${esc(dateTime(row.verifiedAt))}${row.receivedBy ? ` · Received by ${esc(row.receivedByName || row.receivedBy)}` : ''}</p>${row.remarks ? `<p>Remarks: ${esc(row.remarks)}</p>` : ''}${row.reviewReason ? `<p>Reason: ${esc(row.reviewReason)}</p>` : ''}<div class="dialog-actions">${row.attachment ? `<button type="button" data-single-receipt="${esc(id)}" class="button button-outline">Receipt</button>` : ''}<button id="single-done" type="button" class="button button-outline">Close</button></div>`;
+        if (hasPermission(profile, 'verifyPayments') && row.verificationStatus === 'unverified') $('collection-dialog-content').querySelector('.dialog-actions').insertAdjacentHTML('afterbegin', `<button type="button" data-single-approve="${esc(id)}" class="button button-approve">Approve</button><button type="button" data-single-reject="${esc(id)}" class="button button-reject">Reject</button>`);
         $('single-close').onclick = $('single-done').onclick = () => $('collection-dialog').close(); $('collection-dialog').showModal(); return;
       }
+      if ($('collection-dialog').open) $('collection-dialog').close();
       document.dispatchEvent(new CustomEvent('oms:single-payment-action', { detail: { kind: single.dataset.singleApprove ? 'verify' : 'reject', id } })); return;
     }
     const receipt = event.target.closest('[data-single-receipt]'); if (receipt) { document.dispatchEvent(new CustomEvent('oms:single-payment-action', { detail: { kind: 'receipt', id: receipt.dataset.singleReceipt } })); return; }

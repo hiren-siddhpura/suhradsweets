@@ -178,7 +178,7 @@ test('payment form starts with the outstanding amount and reports a failed save'
   assert.equal(element('finance-error').hidden, false);
 });
 
-test('mobile invoice share and customer edit reuse the existing actions', async () => {
+test('mobile invoice share and invoice details edit reuse the existing actions', async () => {
   const elements = new Map(); let shared = 0, freshLoads = 0;
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '', textContent: '', hidden: false, listeners: {}, classList: { toggle() {} }, addEventListener(type, fn) { this.listeners[type] = fn; }, showModal() { this.open = true; }, close() { this.open = false; } });
@@ -200,7 +200,7 @@ test('mobile invoice share and customer edit reuse the existing actions', async 
   context.init({ db: {}, functions: {} }).setSession({ uid: 'adminA' }, { role: 'admin', active: true });
   for (let i = 0; i < 10 && !element('invoice-mobile-list').innerHTML.includes('Sandip Pawar'); i++) await new Promise((resolve) => setTimeout(resolve, 0));
   const card = element('invoice-mobile-list').innerHTML;
-  assert.match(card, /class="invoice-customer-edit"[^>]*data-finance="customerName"/);
+  assert.match(card, /class="invoice-customer-edit"[^>]*data-finance="invoiceDetails"/);
   assert.match(card, /aria-label="Share invoice"/);
   assert.doesNotMatch(card, /order-card-more/);
   const click = (container, finance) => container.listeners.click({ target: { closest: () => ({ dataset: { finance, id: 'orderA' } }) } });
@@ -217,11 +217,11 @@ test('mobile invoice share and customer edit reuse the existing actions', async 
   for (let i = 0; i < 10 && element('invoice-preview-share').disabled; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   await element('invoice-preview-share').onclick();
   assert.equal(shared, 2);
-  click(element('invoice-mobile-list'), 'customerName');
+  click(element('invoice-mobile-list'), 'invoiceDetails');
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(element('finance-dialog-title').textContent, 'Update Customer Name');
+  assert.equal(element('finance-dialog-title').textContent, 'Edit Invoice Details');
   assert.match(element('finance-fields').innerHTML, /Sandip Pawar/);
-  click(element('invoice-body'), 'customerName');
+  click(element('invoice-body'), 'invoiceDetails');
   await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(element('finance-dialog-title').textContent, 'Update Customer Name');
+  assert.equal(element('finance-dialog-title').textContent, 'Edit Invoice Details');
 });

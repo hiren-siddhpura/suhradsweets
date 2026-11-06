@@ -17,7 +17,7 @@ export const orderUnitLabel = (unit) => {
 
 export const availableOrderUnits = (role) => ORDER_UNITS.filter((unit) => !unit.adminOnly || role === 'admin');
 
-export const orderLineUnitLabel = (line) => String(line?.itemSnapshot?.name || '').trim().toLocaleLowerCase() === 'gift packing' ? 'PCS' : line?.orderUnitName || line?.itemSnapshot?.unitSymbol || '';
+export const orderLineUnitLabel = (line) => line?.orderUnitName || line?.itemSnapshot?.unitSymbol || '';
 
 export const itemUnitPrice = (item, unitId) => {
   if (unitId === 'kg') return item?.defaultSellingPrice;

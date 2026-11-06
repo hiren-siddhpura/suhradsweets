@@ -85,7 +85,7 @@ export function initFinanceUi({ db, functions }) {
   };
   function renderInvoices() {
     const rows = matching('invoice');
-    $('invoice-cards').innerHTML = stat('Visible invoices', rows.length) + stat('Outstanding', cash(rows.filter((row) => invoiceStatus(row) !== 'cancelled').reduce((sum, row) => sum + Math.max(0, row.totalPaise - row.verifiedPaidPaise), 0))) + stat('Verified payments', cash(rows.reduce((sum, row) => sum + row.verifiedPaidPaise, 0)));
+    $('invoice-cards').innerHTML = stat('Visible invoices', rows.length) + stat('Outstanding', cash(rows.filter((row) => invoiceStatus(row) !== 'cancelled').reduce((sum, row) => sum + Math.max(0, row.totalPaise - row.verifiedPaidPaise), 0))) + stat('Verified payments', cash(rows.filter((row) => invoiceStatus(row) !== 'cancelled').reduce((sum, row) => sum + row.verifiedPaidPaise, 0)));
     $('invoice-body').innerHTML = rows.length ? rows.map((row) => {
       const status = invoiceStatus(row);
       return `<tr><td>${esc(row.invoiceNumber || `INV-${row.orderNumber}`)}</td><td><button type="button" class="ops-link" data-finance="order" data-id="${esc(row.orderNumber)}">${esc(row.orderNumber)}</button></td><td>${esc(row.customerSnapshot?.fullName)}</td><td>${esc(date(row.issuedAt))}</td><td>${esc(cash(row.totalPaise))}</td><td>${esc(cash(row.verifiedPaidPaise))}</td><td>${esc(cash(row.totalPaise - row.verifiedPaidPaise))}</td><td>${statusBadge(status)}</td><td class="ops-actions"><button type="button" data-finance="preview" data-id="${esc(row.id)}">Preview / Print</button><button type="button" data-finance="pdf" data-id="${esc(row.id)}">PDF</button><button type="button" data-finance="share" data-id="${esc(row.id)}">Share on WhatsApp</button>${paymentsLoaded && !['paid', 'in_process', 'cancelled', 'overpaid'].includes(status) && row.totalPaise > row.verifiedPaidPaise && (canVerify() || row.ownerUid === user?.uid) ? `<button type="button" data-finance="submit" data-id="${esc(row.id)}">Add payment</button>` : ''}</td></tr>`;
@@ -96,14 +96,14 @@ export function initFinanceUi({ db, functions }) {
       const owner = paymentUsers.find((entry) => entry.id === row.ownerUid);
       const ownerName = row.assignedUserName || owner?.displayName || owner?.fullName || owner?.name;
       const payable = paymentsLoaded && !['paid', 'in_process', 'cancelled', 'overpaid'].includes(status) && row.totalPaise > row.verifiedPaidPaise && (canVerify() || row.ownerUid === user?.uid);
-      const editName = profile?.role === 'admin' && status !== 'cancelled' ? `<button type="button" class="invoice-customer-edit" data-finance="customerName" data-id="${esc(row.id)}" aria-label="Edit customer name for ${esc(row.invoiceNumber || row.orderNumber)}" title="Edit customer name">${cardIcon('edit')}</button>` : '';
+      const editName = profile?.role === 'admin' && status !== 'cancelled' ? `<button type="button" class="invoice-customer-edit" data-finance="invoiceDetails" data-id="${esc(row.id)}" aria-label="Edit invoice details for ${esc(row.invoiceNumber || row.orderNumber)}" title="Edit invoice details">${cardIcon('edit')}</button>` : '';
       return `<article class="order-mobile-card"><div class="order-card-header"><strong>${esc(row.invoiceNumber || `INV-${row.orderNumber}`)}</strong>${statusBadge(status)}</div><h3 class="order-card-customer invoice-card-customer"><span>${esc(row.customerSnapshot?.fullName || 'Customer unavailable')}</span>${editName}</h3><div class="order-card-meta"><span>${cardIcon('calendar')}${esc(date(row.issuedAt))}</span>${ownerName ? `<span>${cardIcon('user')}${esc(ownerName)}</span>` : ''}<span>${cardIcon('order')}${esc(row.orderNumber)}</span></div><div class="mobile-card-balances"><span>Paid <b>${esc(cash(row.verifiedPaidPaise))}</b></span><span>Outstanding <b>${esc(cash(Math.max(0, row.totalPaise - row.verifiedPaidPaise)))}</b></span></div><div class="order-card-total"><span>Invoice Total</span><strong>${esc(cash(row.totalPaise))}</strong></div><div class="order-card-actions">${cardButton('preview', row.id, 'View invoice', 'view', 'data-finance', 'View')}${cardButton('pdf', row.id, 'Download invoice', 'download', 'data-finance', 'Download')}${payable ? cardButton('submit', row.id, 'Record payment', 'payment', 'data-finance', 'Payment') : ''}${cardButton('share', row.id, 'Share invoice', 'share')}</div></article>`;
     }).join('') : '<p class="mobile-record-empty">No invoices match the current filters.</p>';
     if (profile?.role === 'admin') {
       for (const containerId of ['invoice-body']) {
         $(containerId).querySelectorAll?.('[data-finance="preview"]').forEach((button) => {
           const row = rows.find((entry) => entry.id === button.dataset.id);
-          if (row && invoiceStatus(row) !== 'cancelled') button.insertAdjacentHTML('beforebegin', `<button type="button" data-finance="customerName" data-id="${esc(row.id)}">Edit Customer Name</button>`);
+          if (row && invoiceStatus(row) !== 'cancelled') button.insertAdjacentHTML('beforebegin', `<button type="button" data-finance="invoiceDetails" data-id="${esc(row.id)}">${cardIcon('edit')} Edit Invoice Details</button>`);
         });
       }
     }
@@ -183,9 +183,9 @@ export function initFinanceUi({ db, functions }) {
     $('finance-save').textContent = kind === 'submit' ? 'Submit for Verification' : 'Save';
     $('finance-dialog-title').textContent = ({ submit: 'Submit payment', correct: 'Correct payment mode', reject: 'Reject payment', reverse: 'Reverse verified payment' })[kind];
     $('finance-fields').innerHTML = kind === 'submit' ? `${paymentInvoiceSummary(invoice)}<div class="payment-form-grid"><label class="ops-field">Payment amount (₹)<input name="amount" type="number" min="0.01" step="0.01" max="${outstanding.toFixed(2)}" value="${outstanding.toFixed(2)}" required></label><label class="ops-field">Payment method<select name="mode"><option value="cash">Cash</option><option value="upi">UPI</option><option value="bank_transfer">Online</option></select></label></div><label class="ops-field payment-reference-field">Transaction ID<input name="reference" maxlength="100" placeholder="Enter transaction ID"></label><p class="payment-form-note">Payments count toward the balance after verification.</p>` : kind === 'correct' ? `<p>Current mode: ${esc(payment?.mode)} · Reference: ${esc(payment?.transactionNumber)}</p><label class="ops-field">New mode<select name="mode"><option value="cash">Cash</option><option value="upi">UPI</option><option value="bank_transfer">Bank transfer</option></select></label><label class="ops-field">New transaction reference<input name="reference" maxlength="100" placeholder="Cash uses -"></label><label class="ops-field">Reason<textarea name="reason" maxlength="500" required></textarea></label>` : '<label class="ops-field">Reason<textarea name="reason" maxlength="500" required></textarea></label>';
-    if (kind === 'customerName') {
-      $('finance-dialog-title').textContent = 'Update Customer Name';
-      $('finance-fields').innerHTML = `<p>Invoice <strong>${esc(invoice.invoiceNumber)}</strong>. Only this invoice and linked order name will change.</p><label class="ops-field">Customer name<input name="fullName" maxlength="120" value="${esc(invoice.customerSnapshot?.fullName)}" required></label>`;
+    if (kind === 'invoiceDetails') {
+      $('finance-dialog-title').textContent = 'Edit Invoice Details';
+      $('finance-fields').innerHTML = `<p>Invoice <strong>${esc(invoice.invoiceNumber)}</strong>. Changes apply only to this invoice.</p><label class="ops-field">Customer Name<input name="fullName" maxlength="120" value="${esc(invoice.customerSnapshot?.fullName)}" required></label><label class="ops-field">Contact Number<input name="contact" maxlength="80" value="${esc(invoice.customerSnapshot?.contact)}" required></label><label class="ops-field">Area<input name="area" maxlength="100" value="${esc(invoice.customerSnapshot?.area)}"></label><label class="ops-field">Address<textarea name="address" maxlength="300" rows="2">${esc(invoice.customerSnapshot?.address)}</textarea></label>`;
     }
     $('finance-dialog').showModal();
     if (kind === 'submit') {
@@ -223,11 +223,11 @@ export function initFinanceUi({ db, functions }) {
         dialog.querySelector('[data-close]').onclick = () => dialog.close(); dialog.onclose = () => dialog.remove(); document.body.append(dialog); dialog.showModal(); return;
       }
       if (kind === 'order') { document.querySelector('[data-page="orders"]')?.click(); $('order-search').value = id; $('order-search').dispatchEvent(new Event('input')); return; }
-      if (kind === 'customerName') {
-        if (profile?.role !== 'admin') throw new Error('Only Admin may update an invoice customer name.');
+      if (kind === 'invoiceDetails') {
+        if (profile?.role !== 'admin') throw new Error('Only Admin may update invoice details.');
         const invoice = invoices.find((row) => row.id === id);
         if (!invoice || invoiceStatus(invoice) === 'cancelled') throw new Error('An active invoice is required.');
-        openDialog('customerName', id); return;
+        openDialog('invoiceDetails', id); return;
       }
       if (kind === 'receipt') {
         const row = payments.find((payment) => payment.id === id);
@@ -415,12 +415,11 @@ export function initFinanceUi({ db, functions }) {
     $('finance-save').disabled = true; $('finance-save').textContent = 'Saving…'; $('finance-error').hidden = true;
     try {
       const fields = new FormData(event.currentTarget);
-      if (action === 'customerName') {
+      if (action === 'invoiceDetails') {
         const invoice = invoices.find((row) => row.id === target);
-        const fullName = String(fields.get('fullName') || '').trim();
-        if (!invoice || !fullName) throw new Error('Invoice and customer name are required.');
-        if (!confirm(`Update customer name on ${invoice.invoiceNumber} from ${invoice.customerSnapshot?.fullName || ''} to ${fullName}?`)) return;
-        await callOperation(functions, 'updateInvoiceCustomerName', { invoiceId: target, fullName });
+        const details = Object.fromEntries(['fullName', 'contact', 'area', 'address'].map((key) => [key, String(fields.get(key) || '').trim()]));
+        if (!invoice || !details.fullName || !details.contact) throw new Error('Customer name and contact number are required.');
+        await callOperation(functions, 'updateInvoiceDetails', { invoiceId: target, ...details });
       } else if (action === 'submit') {
         const amount = Number(fields.get('amount')); if (!Number.isFinite(amount) || amount <= 0 || Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-7) throw new Error('Enter a positive amount with at most two decimal places.');
         const invoice = invoices.find((row) => row.id === target);
@@ -454,7 +453,7 @@ export function initFinanceUi({ db, functions }) {
       }
       paymentOperationId = '';
       clearReceipt();
-      $('finance-dialog').close(); showToast(action === 'submit' ? 'Payment submitted for verification.' : action === 'customerName' ? 'Invoice customer name updated.' : 'Payment history updated.'); await refresh(); if (action !== 'customerName') await loadPaymentActivity();
+      $('finance-dialog').close(); showToast(action === 'submit' ? 'Payment submitted for verification.' : action === 'invoiceDetails' ? 'Invoice details updated.' : 'Payment history updated.'); await refresh(); if (action !== 'invoiceDetails') await loadPaymentActivity();
     } catch (error) { $('finance-error').textContent = message(error); $('finance-error').hidden = false; } finally { $('finance-save').disabled = false; $('finance-save').textContent = action === 'submit' ? 'Submit for Verification' : 'Save'; }
   });
   document.addEventListener('oms:pagechange', (event) => { if (!['invoices', 'payments'].includes(event.detail.page)) stopRecordLoad(); if (event.detail.page !== 'payments') stopActivityLoad(); if (['invoices', 'payments'].includes(event.detail.page)) refresh(); if (event.detail.page === 'payments') loadPaymentActivity(); });

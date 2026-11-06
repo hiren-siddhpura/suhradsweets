@@ -10,7 +10,8 @@ const projectId = process.env.OMS_RULES_TEST_PROJECT || 'demo-suh-oms'; // Emula
 const rules = readFileSync(new URL('../firestore.rules', import.meta.url), 'utf8');
 const reportingSource = readFileSync(new URL('../js/reporting-data.js', import.meta.url), 'utf8')
   .replace('https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js', import.meta.resolve('firebase/firestore'))
-  .replace('./dashboard-metrics.js', new URL('../js/dashboard-metrics.js', import.meta.url).href);
+  .replace('./dashboard-metrics.js', new URL('../js/dashboard-metrics.js', import.meta.url).href)
+  .replace('./user-sort.js', new URL('../js/user-sort.js', import.meta.url).href);
 const { dashboardOrderKg, dashboardStockKg, dashboardTargetKg } = await import(`data:text/javascript;base64,${Buffer.from(reportingSource).toString('base64')}`);
 
 const dbFor = (uid) => uid ? environment.authenticatedContext(uid).firestore() : environment.unauthenticatedContext().firestore();
@@ -72,6 +73,26 @@ async function seed() {
 
 test.before(async () => {
   environment = await initializeTestEnvironment({ projectId, firestore: { rules } });
+});
+test('invoice previews are separate owner-scoped records', async () => {
+  const user = dbFor('userA'), other = dbFor('userB'), admin = dbFor('adminA');
+  const path = 'invoicePreviews/previewA';
+  const data = { ownerUid: 'userA', reference: 'PREV-ABC123', customerSnapshot: { fullName: 'Mukesh Patel', contact: '', area: '', address: '' }, lines: [{ productId: 'itemActive', description: 'Sweet', unitId: 'kg', unit: 'KG', quantityQty: 1000, unitPricePaise: 10000, lineTotalPaise: 10000 }], subtotal: 10000, totalPaise: 10000, createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
+  await assertSucceeds(setDoc(record(user, path), data));
+  await assertSucceeds(getDoc(record(user, path)));
+  await assertSucceeds(getDocs(query(collection(user, 'invoicePreviews'), where('ownerUid', '==', 'userA'))));
+  await assertFails(getDoc(record(other, path)));
+  await assertFails(getDocs(collection(user, 'invoicePreviews')));
+  await assertSucceeds(getDocs(collection(admin, 'invoicePreviews')));
+  await assertSucceeds(updateDoc(record(user, path), { customerSnapshot: { fullName: 'Edited', contact: '', area: '', address: '' }, updatedAt: serverTimestamp() }));
+  const specialLine = { kind: 'special', productId: 'specialA', description: 'Festival Combo', unitId: 'combo', unit: 'Combo', quantityQty: 1000, unitPricePaise: 27500, lineTotalPaise: 27500 };
+  await assertSucceeds(updateDoc(record(user, path), { lines: [specialLine], subtotal: 27500, totalPaise: 27500, updatedAt: serverTimestamp() }));
+  assert.deepEqual((await getDoc(record(user, path))).data().lines, [specialLine]);
+  await assertFails(updateDoc(record(other, path), { updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(record(user, path), { ownerUid: 'userB', updatedAt: serverTimestamp() }));
+  await assertFails(setDoc(record(user, 'invoicePreviews/forged'), { ...data, ownerUid: 'userB' }));
+  await assertFails(deleteDoc(record(admin, path)));
+  await assertFails(setDoc(record(user, 'orders/previewA'), data));
 });
 test('collections and their audit events are owner or staff read-only', async () => {
   await assertSucceeds(getDoc(record(dbFor('userA'), 'collections/collectionA')));

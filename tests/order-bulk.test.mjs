@@ -17,6 +17,7 @@ test('bulk delivery uses remaining quantities and rejects completed or invalid o
   const first = order('one');
   const history = [{ orderId: 'one', lines: [{ deliveredQty: 1000 }] }];
   assert.equal(remainingDeliveryLines(first, history)[0].remainingQty, 2000);
+  assert.equal(remainingDeliveryLines(first, [{ ...history[0], status: 'rolled_back' }])[0].remainingQty, 3000);
   assert.deepEqual(bulkEligibility(first, 'delivered', history).lines, [{ deliveredQty: 2000 }]);
   assert.match(bulkEligibility(first, 'delivered', [{ orderId: 'one', lines: [{ deliveredQty: 3000 }] }]).reason, /fully delivered/);
   assert.match(bulkEligibility({ ...first, archivedAt: true }, 'delivered', history).reason, /Archived/);

@@ -12,6 +12,14 @@ const invoice = (paymentStatus = 'unpaid', verifiedPaidPaise = 0) => ({
   subtotal: 120000, totalPaise: 120000, verifiedPaidPaise, paymentStatus,
 });
 
+test('invoice PDF keeps historical Gift Packing units', () => {
+  const record = invoice();
+  record.lines = [{ description: 'Gift Packing', quantityQty: 2000, unit: 'KG', unitPricePaise: 1000, lineTotalPaise: 2000 }];
+  assert.equal(invoicePdfModel(record).lines[0].unit, 'KG');
+  record.lines[0].unit = 'PCS';
+  assert.equal(invoicePdfModel(record).lines[0].unit, 'PCS');
+});
+
 test('business details trim values, preserve leading zeros and allow omission', () => {
   assert.deepEqual(validateBusinessDetails({ address: ' Road ', contactNumber: ' 123 ', fssaiLicenseNo: ' 00123456789012 ' }), { address: 'Road', contactNumber: '123', fssaiLicenseNo: '00123456789012' });
   assert.equal(validateBusinessDetails().fssaiLicenseNo, '');
@@ -26,6 +34,9 @@ test('amount in words uses the stored total, Indian units and paise', () => {
 });
 
 test('preview uses snapshots, safe business details and verified payments only', () => {
+  const edited = invoice(); edited.customerSnapshot = { fullName: 'Edited Name', contact: '9000000000', area: 'New Area', address: 'New Address' };
+  const editedModel = invoicePdfModel(edited, {}, []);
+  assert.deepEqual(editedModel.customer, { name: 'Edited Name', contact: '9000000000', area: 'New Area', address: 'New Address' });
   const payment = { amountPaise: 40000, verificationStatus: 'verified', mode: 'upi', transactionNumber: 'UPI-123' };
   const pending = { amountPaise: 80000, verificationStatus: 'unverified', mode: 'cash' };
   const model = invoicePdfModel(invoice('in_process', 40000), { fssaiLicenseNo: '00123456789012' }, [payment, pending]);

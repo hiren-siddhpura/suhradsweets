@@ -1,6 +1,6 @@
 export function remainingDeliveryLines(order, deliveries) {
   return (order.lines || []).map((line, index) => {
-    const delivered = deliveries.filter((record) => record.orderId === order.id)
+    const delivered = deliveries.filter((record) => record.orderId === order.id && record.status !== 'rolled_back' && !record.rolledBackAt)
       .reduce((sum, record) => sum + (record.lines?.[index]?.deliveredQty || 0), 0);
     return { line, remainingQty: line.quantityQty - delivered };
   });

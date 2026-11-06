@@ -295,6 +295,33 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    match /invoicePreviews/{previewId} {
+      function validPreview() {
+        let data = request.resource.data;
+        return data.keys().hasOnly(['ownerUid', 'reference', 'customerSnapshot', 'lines', 'subtotal', 'totalPaise', 'createdAt', 'updatedAt'])
+          && data.keys().hasAll(['ownerUid', 'reference', 'customerSnapshot', 'lines', 'subtotal', 'totalPaise', 'createdAt', 'updatedAt'])
+          && data.ownerUid is string && data.ownerUid.size() > 0
+          && data.reference is string && data.reference.matches('^PREV-[A-Z0-9-]{1,30}$')
+          && data.customerSnapshot is map
+          && data.customerSnapshot.keys().hasOnly(['fullName', 'contact', 'area', 'address'])
+          && validText(data.customerSnapshot.fullName, 120)
+          && validOptionalText(data.customerSnapshot.contact, 80)
+          && validOptionalText(data.customerSnapshot.area, 100)
+          && validOptionalText(data.customerSnapshot.address, 300)
+          && data.lines is list && data.lines.size() > 0 && data.lines.size() <= 20
+          && data.subtotal is int && data.subtotal >= 0 && data.subtotal <= 1000000000000
+          && data.totalPaise == data.subtotal
+          && data.createdAt is timestamp && data.updatedAt == request.time;
+      }
+      allow get, list: if isStaff() || ownsRecord();
+      allow create: if activeProfile() && request.resource.data.ownerUid == request.auth.uid && validPreview() && request.resource.data.createdAt == request.time;
+      allow update: if activeProfile() && (isStaff() || resource.data.ownerUid == request.auth.uid)
+        && validPreview() && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.reference == resource.data.reference
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+    }
+
     match /payments/{paymentId} {
       allow get, list: if isStaff() || ownsRecord();
       allow create, update, delete: if false;

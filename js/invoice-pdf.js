@@ -15,7 +15,7 @@ export function invoicePdfModel(invoice, business = {}, payments = null) {
   const lines = (invoice.lines || []).map((line) => ({
     description: String(line.description || line.itemSnapshot?.name || line.specialSnapshot?.name || ''),
     quantityQty: Number(line.quantityQty || 0),
-    unit: String(String(line.description || line.itemSnapshot?.name || '').trim().toLocaleLowerCase() === 'gift packing' ? 'PCS' : line.unit || line.itemSnapshot?.unitSymbol || (line.kind === 'special' ? 'combo' : '')),
+    unit: String(line.unit || line.orderUnitName || line.itemSnapshot?.unitSymbol || (line.kind === 'special' ? 'combo' : '')),
     unitPricePaise: Number(line.unitPricePaise || 0),
     lineTotalPaise: Number(line.lineTotalPaise || 0),
   }));
@@ -35,6 +35,7 @@ export function invoicePdfModel(invoice, business = {}, payments = null) {
       : verifiedPaidPaise > 0 ? 'Partially Paid'
         : invoice.paymentStatus === 'in_process' ? 'Payment in process' : 'Unpaid';
   return {
+    documentType: invoice.documentType === 'preview' ? 'preview' : 'invoice',
     business: { name: 'Suhrad Sweets', address: String(business.address || '').trim(), contactNumber: String(business.contactNumber || '').trim(), fssaiLicenseNo: String(business.fssaiLicenseNo || '').trim() },
     invoiceNumber: String(invoice.invoiceNumber || `INV-${invoice.orderNumber || ''}`),
     orderNumber: String(invoice.orderNumber || ''), date: dateText(invoice.issuedAt), status,
@@ -47,13 +48,14 @@ export function invoicePdfModel(invoice, business = {}, payments = null) {
 export function invoicePreviewHtml(invoice, business = {}, payments = null) {
   const model = invoicePdfModel(invoice, business, payments);
   const e = escapeHtml;
+  const preview = model.documentType === 'preview';
   return `<article class="invoice-sheet">
     <div class="invoice-top-blessing"><img src="./logo/invoice-blessing.png" alt="Gujarati blessing"></div>
-    <header class="invoice-sheet-header"><div class="invoice-brand"><img class="invoice-sheet-logo" src="./logo/suhradsweets.png" alt="Suhrad Sweets"></div><div class="invoice-heading"><h2>INVOICE</h2><strong class="invoice-heading-brand">SUHRAD SWEETS</strong><span class="invoice-heading-tagline">${invoiceTagline}</span><span class="invoice-heading-contact"><span aria-hidden="true">☎</span> ${e(invoiceContact(model.business))}</span></div></header>
-    <div class="invoice-detail-grid"><section class="invoice-card"><span class="invoice-card-icon" aria-hidden="true">●</span><div><h3>Bill To</h3><strong>${e(model.customer.name)}</strong>${[model.customer.contact, model.customer.address, model.customer.area].filter(Boolean).map((value) => `<p>${e(value)}</p>`).join('')}</div></section><section class="invoice-card"><span class="invoice-card-icon" aria-hidden="true">▤</span><div><h3>Invoice Details</h3><dl><dt>Invoice No.</dt><dd>${e(model.invoiceNumber)}</dd><dt>Invoice Date</dt><dd>${e(model.date)}</dd><dt>Order No.</dt><dd>${e(model.orderNumber)}</dd>${model.business.fssaiLicenseNo ? `<dt>FSSAI License No.</dt><dd>${e(model.business.fssaiLicenseNo)}</dd>` : ''}</dl></div></section></div>
+    <header class="invoice-sheet-header"><div class="invoice-brand"><img class="invoice-sheet-logo" src="./logo/suhradsweets.png" alt="Suhrad Sweets"></div><div class="invoice-heading"><h2>${preview ? 'INVOICE PREVIEW' : 'INVOICE'}</h2><strong class="invoice-heading-brand">SUHRAD SWEETS</strong><span class="invoice-heading-tagline">${invoiceTagline}</span><span class="invoice-heading-contact"><span aria-hidden="true">☎</span> ${e(invoiceContact(model.business))}</span></div></header>
+    <div class="invoice-detail-grid"><section class="invoice-card"><span class="invoice-card-icon" aria-hidden="true">●</span><div><h3>Bill To</h3><strong>${e(model.customer.name)}</strong>${[model.customer.contact, model.customer.address, model.customer.area].filter(Boolean).map((value) => `<p>${e(value)}</p>`).join('')}</div></section><section class="invoice-card"><span class="invoice-card-icon" aria-hidden="true">▤</span><div><h3>${preview ? 'Preview Details' : 'Invoice Details'}</h3><dl><dt>${preview ? 'Preview Ref.' : 'Invoice No.'}</dt><dd>${e(model.invoiceNumber)}</dd><dt>${preview ? 'Preview Date' : 'Invoice Date'}</dt><dd>${e(model.date)}</dd>${preview ? '' : `<dt>Order No.</dt><dd>${e(model.orderNumber)}</dd>`}${model.business.fssaiLicenseNo ? `<dt>FSSAI License No.</dt><dd>${e(model.business.fssaiLicenseNo)}</dd>` : ''}</dl></div></section></div>
     <table class="invoice-lines"><thead><tr><th>#</th><th>ITEM DESCRIPTION</th><th>QTY</th><th>UNIT</th><th>RATE (INR)</th><th>AMOUNT (INR)</th></tr></thead><tbody>${model.lines.map((line, index) => `<tr><td>${String(index + 1).padStart(2, '0')}</td><td>${e(line.description)}</td><td>${e((line.quantityQty / 1000).toLocaleString('en-IN', { maximumFractionDigits: 3 }))}</td><td>${e(line.unit)}</td><td>${e(money(line.unitPricePaise))}</td><td>${e(money(line.lineTotalPaise))}</td></tr>`).join('')}</tbody></table>
     <div class="invoice-totals"><div class="invoice-grand"><span>GRAND TOTAL</span><strong>${e(money(model.totalPaise))}</strong></div><div class="invoice-amount-words"><strong>Amount in words:</strong><span>${e(invoiceAmountWords(model.totalPaise))}</span></div></div>
-    <footer><strong>${invoiceThanksText}</strong><small>${invoiceFooterText}</small></footer>
+    <footer><strong>${preview ? 'For customer review only' : invoiceThanksText}</strong><small>${preview ? 'This preview is not a tax invoice or payment request.' : invoiceFooterText}</small></footer>
   </article>`;
 }
 
@@ -100,13 +102,14 @@ function wrapped(ctx, value, x, y, width, lineHeight, limit = 2) {
   return Math.min(limit, count + (line ? 1 : 0));
 }
 function drawPage(ctx, model, logo, blessing, pageLines, pageIndex, pageCount) {
+  const preview = model.documentType === 'preview';
   const dark = '#17232b', orange = '#df6909', pale = '#ffe7d2', border = '#edc6a9';
   const line = (x1, y1, x2, y2) => { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 794, 1123);
   ctx.drawImage(blessing, 314, 15, 166, 49);
   ctx.drawImage(logo, 44, 78, 330, 104);
   ctx.strokeStyle = '#f28c35'; line(394, 66, 394, 190);
-  ctx.textAlign = 'right'; ctx.fillStyle = orange; ctx.font = 'bold 40px Arial'; ctx.fillText('INVOICE', 734, 103);
+  ctx.textAlign = 'right'; ctx.fillStyle = orange; ctx.font = preview ? 'bold 30px Arial' : 'bold 40px Arial'; ctx.fillText(preview ? 'INVOICE PREVIEW' : 'INVOICE', 734, 103);
   ctx.font = 'bold 27px Arial'; ctx.fillText('SUHRAD SWEETS', 734, 134, 310);
   ctx.fillStyle = '#17232b'; ctx.font = 'italic 15px Arial'; ctx.fillText(invoiceTagline, 734, 156, 310);
   ctx.fillStyle = '#fff2e7'; ctx.fillRect(432, 166, 318, 30);
@@ -119,7 +122,7 @@ function drawPage(ctx, model, logo, blessing, pageLines, pageIndex, pageCount) {
   ctx.fillStyle = pale; ctx.fillRect(44, 211, 353, 41); ctx.fillRect(397, 211, 353, 41);
   ctx.strokeStyle = '#edc6a9';
   for (const [left, right] of [[44, 397], [397, 750]]) { line(left, 211, right, 211); line(left, 381, right, 381); line(left, 211, left, 381); line(right, 211, right, 381); }
-  ctx.fillStyle = orange; ctx.textAlign = 'left'; ctx.font = 'bold 17px Arial'; ctx.fillText('BILL TO', 62, 238); ctx.fillText('INVOICE DETAILS', 415, 238);
+  ctx.fillStyle = orange; ctx.textAlign = 'left'; ctx.font = 'bold 17px Arial'; ctx.fillText('BILL TO', 62, 238); ctx.fillText(preview ? 'PREVIEW DETAILS' : 'INVOICE DETAILS', 415, 238);
   ctx.fillStyle = dark; ctx.font = 'bold 20px Arial'; const nameRows = wrapped(ctx, model.customer.name, 62, 281, 308, 22, 2);
   ctx.font = '13px Arial';
   let customerY = 283 + nameRows * 22;
@@ -127,7 +130,7 @@ function drawPage(ctx, model, logo, blessing, pageLines, pageIndex, pageCount) {
     if (customerY > 363) break;
     customerY += wrapped(ctx, value, 62, customerY, 308, 16, Math.min(2, Math.floor((372 - customerY) / 16) + 1)) * 16;
   }
-  const details = [['Invoice No.', model.invoiceNumber], ['Invoice Date', model.date], ['Order No.', model.orderNumber]];
+  const details = preview ? [['Preview Ref.', model.invoiceNumber], ['Preview Date', model.date]] : [['Invoice No.', model.invoiceNumber], ['Invoice Date', model.date], ['Order No.', model.orderNumber]];
   if (model.business.fssaiLicenseNo) details.push(['FSSAI License No.', model.business.fssaiLicenseNo]);
   details.forEach(([label, value], index) => {
     const y = 278 + index * 26;
@@ -165,8 +168,8 @@ function drawPage(ctx, model, logo, blessing, pageLines, pageIndex, pageCount) {
     ctx.strokeStyle = '#edc6a9'; line(44, top + 111, 750, top + 111);
     ctx.fillStyle = orange; ctx.textAlign = 'left'; ctx.font = 'bold 15px Arial'; ctx.fillText('Amount in words:', 62, top + 77);
     ctx.fillStyle = dark; ctx.textAlign = 'right'; ctx.font = '13px Arial'; wrapped(ctx, words, 732, top + 77, 480, 16, 2);
-    ctx.fillStyle = orange; ctx.textAlign = 'center'; ctx.font = 'bold 23px Arial'; ctx.fillText(invoiceThanksText, 397, top + 153);
-    ctx.fillStyle = '#74695f'; ctx.font = 'italic 11px Arial'; ctx.fillText(invoiceFooterText, 397, top + 183);
+    ctx.fillStyle = orange; ctx.textAlign = 'center'; ctx.font = 'bold 23px Arial'; ctx.fillText(preview ? 'For customer review only' : invoiceThanksText, 397, top + 153);
+    ctx.fillStyle = '#74695f'; ctx.font = 'italic 11px Arial'; ctx.fillText(preview ? 'This preview is not a tax invoice or payment request.' : invoiceFooterText, 397, top + 183);
   }
   ctx.textAlign = 'left';
 }

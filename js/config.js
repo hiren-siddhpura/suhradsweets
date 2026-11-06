@@ -10,6 +10,7 @@ export const PAGES = Object.freeze({
   inventory: { title: 'Inventory', description: 'Stock balances, low-stock controls and movement history.' },
   purchases: { title: 'Purchases', description: 'Draft, confirm and review supplier purchases.' },
   invoices: { title: 'Invoices', description: 'Review manually created invoices, balances and PDFs.' },
+  invoicePreviews: { title: 'Invoice Preview', description: 'Create customer proofs without creating an order or invoice.' },
   payments: { title: 'Payments', description: 'Submit, verify and audit invoice payments.' },
   targets: { title: 'Users & Targets', description: 'Track eligible sales against daily, weekly and monthly goals.' },
   announcements: { title: 'Announcements', description: 'Publish and expire team updates.' },

@@ -2,7 +2,7 @@ import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { OperationError, readPurchaseReceipt, savePurchaseDraft, confirmPurchase, cancelPurchase, adjustStock, setInventoryControl } from './operations.js';
-import { saveCustomer, saveSpecialProduct, saveOrderDraft, reassignOrder, confirmOrder, cancelOrder, updateInvoiceCustomerName, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment } from './order-operations.js';
+import { saveCustomer, saveSpecialProduct, saveOrderDraft, reassignOrder, confirmOrder, cancelOrder, updateInvoiceDetails, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment } from './order-operations.js';
 import { submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid, readPaymentReceipt } from './finance-operations.js';
 import { submitCollection, reviewCollection, readCollectionReceipt } from './collection-operations.js';
 import { saveTarget, saveAnnouncement, saveUserProfile } from './reporting-operations.js';
@@ -10,11 +10,11 @@ import { deleteCustomer } from './customer-operations.js';
 import { manageUser, sendUserSetupLink } from './user-operations.js';
 import { getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity } from './order-reads.js';
 import { getOrderAnalytics } from './order-analytics.js';
-import { createDelivery } from './delivery-operations.js';
+import { createDelivery, rollbackDelivery } from './delivery-operations.js';
 
 initializeApp();
 const db = getFirestore();
-const operations = { readPurchaseReceipt, submitCollection, reviewCollection, readCollectionReceipt, readPaymentReceipt, savePurchaseDraft, confirmPurchase, cancelPurchase, adjustStock, setInventoryControl, saveCustomer, saveSpecialProduct, saveOrderDraft, reassignOrder, confirmOrder, cancelOrder, updateInvoiceCustomerName, advanceOrder, setOrderTaking, createInvoiceFromOrder, createDelivery, archiveOrder, restoreOrder, requestOrderPayment, getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity, getOrderAnalytics, submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid, saveTarget, saveAnnouncement, saveUserProfile };
+const operations = { readPurchaseReceipt, submitCollection, reviewCollection, readCollectionReceipt, readPaymentReceipt, savePurchaseDraft, confirmPurchase, cancelPurchase, adjustStock, setInventoryControl, saveCustomer, saveSpecialProduct, saveOrderDraft, reassignOrder, confirmOrder, cancelOrder, updateInvoiceDetails, advanceOrder, setOrderTaking, createInvoiceFromOrder, createDelivery, rollbackDelivery, archiveOrder, restoreOrder, requestOrderPayment, getOrderStock, getPaymentNames, listOrderActivity, listPaymentActivity, getOrderAnalytics, submitPayment, reviewPayment, changePaymentMode, reversePayment, markInvoicePaid, saveTarget, saveAnnouncement, saveUserProfile };
 
 function callable(name) {
   return onCall({ region: 'us-central1', maxInstances: 3, cors: true }, async (request) => {
@@ -24,7 +24,7 @@ function callable(name) {
       if (name === 'saveUserProfile') return await manageUser(db, request.auth.uid, data);
       if (name === 'sendUserSetupLink') return await sendUserSetupLink(db, request.auth.uid, data);
       if (name === 'deleteCustomer') return await deleteCustomer(db, request.auth.uid, data);
-      if (['readPurchaseReceipt', 'submitCollection', 'reviewCollection', 'readCollectionReceipt', 'readPaymentReceipt', 'savePurchaseDraft', 'adjustStock', 'setInventoryControl', 'saveCustomer', 'saveSpecialProduct', 'saveOrderDraft', 'reassignOrder', 'updateInvoiceCustomerName', 'archiveOrder', 'restoreOrder', 'requestOrderPayment', 'getOrderStock', 'getPaymentNames', 'listOrderActivity', 'listPaymentActivity', 'getOrderAnalytics', 'createDelivery', 'submitPayment', 'reviewPayment', 'changePaymentMode', 'reversePayment', 'markInvoicePaid', 'saveTarget', 'saveAnnouncement', 'saveUserProfile'].includes(name)) return await operations[name](db, request.auth.uid, data);
+      if (['readPurchaseReceipt', 'submitCollection', 'reviewCollection', 'readCollectionReceipt', 'readPaymentReceipt', 'savePurchaseDraft', 'adjustStock', 'setInventoryControl', 'saveCustomer', 'saveSpecialProduct', 'saveOrderDraft', 'reassignOrder', 'updateInvoiceDetails', 'archiveOrder', 'restoreOrder', 'requestOrderPayment', 'getOrderStock', 'getPaymentNames', 'listOrderActivity', 'listPaymentActivity', 'getOrderAnalytics', 'createDelivery', 'rollbackDelivery', 'submitPayment', 'reviewPayment', 'changePaymentMode', 'reversePayment', 'markInvoicePaid', 'saveTarget', 'saveAnnouncement', 'saveUserProfile'].includes(name)) return await operations[name](db, request.auth.uid, data);
       if (name === 'cancelPurchase') return await operations[name](db, request.auth.uid, data.purchaseId, data.reason);
       if (name === 'createInvoiceFromOrder') return await operations[name](db, request.auth.uid, data.orderId);
       if (name === 'confirmOrder') return await operations[name](db, request.auth.uid, data.orderId);
@@ -64,9 +64,10 @@ export const getPaymentNamesCall = callable('getPaymentNames');
 export const listOrderActivityCall = callable('listOrderActivity');
 export const listPaymentActivityCall = callable('listPaymentActivity');
 export const cancelOrderCall = callable('cancelOrder');
-export const updateInvoiceCustomerNameCall = callable('updateInvoiceCustomerName');
+export const updateInvoiceDetailsCall = callable('updateInvoiceDetails');
 export const advanceOrderCall = callable('advanceOrder');
 export const createDeliveryCall = callable('createDelivery');
+export const rollbackDeliveryCall = callable('rollbackDelivery');
 export const setOrderTakingCall = callable('setOrderTaking');
 export const createInvoiceFromOrderCall = callable('createInvoiceFromOrder');
 export const submitPaymentCall = callable('submitPayment');

@@ -51,6 +51,7 @@ async function exportBook(name, sheets) {
 export function initOrderUi({ db, functions, auth, mode }) {
   $('order-activity-type').insertAdjacentHTML?.('beforeend', '<option value="order.locked">Editing locked</option>');
   $('order-activity-type').insertAdjacentHTML?.('beforeend', '<option value="order.stock_deducted">Stock deducted</option>');
+  $('order-activity-type').insertAdjacentHTML?.('beforeend', '<option value="order.delivery_rolled_back">Delivery rolled back</option>');
   $('order-activity-order').insertAdjacentHTML?.('afterend', '<input id="order-activity-invoice" type="search" placeholder="Invoice ID" aria-label="Activity invoice"><input id="order-activity-payment" type="search" placeholder="Payment ID" aria-label="Activity payment">');
   let user = null, profile = null, orders = [], customers = [], items = [], specials = [], users = [], acceptingOrders = true, orderStep = 1, productCategory = '';
   const mobileNavigation = $('mobile-navigation');
@@ -292,13 +293,13 @@ export function initOrderUi({ db, functions, auth, mode }) {
       const mayEdit = o.status === 'draft' ? manageable && (!specialOrder || special()) : ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && admin() && (!specialOrder || special());
       const editableStatus = ['draft', 'confirmed', 'in_preparation', 'ready'].includes(o.status);
       const financialReason = invoiceIds.has(o.id) || o.invoiceId ? 'An invoice exists for this order.' : '';
-      const lockReason = deliveries.some((row) => row.orderId === o.id) ? 'Orders with delivery history cannot be edited.' : (financialReason && !admin() ? financialReason : '') || (o.archivedAt ? 'Restore this order to edit it.' : '');
+      const lockReason = deliveries.some((row) => row.orderId === o.id && row.status !== 'rolled_back' && !row.rolledBackAt) ? 'Orders with active deliveries cannot be edited.' : (financialReason && !admin() ? financialReason : '') || (o.archivedAt ? 'Restore this order to edit it.' : '');
       const button = (kind, label, reason = '') => `<button type="button" data-action="${kind}" data-id="${esc(o.id)}" ${reason ? `disabled title="${esc(reason)}"` : ''}>${label}</button>`;
       return [button('viewOrder', 'View'), mayEdit ? button('editOrder', 'Edit', lockReason) : '',
         o.status === 'draft' && manageable && (!specialOrder || special()) ? button('confirmOrder', 'Confirm', o.archivedAt ? 'Restore this order first.' : '') : '',
         manageable && editableStatus && (!specialOrder || staff()) ? o.archivedAt ? button('restoreOrder', 'Restore', financialReason) : button('archiveOrder', 'Archive', financialReason) : '',
-        editableStatus && admin() ? button('cancelOrder', 'Cancel Order') : '',
-        manageable && ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && (o.lines || []).some((line, index) => deliveries.filter((row) => row.orderId === o.id).reduce((sum, row) => sum + (row.lines?.[index]?.deliveredQty || 0), 0) < line.quantityQty) ? button('createDelivery', 'Create Delivery', o.archivedAt ? 'Restore this order first.' : '') : '',
+        ['draft', 'confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && admin() ? button('cancelOrder', 'Cancel Order', deliveries.some((row) => row.orderId === o.id && row.status !== 'rolled_back' && !row.rolledBackAt) ? 'Roll back active deliveries before cancelling.' : '') : '',
+        manageable && ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && (o.lines || []).some((line, index) => deliveries.filter((row) => row.orderId === o.id && row.status !== 'rolled_back' && !row.rolledBackAt).reduce((sum, row) => sum + (row.lines?.[index]?.deliveredQty || 0), 0) < line.quantityQty) ? button('createDelivery', 'Create Delivery', o.archivedAt ? 'Restore this order first.' : '') : '',
         manageable && ['confirmed', 'delivered', 'in_preparation', 'ready'].includes(o.status) && !invoiceIds.has(o.id) && !o.invoiceId ? button('invoiceOrder', 'Create invoice', o.archivedAt ? 'Restore this order first.' : '') : '',
         manageable && (invoiceIds.has(o.id) || o.invoiceId) ? button('viewInvoice', 'View invoice') : '',
         ].filter(Boolean).join('');
@@ -319,21 +320,21 @@ export function initOrderUi({ db, functions, auth, mode }) {
       const manageable = staff() || o.ownerUid === user?.uid;
       const specialOrder = o.lines?.some((line) => line.kind === 'special');
       const hasInvoice = Boolean(o.invoiceId || invoiceIds.has(o.id));
-      const hasDelivery = deliveries.some((row) => row.orderId === o.id);
-      const remainingDelivery = (o.lines || []).some((line, index) => deliveries.filter((row) => row.orderId === o.id).reduce((sum, row) => sum + (row.lines?.[index]?.deliveredQty || 0), 0) < line.quantityQty);
+      const hasDelivery = deliveries.some((row) => row.orderId === o.id && row.status !== 'rolled_back' && !row.rolledBackAt);
+      const remainingDelivery = (o.lines || []).some((line, index) => deliveries.filter((row) => row.orderId === o.id && row.status !== 'rolled_back' && !row.rolledBackAt).reduce((sum, row) => sum + (row.lines?.[index]?.deliveredQty || 0), 0) < line.quantityQty);
       const mayEdit = !o.archivedAt && !hasDelivery && (o.status === 'draft' && manageable && (!specialOrder || special()) || ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && admin() && (!specialOrder || special())) && (!hasInvoice || admin());
       const canDeliver = manageable && !o.archivedAt && ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && remainingDelivery;
       const canInvoice = manageable && !o.archivedAt && !hasInvoice && ['confirmed', 'delivered', 'in_preparation', 'ready'].includes(o.status);
       const canArchive = manageable && !hasInvoice && ['draft', 'confirmed', 'in_preparation', 'ready'].includes(o.status) && (!specialOrder || staff());
-      const canCancel = admin() && !o.archivedAt && ['draft', 'confirmed', 'in_preparation', 'ready'].includes(o.status);
+      const canCancel = admin() && !o.archivedAt && !hasDelivery && ['draft', 'confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status);
       const action = (kind, label, symbol) => `<button type="button" class="order-card-action" data-action="${kind}" data-id="${esc(o.id)}" aria-label="${label} ${esc(o.orderNumber)}" title="${label}">${icon(symbol)}<span>${label}</span></button>`;
       const more = [o.status === 'draft' && manageable && !o.archivedAt && (!specialOrder || special()) ? `<button type="button" data-action="confirmOrder" data-id="${esc(o.id)}">Confirm order</button>` : '', canArchive ? `<button type="button" data-action="${o.archivedAt ? 'restoreOrder' : 'archiveOrder'}" data-id="${esc(o.id)}">${o.archivedAt ? 'Restore' : 'Archive'}</button>` : '', canCancel ? `<button type="button" data-action="cancelOrder" data-id="${esc(o.id)}">Cancel order</button>` : ''].filter(Boolean);
       return `<div class="order-card-actions">${action('viewOrder', 'View', 'view')}${mayEdit ? action('editOrder', 'Edit', 'edit') : ''}${canDeliver ? action('createDelivery', 'Delivery', 'delivery') : ''}${canInvoice ? action('invoiceOrder', 'Invoice', 'invoice') : hasInvoice && manageable ? action('viewInvoice', 'View invoice', 'invoice') : ''}${more.length ? `<details class="order-card-more"><summary aria-label="More actions for ${esc(o.orderNumber)}" title="More actions">${icon('more')}<span>More</span></summary><div class="order-card-menu">${more.join('')}</div></details>` : ''}</div>`;
     };
     $('order-body').innerHTML = rows.length ? rows.map((o) => {
-      return `<tr><td><input type="checkbox" data-order-select="${esc(o.id)}" aria-label="Select order ${esc(o.orderNumber)}" ${selectedOrderIds.has(o.id) ? 'checked' : ''}></td><td>${esc(o.orderNumber)}</td><td>${esc(o.customerSnapshot?.fullName)}</td><td>${esc(o.orderDate)}</td><td>${esc(assignedUserName(o))}</td><td>${orderStatusBadge(o.invoiceId || invoiceIds.has(o.id) ? 'invoiced' : o.status, !!o.archivedAt)}</td><td>${rupees(o.grandTotal)}</td><td class="ops-actions">${orderActions(o)}</td></tr>`;
+      return `<tr><td><input type="checkbox" data-order-select="${esc(o.id)}" aria-label="Select order ${esc(o.orderNumber)}" ${selectedOrderIds.has(o.id) ? 'checked' : ''}></td><td>${esc(o.orderNumber)}</td><td>${esc(o.customerSnapshot?.fullName)}</td><td>${esc(o.orderDate)}</td><td>${esc(assignedUserName(o))}</td><td>${orderStatusBadge(o.status === 'cancelled' ? 'cancelled' : o.invoiceId || invoiceIds.has(o.id) ? 'invoiced' : o.status, !!o.archivedAt)}</td><td>${rupees(o.grandTotal)}</td><td class="ops-actions">${orderActions(o)}</td></tr>`;
     }).join('') : empty(8, 'No orders match these filters.');
-    $('order-mobile-list').innerHTML = rows.length ? rows.map((o) => `<article class="order-mobile-card"><div class="order-card-header"><label class="order-card-select"><input type="checkbox" data-order-select="${esc(o.id)}" aria-label="Select order ${esc(o.orderNumber || 'number unavailable')}" ${selectedOrderIds.has(o.id) ? 'checked' : ''}><strong>${esc(o.orderNumber || 'Order number unavailable')}</strong></label>${orderStatusBadge(o.invoiceId || invoiceIds.has(o.id) ? 'invoiced' : o.status, !!o.archivedAt)}</div><h3 class="order-card-customer">${esc(o.customerSnapshot?.fullName || 'Customer unavailable')}</h3><div class="order-card-meta"><span>${icon('calendar')}${esc(o.orderDate || 'Date unavailable')}</span><span>${icon('user')}${esc(assignedUserName(o))}</span></div><div class="order-card-total"><span>Order Total</span><strong>${Number.isSafeInteger(o.grandTotal) ? rupees(o.grandTotal) : 'Amount unavailable'}</strong></div>${mobileOrderActions(o)}</article>`).join('') : '<p class="mobile-record-empty">No orders match the current filters.</p>';
+    $('order-mobile-list').innerHTML = rows.length ? rows.map((o) => `<article class="order-mobile-card"><div class="order-card-header"><label class="order-card-select"><input type="checkbox" data-order-select="${esc(o.id)}" aria-label="Select order ${esc(o.orderNumber || 'number unavailable')}" ${selectedOrderIds.has(o.id) ? 'checked' : ''}><strong>${esc(o.orderNumber || 'Order number unavailable')}</strong></label>${orderStatusBadge(o.status === 'cancelled' ? 'cancelled' : o.invoiceId || invoiceIds.has(o.id) ? 'invoiced' : o.status, !!o.archivedAt)}</div><h3 class="order-card-customer">${esc(o.customerSnapshot?.fullName || 'Customer unavailable')}</h3><div class="order-card-meta"><span>${icon('calendar')}${esc(o.orderDate || 'Date unavailable')}</span><span>${icon('user')}${esc(assignedUserName(o))}</span></div><div class="order-card-total"><span>Order Total</span><strong>${Number.isSafeInteger(o.grandTotal) ? rupees(o.grandTotal) : 'Amount unavailable'}</strong></div>${mobileOrderActions(o)}</article>`).join('') : '<p class="mobile-record-empty">No orders match the current filters.</p>';
   }
   function clearBulkSelection() { selectedOrderIds.clear(); $('order-bulk-status').value = ''; renderOrders(); }
   function setAllFiltered(selected) {
@@ -527,10 +528,12 @@ export function initOrderUi({ db, functions, auth, mode }) {
     const notice = stockNotice(kind, productId);
     const choices = availableOrderUnits(profile?.role).filter((unit) => (product?.name || line.itemSnapshot?.name || '').trim().toLocaleLowerCase() === 'gift packing' ? unit.id === 'pcs' : unit.id !== 'pcs');
     const legacy = kind === 'item' && line.productId && !line.orderUnitId;
+    const historicalKg = kind === 'item' && line.productId && (product?.name || line.itemSnapshot?.name || '').trim().toLocaleLowerCase() === 'gift packing' && (line.orderUnitId === 'kg' || legacy && String(line.orderUnitName || line.itemSnapshot?.unitSymbol || '').trim().toUpperCase() === 'KG');
     const selectedUnit = legacy ? '__legacy__' : line.orderUnitId || choices[0].id;
-    const legacyOption = legacy ? `<option value="__legacy__" selected>Current: ${esc(line.itemSnapshot?.unitSymbol || 'item unit')}</option>` : '';
-    const missingOption = line.orderUnitId && !choices.some((unit) => unit.id === line.orderUnitId) ? '<option value="" selected>Choose an active permitted unit</option>' : '';
-    const unitField = kind === 'item' ? `<label class="order-line-unit">Unit<select name="unitId" required>${legacyOption}${missingOption}${choices.map((unit) => `<option value="${esc(unit.id)}" ${unit.id === selectedUnit ? 'selected' : ''}>${esc(unit.label)}</option>`).join('')}</select></label>` : '';
+    const legacyOption = legacy ? `<option value="__legacy__" selected>Current: ${esc(orderLineUnitLabel(line) || 'item unit')}</option>` : '';
+    const historicalOption = historicalKg && !legacy ? '<option value="kg" selected>KG (existing line)</option>' : '';
+    const missingOption = line.orderUnitId && !historicalKg && !choices.some((unit) => unit.id === line.orderUnitId) ? '<option value="" selected>Choose an active permitted unit</option>' : '';
+    const unitField = kind === 'item' ? `<label class="order-line-unit">Unit<select name="unitId" required>${legacyOption}${historicalOption}${missingOption}${choices.map((unit) => `<option value="${esc(unit.id)}" ${unit.id === selectedUnit ? 'selected' : ''}>${esc(unit.label)}</option>`).join('')}</select></label>` : '';
     const quantityField = field('Quantity', 'quantity', 'text', line.quantityQty ? line.quantityQty / 1000 : 1, 'inputmode="numeric" pattern="[1-9][0-9]*" title="Enter a whole number of at least 1" required').replace('<input ', '<span class="order-quantity-control"><button type="button" data-quantity-step="-1" aria-label="Decrease quantity">−</button><input ').replace('</label>', '<button type="button" data-quantity-step="1" aria-label="Increase quantity">+</button></span></label>');
     return `<div class="ops-line order-entry-line"><div class="order-line-image">${thumbnail}</div><label class="order-line-type">Type<select name="kind"><option value="item" ${kind === 'item' ? 'selected' : ''}>Regular item</option>${special() ? `<option value="special" ${kind === 'special' ? 'selected' : ''}>Special product</option>` : ''}</select></label><label class="order-line-product">Product<select name="productId">${productOptions(kind, line.productId)}</select><small class="order-stock-hint">${esc(stockLabel(kind, productId))}</small><small class="order-stock-warning" ${notice ? '' : 'hidden'}>${esc(notice)}</small></label>${quantityField}${unitField}<button type="button" class="ops-link order-line-remove" data-remove-line aria-label="Remove order line">Remove</button></div>`;
   }
@@ -578,13 +581,24 @@ export function initOrderUi({ db, functions, auth, mode }) {
     $('order-dialog-title').textContent = ({ customer: c ? 'Edit customer' : 'Add customer', viewCustomer: c?.fullName || 'Customer', order: o ? `Edit ${o.orderNumber}` : 'Create Order', viewOrder: `Order ${o?.orderNumber || ''}`, special: s ? 'Edit combination' : 'Add combination', cancel: 'Cancel order', archive: 'Archive order', restore: 'Restore order', request: 'Record payment request', intake: 'Order-taking', invoice: 'Create invoice' })[nextAction];
     if (nextAction === 'viewOrder' && o) {
       $('order-fields').innerHTML = viewOrderContent(o);
+      if (o.status === 'cancelled') {
+        const badge = $('order-fields').querySelector('.order-view-identity .order-status-badge');
+        if (badge) badge.outerHTML = orderStatusBadge('cancelled', !!o.archivedAt);
+      }
       const actions = $('order-view-actions');
       const invoiced = invoiceIds.has(o.id) || Boolean(o.invoiceId);
       const own = staff() || o.ownerUid === user?.uid;
       const specialOrder = o.lines?.some((line) => line.kind === 'special');
-      const canEdit = !deliveries.some((row) => row.orderId === o.id) && !o.archivedAt && (!invoiced || admin()) && (!o.editLockedAt || admin()) && (!o.paymentRequestedAt || admin()) && (o.status === 'draft' && own && (!specialOrder || special()) || ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && admin() && (!specialOrder || special()));
+      const activeDeliveries = deliveries.filter((row) => row.orderId === o.id && row.status !== 'rolled_back' && !row.rolledBackAt);
+      const canEdit = !activeDeliveries.length && !o.archivedAt && (!invoiced || admin()) && (!o.editLockedAt || admin()) && (!o.paymentRequestedAt || admin()) && (o.status === 'draft' && own && (!specialOrder || special()) || ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && admin() && (!specialOrder || special()));
       const canInvoice = own && ['confirmed', 'delivered', 'in_preparation', 'ready'].includes(o.status) && !invoiced && !o.archivedAt;
       actions.innerHTML = `${canEdit ? '<button type="button" class="button button-outline" data-view-action="editOrder"><span aria-hidden="true">✎</span> Edit</button>' : ''}${own && ['confirmed', 'in_preparation', 'ready', 'invoiced'].includes(o.status) && !o.archivedAt && (o.lines || []).some((line, index) => deliveries.filter((row) => row.orderId === o.id).reduce((sum, row) => sum + (row.lines?.[index]?.deliveredQty || 0), 0) < line.quantityQty) ? '<button type="button" class="button button-outline" data-view-action="createDelivery">Create Delivery</button>' : ''}${canInvoice ? '<button type="button" class="button button-primary" data-view-action="invoiceOrder"><span aria-hidden="true">ï¼‹</span> Create Invoice</button>' : ''}${own && invoiced ? '<button type="button" class="button button-primary" data-view-action="viewInvoice"><span aria-hidden="true">▣</span> View Invoice</button>' : ''}${admin() && ['draft', 'confirmed', 'in_preparation', 'ready'].includes(o.status) ? '<button type="button" class="button button-outline" data-view-action="cancelOrder">Cancel Order</button>' : ''}`;
+    }
+    if (nextAction === 'viewOrder' && o && admin() && o.status !== 'cancelled') {
+      const active = deliveries.filter((row) => row.orderId === o.id && row.status !== 'rolled_back' && !row.rolledBackAt);
+      if (active.length) $('order-view-actions').querySelector('[data-view-action="cancelOrder"]')?.remove();
+      if (!active.length && o.status === 'invoiced') $('order-view-actions').insertAdjacentHTML('beforeend', '<button type="button" class="button button-outline" data-view-action="cancelOrder">Cancel Order</button>');
+      $('order-view-actions').insertAdjacentHTML('beforeend', active.map((row) => `<button type="button" class="button button-outline" data-view-action="rollbackDelivery" data-delivery-id="${esc(row.id)}">Rollback ${esc(row.deliveryNumber || 'Delivery')}</button>`).join(''));
     }
     if (nextAction === 'customer') $('order-fields').innerHTML = customerFields(c || (parkedOrder ? pendingCustomerDetails || {} : {}));
     if (nextAction === 'viewCustomer' && c) $('order-fields').innerHTML = `<p><strong>Phone:</strong> ${esc(c.contact || 'Unavailable')}</p><p><strong>Area:</strong> ${esc(c.area || 'Unavailable')}</p><p><strong>Address:</strong> ${esc(c.address || 'Unavailable')}</p><p><strong>Assigned Karyakarta:</strong> ${esc(customerAssigneeName(c))}</p>`;
@@ -655,6 +669,8 @@ export function initOrderUi({ db, functions, auth, mode }) {
       const product = kind === 'special' ? specials.find((item) => item.id === productId) : items.find((item) => item.id === productId);
       let price = null;
       try { if (product) { const configured = kind === 'special' ? product.finalPricePaise : itemUnitPrice(product, unitId); if (configured !== null && configured !== undefined && configured !== '') price = kind === 'special' ? configured : toPaise(configured); } } catch { /* Missing catalog price is shown as unavailable. */ }
+      const historical = kind === 'item' && product?.name?.trim().toLocaleLowerCase() === 'gift packing' && (unitId === 'kg' || unitId === '__legacy__') && orders.find((order) => order.id === targetId)?.lines?.find((line) => line.kind === 'item' && line.productId === productId && (line.orderUnitName || line.itemSnapshot?.unitSymbol || '').trim().toUpperCase() === 'KG');
+      if (historical && Number.isSafeInteger(historical.unitPricePaise)) price = historical.unitPricePaise;
       const quantity = Number(row.querySelector('[name=quantity]')?.value);
       return { row, kind, productId, unitId, product, price, quantity, total: Number.isSafeInteger(price) && Number.isSafeInteger(quantity) && quantity > 0 ? price * quantity : null };
     });
@@ -880,6 +896,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
   }
 
   async function runOrderAction(nextAction, id) {
+    if (nextAction === 'rollbackDelivery') return document.dispatchEvent(new CustomEvent('oms:rollbackdelivery', { detail: { deliveryId: id } }));
     const o = orders.find((row) => row.id === id); if (!o) return;
     if (nextAction === 'viewOrder') return openDialog('viewOrder', id);
     if (nextAction === 'editOrder') return openDialog('order', id);
@@ -1014,7 +1031,7 @@ export function initOrderUi({ db, functions, auth, mode }) {
     if (!button || action !== 'viewOrder') return;
     const id = targetId;
     $('order-dialog').close();
-    runOrderAction(button.dataset.viewAction, id);
+    runOrderAction(button.dataset.viewAction, button.dataset.deliveryId || id);
   });
   $('order-fields').addEventListener('input', (event) => {
     if (event.target.id === 'order-customer-search') { $('order-customer').value = ''; $('order-customer-details').textContent = ''; showCustomerOptions(); }

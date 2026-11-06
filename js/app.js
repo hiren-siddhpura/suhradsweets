@@ -40,8 +40,8 @@ initPasswordVisibilityToggle();
 showLoading();
 
 try {
-  const [{ initializeFirebase }, { observeAuth, signIn, signOutUser }, { observeUserProfile, recordAuthEvent }, { initMasterData }, { initOperationsUi }, { initOrderUi }, { initFinanceUi }, { initReportingUi }, { configureOperations }, { initCustomerImport }, { initBoxReq }, { initOrderAnalytics }, { initCollectionsUi }, { initDeliveryUi }] = await Promise.all([
-    import('./firebase-config.js'), import('./auth.js'), import('./data.js'), import('./master-ui.js'), import('./operations-ui.js'), import('./order-ui.js?v=orders-mobile-20261029'), import('./finance-ui.js'), import('./reporting-ui.js'), import('./operations-data.js'), import('./customer-import-ui.js'), import('./box-req-ui.js'), import('./order-analytics-ui.js'), import('./collections-ui.js'), import('./delivery-ui.js'),
+  const [{ initializeFirebase }, { observeAuth, signIn, signOutUser }, { observeUserProfile, recordAuthEvent }, { initMasterData }, { initOperationsUi }, { initOrderUi }, { initFinanceUi }, { initReportingUi }, { configureOperations }, { initCustomerImport }, { initBoxReq }, { initOrderAnalytics }, { initCollectionsUi }, { initDeliveryUi }, { initInvoicePreviewUi }] = await Promise.all([
+    import('./firebase-config.js'), import('./auth.js'), import('./data.js'), import('./master-ui.js'), import('./operations-ui.js'), import('./order-ui.js?v=orders-mobile-20261029'), import('./finance-ui.js'), import('./reporting-ui.js'), import('./operations-data.js'), import('./customer-import-ui.js'), import('./box-req-ui.js'), import('./order-analytics-ui.js'), import('./collections-ui.js'), import('./delivery-ui.js'), import('./invoice-preview-ui.js'),
   ]);
   const services = initializeFirebase();
   if (!services) {
@@ -60,6 +60,7 @@ try {
     const deliveries = initDeliveryUi(services);
     const customerImport = initCustomerImport(services);
     const finance = initFinanceUi(services);
+    const invoicePreviews = initInvoicePreviewUi(services);
     const collections = initCollectionsUi(services);
     const reporting = initReportingUi(services);
     const boxReq = initBoxReq(services);
@@ -74,7 +75,7 @@ try {
       const revision = ++authRevision;
       clearTimeout(profileTimer);
       if (stopProfile) { stopProfile(); stopProfile = null; }
-      if (!user) { authDiagnostic('no-authenticated-user', services); master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); deliveries.setSession(null, null); customerImport.setSession(null, null); finance.setSession(null, null); collections.setSession(null, null); reporting.setSession(null, null); boxReq.setSession(null, null); orderAnalytics.setSession(null, null); showSignedOut(); return; }
+      if (!user) { authDiagnostic('no-authenticated-user', services); master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); deliveries.setSession(null, null); customerImport.setSession(null, null); finance.setSession(null, null); invoicePreviews.setSession(null, null); collections.setSession(null, null); reporting.setSession(null, null); boxReq.setSession(null, null); orderAnalytics.setSession(null, null); showSignedOut(); return; }
       if (!sameProject) {
         authDiagnostic('firebase-configuration-mismatch', services);
         showAccessDenied(user, 'Authentication and Firestore are configured for different Firebase projects. Check the web configuration.');
@@ -94,6 +95,7 @@ try {
           deliveries.setSession(null, null);
           customerImport.setSession(null, null);
           finance.setSession(null, null); collections.setSession(null, null);
+          invoicePreviews.setSession(null, null);
           reporting.setSession(null, null);
           boxReq.setSession(null, null);
           orderAnalytics.setSession(null, null);
@@ -104,8 +106,8 @@ try {
         const reason = validateProfile(profile);
         if (reason) authDiagnostic(reason === 'missing' ? 'user-document-missing' : reason === 'inactive' ? 'user-account-inactive' : 'user-role-or-profile-invalid', services);
         else authDiagnostic('user-profile-verified', services);
-        if (reason) { master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); deliveries.setSession(null, null); customerImport.setSession(null, null); finance.setSession(null, null); collections.setSession(null, null); reporting.setSession(null, null); boxReq.setSession(null, null); orderAnalytics.setSession(null, null); showAccessDenied(user, accessMessage(reason)); }
-        else { boxReq.setSession(user, profile); showSignedIn(user, profile); master.setSession(user, profile); operations.setSession(user, profile); orders.setSession(user, profile); deliveries.setSession(user, profile); customerImport.setSession(user, profile); finance.setSession(user, profile); collections.setSession(user, profile); reporting.setSession(user, profile); orderAnalytics.setSession(user, profile); }
+        if (reason) { master.setSession(null, null); operations.setSession(null, null); orders.setSession(null, null); deliveries.setSession(null, null); customerImport.setSession(null, null); finance.setSession(null, null); invoicePreviews.setSession(null, null); collections.setSession(null, null); reporting.setSession(null, null); boxReq.setSession(null, null); orderAnalytics.setSession(null, null); showAccessDenied(user, accessMessage(reason)); }
+        else { boxReq.setSession(user, profile); showSignedIn(user, profile); master.setSession(user, profile); operations.setSession(user, profile); orders.setSession(user, profile); deliveries.setSession(user, profile); customerImport.setSession(user, profile); finance.setSession(user, profile); invoicePreviews.setSession(user, profile); collections.setSession(user, profile); reporting.setSession(user, profile); orderAnalytics.setSession(user, profile); }
       }, (error) => {
         clearTimeout(profileTimer);
         authDiagnostic(firebaseErrorCode(error) === 'permission-denied' ? 'profile-read-permission-denied' : ['unavailable', 'deadline-exceeded'].includes(firebaseErrorCode(error)) ? 'profile-read-network-error' : 'profile-read-firebase-error', services, error);
@@ -116,6 +118,7 @@ try {
           deliveries.setSession(null, null);
           customerImport.setSession(null, null);
           finance.setSession(null, null); collections.setSession(null, null);
+          invoicePreviews.setSession(null, null);
           reporting.setSession(null, null);
           boxReq.setSession(null, null);
           orderAnalytics.setSession(null, null);

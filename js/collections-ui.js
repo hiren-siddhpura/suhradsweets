@@ -7,9 +7,12 @@ import { uniqueId } from './unique-id.js';
 import { showToast } from './ui.js';
 import { eligibleCollectionInvoice } from './collection-eligibility.js';
 import { bulkDraftHtml } from './bulk-draft-render.js';
+import { listOrders } from './order-data.js';
+import { assignedInvoiceUser, visibleBulkInvoices } from './bulk-invoice-filter.js';
 import { downloadXlsx } from './xlsx-export.js';
 import { sortUsersByName } from './user-sort.js';
 import { cardIcon, cardButton } from './mobile-card.js';
+import { paymentStatusStats } from './payment-status-stats.js';
 
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '<': '&lt;', "'": '&#39;' })[char]);
 const rupees = (paise) => `₹${((paise || 0) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -46,9 +49,11 @@ export function initCollectionsUi({ db, functions }) {
       ...singles.map((row) => ({ type: 'single', row, ownerUid: row.ownerUid, modes: [row.mode], status: row.reversalId ? 'reversed' : row.verificationStatus === 'unverified' ? 'pending' : row.verificationStatus, amount: row.amountPaise, method: paymentName(row.mode), day: row.submittedAt?.toDate?.()?.toISOString().slice(0, 10) || '', at: row.submittedAt?.seconds || 0, reference: row.transactionNumber || row.invoiceNumber || row.id, collector: row.submittedByName || '', customer: row.customerSnapshot?.fullName || '' })),
       ...collections.map((row) => ({ type: 'bulk', row, ownerUid: row.ownerUid, modes: row.entries?.map((entry) => entry.mode) || [], status: row.status, amount: row.totalPaise, method: new Set(row.entries?.map((entry) => entry.mode)).size > 1 ? 'Mixed' : paymentName(row.entries?.[0]?.mode) || '—', day: row.collectionDate || '', at: row.submittedAt?.seconds || 0, reference: shortCollectionNumber(row.collectionNumber || row.id), collector: row.submittedByName || '', customer: row.allocations?.map((item) => item.customerName).join(' ') || '' })),
     ];
-    $('collection-cards').innerHTML = `<div class="card ops-stat"><span>Pending Verification</span><strong>${records.filter((item) => item.status === 'pending').length}</strong></div><div class="card ops-stat"><span>Approved Payments</span><strong>${records.filter((item) => item.status === 'verified').length}</strong></div><div class="card ops-stat"><span>Approved Total</span><strong>${rupees(records.filter((item) => item.status === 'verified').reduce((sum, item) => sum + (item.type === 'bulk' ? item.row.approvedPaise ?? item.amount : item.amount), 0))}</strong></div>`;
     const { search = '', user: selectedUser = '', customer = '', mode = '', type = '', status = '', from = '', to = '' } = appliedFilters;
     const rows = records.filter((item) => (!type || item.type === type) && (!selectedUser || item.ownerUid === selectedUser) && (!mode || item.modes.includes(mode)) && (!status || item.status === status) && (!from || item.day >= from) && (!to || item.day <= to) && (!search || `${item.reference} ${item.row.invoiceNumber || ''} ${item.row.collectionNumber || ''}`.toLowerCase().includes(search.toLowerCase())) && (!customer || item.customer.toLowerCase().includes(customer.toLowerCase()))).sort((a, b) => b.at - a.at);
+    const stats = paymentStatusStats(rows, invoices, appliedFilters);
+    const statCard = (label, value, share, base) => `<div class="card ops-stat payment-summary-stat"><span>${label}</span><strong>${rupees(value)}</strong><small>${share.toLocaleString('en-IN', { maximumFractionDigits: 1 })}% of ${base}</small><div class="payment-summary-track" role="progressbar" aria-label="${label} percentage of ${base}" aria-valuenow="${share.toFixed(1)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${Math.min(100, share)}%"></span></div></div>`;
+    $('collection-cards').innerHTML = statCard('Total Payments', stats.totalPayments, stats.totalPaymentsPercent, 'total payment amount') + statCard('Pending Payments', stats.pendingPayments, stats.pendingPaymentsPercent, 'total payment amount') + statCard('Approved Payments', stats.approvedPayments, stats.approvedPaymentsPercent, 'total payment amount') + statCard('Pending Collection', stats.pendingCollection, stats.pendingCollectionPercent, 'total collection amount') + statCard('Cash Collection', stats.cashCollection, stats.cashCollectionPercent, 'total collection amount') + statCard('Online Collection', stats.onlineCollection, stats.onlineCollectionPercent, 'total collection amount');
     exportedRows = rows;
     const actions = (item) => `<button type="button" data-${item.type === 'bulk' ? 'collection' : 'single'}-view="${esc(item.row.id)}">View</button>${hasPermission(profile, 'verifyPayments') && item.status === 'pending' ? `<button type="button" data-${item.type === 'bulk' ? 'collection' : 'single'}-approve="${esc(item.row.id)}">Approve</button><button type="button" data-${item.type === 'bulk' ? 'collection' : 'single'}-reject="${esc(item.row.id)}">Reject</button>` : ''}`;
     $('collection-list').innerHTML = rows.length ? `<div class="table-scroll mobile-table"><table><thead><tr><th>Reference</th><th>Type</th><th>Customer / Customers</th><th>Amount</th><th>Method</th><th>Status</th><th>Date</th><th>Actions</th></tr></thead><tbody>${rows.map((item) => `<tr><td><strong>${esc(item.reference)}</strong></td><td>${item.type === 'bulk' ? 'Bulk Payment' : 'Single Payment'}</td><td>${esc(item.type === 'bulk' ? `${item.row.customerCount || 0} customers` : item.customer)}<small>${esc(item.collector)}</small></td><td class="payment-amount">${rupees(item.amount)}</td><td>${esc(item.method)}</td><td><span class="payment-record-status is-${esc(item.status)}">${esc(statusName(item.status))}</span></td><td>${esc(item.day)}</td><td class="ops-actions">${actions(item)}</td></tr>`).join('')}</tbody></table></div><div class="mobile-record-list">${rows.map((item) => `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${esc(item.reference)}</strong><span class="mobile-status">${esc(statusName(item.status))}</span></div><p>${item.type === 'bulk' ? 'Bulk Payment' : 'Single Payment'} · ${esc(item.customer)}<small>${esc(item.day)} · ${esc(item.collector)} · ${esc(item.method)}</small></p><div class="mobile-record-bottom"><b>${rupees(item.amount)}</b><div class="mobile-record-actions">${actions(item)}</div></div></article>`).join('')}</div>` : `<div class="payment-empty-state"><div class="payment-empty-icon" aria-hidden="true">₹</div><h4>No payment records found</h4><p>${records.length ? 'Try adjusting the current filters.' : 'Create a payment or bulk payment to see records here.'}</p>${records.length ? '' : '<div><button type="button" data-empty-create class="button button-primary">＋ Create Payment</button><button type="button" data-empty-bulk class="button button-outline">▦ Create Bulk Payment</button></div>'}</div>`;
@@ -99,8 +104,7 @@ export function initCollectionsUi({ db, functions }) {
     });
   }
   function visibleDraftInvoices() {
-    const { owner, number, customer, status } = draft.filters;
-    return invoices.filter((row) => invoiceAvailable(row) && (!owner || row.ownerUid === owner) && (!number || String(row.invoiceNumber || '').toLowerCase().includes(number.toLowerCase())) && (!customer || String(row.customerSnapshot?.fullName || '').toLowerCase().includes(customer.toLowerCase())) && (!status || (status === 'partial' ? row.verifiedPaidPaise > 0 : row.verifiedPaidPaise === 0)));
+    return visibleBulkInvoices(invoices, draft.filters, invoiceAvailable);
   }
   function renderDraft() {
     if (!draft) return;
@@ -113,7 +117,7 @@ export function initCollectionsUi({ db, functions }) {
     $('collection-add-entry').onclick = () => { if (draft.entries.length >= 20) return; draft.entries.push({ mode: 'cash', transactionNumber: '', file: null, url: null, uploaded: null, amountPaise: 0, amountRaw: '0.00', manualAmount: false }); changed(); renderDraft(); };
     $('collection-remarks').oninput = (event) => { draft.remarks = event.target.value; changed(); };
     $('collection-submit').onclick = submit;
-    root.querySelectorAll('[data-bulk-filter]').forEach((node) => { node.oninput = (event) => { draft.filters[node.dataset.bulkFilter] = event.target.value; const position = node.selectionStart; renderDraft(); const next = root.querySelector(`[data-bulk-filter="${node.dataset.bulkFilter}"]`); next?.focus(); if (position !== null && next?.setSelectionRange) next.setSelectionRange(position, position); }; });
+    root.querySelectorAll('[data-bulk-filter]').forEach((node) => { node.oninput = (event) => { draft.filters[node.dataset.bulkFilter] = event.target.value; if (node.dataset.bulkFilter === 'owner' && event.target.value) { for (const id of draft.allocations.keys()) if (invoices.find((invoice) => invoice.id === id)?.assignedUserId !== event.target.value) draft.allocations.delete(id); syncEntryAmounts(); } const position = node.selectionStart; renderDraft(); const next = root.querySelector(`[data-bulk-filter="${node.dataset.bulkFilter}"]`); next?.focus(); if (position !== null && next?.setSelectionRange) next.setSelectionRange(position, position); }; });
   }
   function changed() {
     if (draft.entries.some((entry) => entry.uploaded)) { draft.operationId = uniqueId(); draft.entries.forEach((entry) => { entry.uploaded = null; }); }
@@ -138,15 +142,16 @@ export function initCollectionsUi({ db, functions }) {
     if (!currentDraft || currentDraft.invoiceLoading) return;
     currentDraft.invoiceLoading = true; currentDraft.invoiceError = false; renderDraft();
     try {
-      const fresh = await listInvoices(db, own());
+      const [fresh, orderRows] = await Promise.all([listInvoices(db, own()), listOrders(db, isStaff(profile) ? null : user.uid)]);
       if (draft !== currentDraft) return;
-      invoices = fresh;
+      const ordersById = new Map(orderRows.map((order) => [order.id, order]));
+      invoices = fresh.map((invoice) => ({ ...invoice, assignedUserId: assignedInvoiceUser(invoice, ordersById) }));
       ownerNames = new Map([[user.uid, profile?.fullName || profile?.displayName || user.uid]]);
       if (isStaff(profile)) {
         try { const snap = await getDocs(collection(db, 'users')); if (draft !== currentDraft) return; for (const row of snap.docs) ownerNames.set(row.id, row.data().fullName || row.data().displayName || row.id); }
         catch (error) { console.warn('Bulk payment user names unavailable', { code: error.code || 'unknown' }); }
       }
-      for (const [id] of currentDraft.allocations) if (!fresh.some((invoice) => invoice.id === id && invoiceAvailable(invoice))) currentDraft.allocations.delete(id);
+      for (const [id] of currentDraft.allocations) if (!invoices.some((invoice) => invoice.id === id && invoiceAvailable(invoice) && (!currentDraft.filters.owner || invoice.assignedUserId === currentDraft.filters.owner))) currentDraft.allocations.delete(id);
       syncEntryAmounts();
       console.info('Bulk payment invoice availability', { invoiceCount: fresh.length, eligibleCount: fresh.filter(invoiceAvailable).length });
     } catch (error) {

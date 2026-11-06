@@ -164,7 +164,7 @@ export function validateDistinctOrderLines(lines) {
   }
 }
 
-async function buildLines(db, tx, inputs, user) {
+async function buildLines(db, tx, inputs, user, previousLines = []) {
   const refs = inputs.map((line) => db.doc(`${line.kind === 'item' ? 'items' : 'specialProducts'}/${line.productId}`));
   const snaps = await Promise.all(refs.map((ref) => tx.get(ref)));
   const unitSnaps = await Promise.all(snaps.map((snap, index) => inputs[index].kind === 'item' && snap.exists ? tx.get(db.doc(`units/${snap.data().defaultUnitId}`)) : null));
@@ -179,11 +179,14 @@ async function buildLines(db, tx, inputs, user) {
       if (line.unitId && !selectedLabel) fail('Choose an active order unit.');
       if (selectedLabel === '250 GM' && user.role !== 'admin') fail('Only Admin may select 250 GM.');
       const item = snap.data();
-      if (item.name?.trim().toLocaleLowerCase() === 'gift packing' && selectedLabel !== 'PCS') fail('Gift Packing must use PCS.');
+      const historicalLine = item.name?.trim().toLocaleLowerCase() === 'gift packing' && (selectedLabel === 'KG' || !line.unitId) ? previousLines.find((old) => old.kind === 'item' && old.productId === line.productId && (old.orderUnitName || old.itemSnapshot?.unitSymbol || '').trim().toUpperCase() === 'KG' && (!old.orderUnitId || old.orderUnitId === line.unitId || !line.unitId)) : null;
+      if (item.name?.trim().toLocaleLowerCase() === 'gift packing' && selectedLabel !== 'PCS' && !historicalLine) fail('Gift Packing must use PCS.');
       if (item.name?.trim().toLocaleLowerCase() !== 'gift packing' && selectedLabel === 'PCS') fail('PCS is reserved for Gift Packing.');
       const configuredPrice = line.unitId === '500gm' ? item.sellingPrice500Gm : line.unitId === '250gm' ? item.sellingPrice250Gm : item.defaultSellingPrice;
       if (['500gm', '250gm'].includes(line.unitId) && configuredPrice === undefined) fail('This item has no price for the selected unit.');
-      const unitPricePaise = pricePaise(configuredPrice);
+      const unitPricePaise = historicalLine ? historicalLine.unitPricePaise : pricePaise(configuredPrice);
+      if (historicalLine && !money(unitPricePaise)) fail('Historical Gift Packing price is invalid.');
+      if (historicalLine) return { ...historicalLine, quantityQty: line.quantityQty, lineTotalPaise: saleTotal(line.quantityQty, unitPricePaise) };
       return { kind: 'item', productId: line.productId, quantityQty: line.quantityQty, ...(line.unitId ? { orderUnitId: line.unitId, orderUnitName: selectedLabel } : {}), unitPricePaise, lineTotalPaise: saleTotal(line.quantityQty, unitPricePaise), itemSnapshot: { ...itemSnapshot(item, unitSnaps[index].data()), ...(item.name?.trim().toLocaleLowerCase() === 'gift packing' ? { unitSymbol: 'PCS' } : {}) } };
     }
     if (!Array.isArray(snap.data().components) || snap.data().components.length < 2 || snap.data().components.length > 4 || !money(snap.data().finalPricePaise)) fail('Special product recipe or price is invalid.');
@@ -234,7 +237,8 @@ export async function saveOrderDraft(db, uid, input) {
     if (old.exists) {
       editableOrder(old.data(), user);
       var linkedInvoice = await financialLock(db, tx, orderId, user);
-      if (!(await tx.get(db.collection('deliveries').where('orderId', '==', orderId).limit(1))).empty) fail('An order with delivery history cannot be edited.');
+      const deliveryHistory = await tx.get(db.collection('deliveries').where('orderId', '==', orderId));
+      if (deliveryHistory.docs.some((entry) => entry.data().status !== 'rolled_back' && !entry.data().rolledBackAt)) fail('An order with active deliveries cannot be edited.');
       if (old.data().status === 'confirmed' && user.role !== 'admin') fail('Only Admin may edit a confirmed order.');
     }
     if (old.exists && newCustomer) fail('New customer must be selected when the order is created.');
@@ -250,7 +254,7 @@ export async function saveOrderDraft(db, uid, input) {
     if (!newCustomer && !customer.exists) fail('Customer no longer exists.');
     if (old.exists && old.data().customerId !== customerId) fail('Customer cannot be changed after the order is created.');
     if (!newCustomer && !old.exists && !staffRole(user.role) && customer.data().assignedUserId !== uid) fail('Choose a customer assigned to your account.');
-    const lines = await buildLines(db, tx, input.lines, user);
+    const lines = await buildLines(db, tx, input.lines, user, old.exists ? old.data().lines || [] : []);
     validateDistinctOrderLines(lines);
     const subtotal = lines.reduce((sum, line) => sum + line.lineTotalPaise, 0);
     if (!Number.isSafeInteger(subtotal) || subtotal > 1_000_000_000_000) fail('Order total is too large.');
@@ -327,7 +331,7 @@ export async function saveOrderDraft(db, uid, input) {
       const invoice = linkedInvoice.data();
       const paid = invoice.verifiedPaidPaise || 0;
       const paymentStatus = paid > subtotal ? 'overpaid' : paid === subtotal ? invoice.paymentStatus === 'paid' ? 'paid' : 'ready_to_mark_paid' : paid > 0 ? 'partial' : 'unpaid';
-      tx.update(linkedInvoice.ref, { lines, subtotal, totalPaise: subtotal, customerSnapshot: customerSnapshot(customerData), paymentStatus, balancePaise: subtotal - paid, revisedAt: FieldValue.serverTimestamp(), revisedBy: uid, editRevision: revision });
+      tx.update(linkedInvoice.ref, { lines, subtotal, totalPaise: subtotal, ...(!linkedInvoice.data().invoiceDetailsEdited ? { customerSnapshot: customerSnapshot(customerData) } : {}), paymentStatus, balancePaise: subtotal - paid, revisedAt: FieldValue.serverTimestamp(), revisedBy: uid, editRevision: revision });
       orderEvent(tx, db, 'invoice.order_revised', user, orderId, values, { invoiceNumber: invoice.invoiceNumber, totalPaise: { before: invoice.totalPaise, after: subtotal }, verifiedPaidPaise: paid, inventory: stockChanges.map(({ itemId, difference }) => ({ itemId, changeQty: difference })), ...orderChanges(old.data(), values) });
     }
     orderEvent(tx, db, old.exists ? 'order.edited' : 'order.created', user, orderId, values, { ...orderChanges(old.exists ? old.data() : null, values), ...(stockChanges.length ? { inventory: stockChanges.map(({ itemId, difference }) => ({ itemId, changeQty: difference })) } : {}) });
@@ -344,7 +348,7 @@ async function confirmDraftInTransaction(db, tx, uid, user, orderId, order) {
     if (!staffRole(user.role) && order.data().ownerUid !== uid) fail('You may confirm only your own order.');
     const original = order.data().lines;
     if (!Array.isArray(original) || original.length < 1 || original.length > 20) fail('Order lines are invalid.');
-    const fresh = await buildLines(db, tx, original.map((line) => ({ kind: line.kind, productId: line.productId, quantityQty: line.quantityQty, ...(line.orderUnitId ? { unitId: line.orderUnitId } : {}) })), user);
+    const fresh = await buildLines(db, tx, original.map((line) => ({ kind: line.kind, productId: line.productId, quantityQty: line.quantityQty, ...(line.orderUnitId ? { unitId: line.orderUnitId } : {}) })), user, original);
     const currentSubtotal = fresh.reduce((sum, line) => sum + line.lineTotalPaise, 0);
     if (currentSubtotal !== order.data().subtotal || fresh.some((line, index) => line.unitPricePaise !== original[index].unitPricePaise || line.kind === 'special' && JSON.stringify(line.specialSnapshot.components) !== JSON.stringify(original[index].specialSnapshot.components))) fail('Product price or recipe changed. Reopen and save the draft before confirmation.');
     const needed = requiredStock(original);
@@ -389,8 +393,10 @@ export async function cancelOrder(db, uid, orderId, reason) {
     const order = await tx.get(ref);
     if (!staffRole(user.role)) fail('Only staff may cancel orders.');
     if (!order.exists) fail('This order cannot be cancelled.');
-    if (['delivered', 'invoiced'].includes(order.data().status)) fail('Delivered or invoiced orders require a separate credit or return workflow.');
-    if (!['draft', 'confirmed', 'in_preparation', 'ready'].includes(order.data().status)) fail('This order cannot be cancelled.');
+    const deliveryHistory = await tx.get(db.collection('deliveries').where('orderId', '==', orderId));
+    if (deliveryHistory.docs.some((entry) => entry.data().status !== 'rolled_back' && !entry.data().rolledBackAt)) fail('An order with active deliveries cannot be cancelled.');
+    if (!['draft', 'confirmed', 'in_preparation', 'ready', 'delivered', 'invoiced'].includes(order.data().status)) fail('This order cannot be cancelled.');
+    if (order.data().status === 'delivered' && deliveryHistory.empty) fail('Delivery history needs review before cancellation.');
     if (user.role === 'user' && order.data().lines?.some((line) => line.kind === 'special')) fail('Assigned Users may view special orders but cannot change them.');
     const draft = order.data().status === 'draft';
     if (!staffRole(user.role) && (!draft || order.data().ownerUid !== uid)) fail('Only staff can cancel a confirmed order.');
@@ -398,7 +404,7 @@ export async function cancelOrder(db, uid, orderId, reason) {
     if (invoice.exists && invoice.data().status === 'cancelled') fail('This invoice is already cancelled.');
     if (!invoice.exists && (order.data().invoiceId || order.data().editLockedAt)) fail('Linked invoice needs review before cancellation.');
     const payments = await tx.get(db.collection('payments').where('orderId', '==', orderId));
-    if (payments.docs.some((entry) => entry.data().verificationStatus === 'unverified')) fail('Review pending payments before cancelling this order.');
+    if (!invoice.exists && !payments.empty) fail('Payment history needs review before cancellation.');
     const deductions = order.data().stockDeductions ?? [];
     const reservations = order.data().stockReservations ?? [];
     if (!Array.isArray(deductions) || !Array.isArray(reservations) || !draft && !deductions.length && !reservations.length || draft && deductions.length) fail('Order stock state needs review before cancellation.');
@@ -440,25 +446,28 @@ export async function cancelOrder(db, uid, orderId, reason) {
   });
 }
 
-export async function updateInvoiceCustomerName(db, uid, input) {
-  if (!validId(input?.invoiceId) || !text(input?.fullName, 120)) fail('Invoice and customer name are required.');
+export async function updateInvoiceDetails(db, uid, input) {
+  if (!validId(input?.invoiceId) || !text(input?.fullName, 120) || !text(input?.contact, 80)
+    || typeof input.area !== 'string' || input.area.trim().length > 100
+    || typeof input.address !== 'string' || input.address.trim().length > 300) fail('Enter valid invoice customer details.');
   return db.runTransaction(async (tx) => {
     const user = await actor(db, uid, tx);
-    if (user.role !== 'admin') fail('Only Admin may update an invoice customer name.');
+    if (user.role !== 'admin') fail('Only Admin may update invoice details.');
     const ref = db.doc(`invoices/${input.invoiceId}`);
     const invoice = await tx.get(ref);
     if (!invoice.exists || invoice.data().status === 'cancelled') fail('An active invoice is required.');
-    const before = invoice.data().customerSnapshot?.fullName || '';
-    const after = input.fullName.trim();
-    if (before === after) return { invoiceId: input.invoiceId, unchanged: true };
+    const before = invoice.data().customerSnapshot || {};
+    const after = Object.fromEntries(['fullName', 'contact', 'area', 'address'].map((key) => [key, input[key].trim()]));
+    const changedFields = Object.fromEntries(Object.keys(after).filter((key) => (before[key] || '') !== after[key]).map((key) => [key, { before: before[key] || '', after: after[key] }]));
+    if (!Object.keys(changedFields).length) return { invoiceId: input.invoiceId, unchanged: true };
     const order = await tx.get(db.doc(`orders/${invoice.data().orderId}`));
-    tx.update(ref, { 'customerSnapshot.fullName': after, revisedAt: FieldValue.serverTimestamp(), revisedBy: uid });
+    tx.update(ref, { customerSnapshot: { ...before, ...after }, invoiceDetailsEdited: true, revisedAt: FieldValue.serverTimestamp(), revisedBy: uid });
     if (order.exists) {
-      tx.update(order.ref, { 'customerSnapshot.fullName': after, updatedAt: FieldValue.serverTimestamp(), updatedBy: uid });
-      orderEvent(tx, db, 'invoice.customer_name_updated', user, order.id, order.data(), { invoiceNumber: invoice.data().invoiceNumber, customerName: { before, after } });
+      tx.update(order.ref, { customerSnapshot: { ...(order.data().customerSnapshot || {}), ...after }, updatedAt: FieldValue.serverTimestamp(), updatedBy: uid });
+      orderEvent(tx, db, 'invoice.details_updated', user, order.id, order.data(), { invoiceNumber: invoice.data().invoiceNumber, ...changedFields });
     }
-    tx.create(db.collection('auditLogs').doc(), { type: 'invoice.customer_name_updated', actorUid: uid, actorName: user.name, referenceType: 'invoice', referenceId: input.invoiceId, orderNumber: invoice.data().orderNumber, invoiceNumber: invoice.data().invoiceNumber, customerId: invoice.data().customerId, customerName: after, detail: { oldName: before, newName: after }, outcome: 'success', at: FieldValue.serverTimestamp() });
-    return { invoiceId: input.invoiceId, fullName: after };
+    tx.create(db.collection('auditLogs').doc(), { type: 'invoice.details_updated', actorUid: uid, actorName: user.name, ownerUid: invoice.data().ownerUid, referenceType: 'invoice', referenceId: input.invoiceId, orderNumber: invoice.data().orderNumber, invoiceNumber: invoice.data().invoiceNumber, customerId: invoice.data().customerId, customerName: after.fullName, detail: { changedFields }, outcome: 'success', at: FieldValue.serverTimestamp() });
+    return { invoiceId: input.invoiceId, customerSnapshot: after };
   });
 }
 

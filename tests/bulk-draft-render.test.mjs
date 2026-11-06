@@ -4,10 +4,10 @@ import { bulkDraftHtml } from '../js/bulk-draft-render.js';
 import { eligibleCollectionInvoice } from '../js/collection-eligibility.js';
 
 const invoices = [
-  { id: 'a', invoiceNumber: 'INV-101', customerId: 'c1', customerSnapshot: { fullName: 'Alice' }, ownerUid: 'u1', totalPaise: 10000, verifiedPaidPaise: 0, paymentStatus: 'unpaid' },
-  { id: 'b', invoiceNumber: 'INV-102', customerId: 'c1', customerSnapshot: { fullName: 'Alice' }, ownerUid: 'u1', totalPaise: 9000, verifiedPaidPaise: 4000, paymentStatus: 'partial' },
-  { id: 'c', invoiceNumber: 'INV-201', customerId: 'c2', customerSnapshot: { fullName: 'Bob' }, ownerUid: 'u2', totalPaise: 7000, verifiedPaidPaise: 0, paymentStatus: 'unpaid' },
-  { id: 'd', invoiceNumber: 'INV-202', customerId: 'c2', customerSnapshot: { fullName: 'Bob' }, ownerUid: 'u2', totalPaise: 7000, verifiedPaidPaise: 7000, paymentStatus: 'paid' },
+  { id: 'a', invoiceNumber: 'INV-101', customerId: 'c1', customerSnapshot: { fullName: 'Alice' }, ownerUid: 'u1', assignedUserId: 'u1', totalPaise: 10000, verifiedPaidPaise: 0, paymentStatus: 'unpaid' },
+  { id: 'b', invoiceNumber: 'INV-102', customerId: 'c1', customerSnapshot: { fullName: 'Alice' }, ownerUid: 'u1', assignedUserId: 'u1', totalPaise: 9000, verifiedPaidPaise: 4000, paymentStatus: 'partial' },
+  { id: 'c', invoiceNumber: 'INV-201', customerId: 'c2', customerSnapshot: { fullName: 'Bob' }, ownerUid: 'u2', assignedUserId: 'u2', totalPaise: 7000, verifiedPaidPaise: 0, paymentStatus: 'unpaid' },
+  { id: 'd', invoiceNumber: 'INV-202', customerId: 'c2', customerSnapshot: { fullName: 'Bob' }, ownerUid: 'u2', assignedUserId: 'u2', totalPaise: 7000, verifiedPaidPaise: 7000, paymentStatus: 'paid' },
 ];
 const base = () => ({ allocations: new Map(), filters: { owner: '', number: '', customer: '', status: '' }, entries: [{ mode: 'cash', amountPaise: 0, amountRaw: '0.00', transactionNumber: '', file: null }], remarks: '', invoiceLoading: false, invoiceError: false });
 const html = (draft) => bulkDraftHtml({ draft, invoices, names: new Map([['u1', 'Worker One'], ['u2', 'Worker Two']]), eligible: eligibleCollectionInvoice, reference: 'COL-TEST', collectionDate: '2026-10-31', collectedBy: 'Worker One' });

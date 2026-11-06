@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deliveryStatistics } from '../js/delivery-stats.js';
+import { deliveryStatistics, assignedDeliveryWorkload, deliveryOrderState } from '../js/delivery-stats.js';
 
 const item = (quantityQty, unit = 'KG') => ({ kind: 'item', quantityQty, orderUnitName: unit, itemSnapshot: { unitSymbol: 'KG' } });
 const order = (id, lines, status = 'confirmed') => ({ id, status, lines });
@@ -40,4 +40,38 @@ test('updated delivery quantities change totals without double counting', () => 
   assert.equal(deliveryStatistics(orders, [delivery('a', [250])]).pendingKg, 0.75);
   assert.equal(deliveryStatistics(orders, [delivery('a', [750])]).pendingKg, 0.25);
   assert.equal(deliveryStatistics(orders, [delivery('a', [1000]), delivery('a', [1000])]).deliveredKg, 1);
+});
+
+test('assigned workload uses current assignee, aggregates partial records and excludes cancelled orders', () => {
+  const orders = [
+    { ...order('a', [item(2000)]), assignedUserId: 'u1', assignedUserName: 'Mukesh' },
+    { ...order('b', [item(1000)]), assignedUserId: 'u1', assignedUserName: 'Mukesh', ownerUid: 'another' },
+    { ...order('c', [item(1000)], 'cancelled'), assignedUserId: 'u1' },
+    { ...order('d', [item(1000)]), assignedUserId: 'u2', assignedUserName: 'Hiren' },
+  ];
+  const result = assignedDeliveryWorkload(orders, [delivery('a', [500]), delivery('a', [500]), delivery('b', [1000]), delivery('d', [1000])]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].userId, 'u1');
+  assert.equal(result[0].pendingOrders, 1);
+  assert.equal(result[0].pendingKg, 1);
+  assert.equal(result[0].deliveredOrders, 1);
+  assert.equal(result[0].deliveredKg, 2);
+  assert.equal(result[0].progress.toFixed(2), '66.67');
+});
+
+test('rolled-back delivery quantities restore pending workload without deleting history', () => {
+  const assigned = { ...order('a', [item(2000)]), assignedUserId: 'u1', assignedUserName: 'Mukesh' };
+  const first = delivery('a', [1000]);
+  const second = delivery('a', [1000]);
+  assert.equal(deliveryOrderState(assigned, [first, second]), 'delivered');
+  second.status = 'rolled_back';
+  const stats = deliveryStatistics([assigned], [first, second]);
+  assert.equal(stats.deliveredKg, 1);
+  assert.equal(stats.pendingKg, 1);
+  assert.equal(stats.pendingOrders, 1);
+  assert.equal(deliveryOrderState(assigned, [first, second]), 'partial');
+  assert.equal(assignedDeliveryWorkload([assigned], [first, second])[0].pendingKg, 1);
+  first.rolledBackAt = { seconds: 1 };
+  assert.equal(deliveryOrderState(assigned, [first, second]), 'pending');
+  assert.equal(deliveryStatistics([assigned], [first, second]).pendingKg, 2);
 });

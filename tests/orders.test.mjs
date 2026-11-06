@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { saveCustomer, saveSpecialProduct, saveOrderDraft, confirmOrder, cancelOrder, advanceOrder, setOrderTaking, createInvoiceFromOrder, archiveOrder, restoreOrder, requestOrderPayment } from '../functions/order-operations.js';
 import { getOrderStock, listOrderActivity } from '../functions/order-reads.js';
 import { setInventoryControl } from '../functions/operations.js';
-import { createDelivery } from '../functions/delivery-operations.js';
+import { createDelivery, rollbackDelivery } from '../functions/delivery-operations.js';
 
 const require = createRequire(new URL('../functions/package.json', import.meta.url));
 const { initializeApp, deleteApp } = require('firebase-admin/app');
@@ -70,6 +70,36 @@ test('fixed unit prices are selected on the server and 250 GM is Admin only', as
   }
   await db.doc('items/itemA').update({ sellingPrice500Gm: null });
   await assert.rejects(saveOrderDraft(db, 'adminA', regularOrder(customerId, { lines: line('500gm') })), /Item selling price/);
+});
+
+test('historical KG Gift Packing remains editable while new Gift Packing uses PCS', async () => {
+  await db.doc('units/pcs').set({ name: 'Pieces', symbol: 'PCS', active: true });
+  await db.doc('items/packing').set({ itemCode: 'P001', name: 'Gift Packing', defaultUnitId: 'pcs', defaultSellingPrice: 20, active: true });
+  await db.doc('inventory/packing').set({ onHandQty: 10000, reservedQty: 0, sellingBlocked: false, lowStockThresholdQty: 0 });
+  const { customerId } = await saveCustomer(db, 'adminA', { ...customer, assignedUserId: 'userA' });
+  const packing = (quantityQty, unitId = 'kg') => ({ kind: 'item', productId: 'packing', quantityQty, unitId });
+  await assert.rejects(saveOrderDraft(db, 'adminA', regularOrder(customerId, { lines: [packing(1000)] })), /Gift Packing must use PCS/);
+  const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId, { lines: [packing(2000, 'pcs'), { kind: 'item', productId: 'itemA', quantityQty: 1000 }] }));
+  const ref = db.doc(`orders/${orderId}`);
+  const original = (await ref.get()).data();
+  const historical = { ...original.lines[0], orderUnitId: 'kg', orderUnitName: 'KG', unitPricePaise: 1700, lineTotalPaise: 3400, itemSnapshot: { ...original.lines[0].itemSnapshot, unitSymbol: 'KG' } };
+  await ref.update({ lines: [historical, original.lines[1]], subtotal: 13400, grandTotal: 13400 });
+  const edit = (lines, notes = '') => saveOrderDraft(db, 'adminA', regularOrder(customerId, { orderId, notes, lines }));
+  await edit([packing(2000), { kind: 'item', productId: 'itemA', quantityQty: 1000 }], 'Customer detail changed');
+  let saved = (await ref.get()).data();
+  assert.deepEqual(saved.lines[0], historical);
+  await edit([packing(2000), { kind: 'item', productId: 'itemA', quantityQty: 2000 }]);
+  saved = (await ref.get()).data();
+  assert.equal(saved.lines[0].orderUnitName, 'KG');
+  assert.equal(saved.lines[0].quantityQty, 2000);
+  await edit([packing(3000), { kind: 'item', productId: 'itemA', quantityQty: 2000 }]);
+  saved = (await ref.get()).data();
+  assert.equal(saved.lines[0].lineTotalPaise, 5100);
+  assert.equal(saved.stockDeductions.find((part) => part.itemId === 'packing').quantityQty, 3000);
+  await edit([{ kind: 'item', productId: 'itemA', quantityQty: 2000 }]);
+  await assert.rejects(edit([packing(1000), { kind: 'item', productId: 'itemA', quantityQty: 2000 }]), /Gift Packing must use PCS/);
+  await edit([packing(1000, 'pcs'), { kind: 'item', productId: 'itemA', quantityQty: 2000 }]);
+  assert.equal((await ref.get()).data().lines[0].orderUnitName, 'PCS');
 });
 
 test('same item can be ordered in different units while matching units remain duplicates', async () => {
@@ -328,6 +358,85 @@ test('delivery records partial and complete quantities without overdelivery or d
   await assert.rejects(createDelivery(db, 'adminA', { orderId, submissionId: 'deliverythird1', lines: [{ deliveredQty: 1 }], remarks: '' }), /confirmed or invoiced order/);
   await createInvoiceFromOrder(db, 'adminA', orderId);
   assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, 'invoiced');
+});
+
+test('rollback reverses one delivery atomically, preserves history and leaves stock unchanged', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  const stockBefore = (await db.doc('inventory/itemA').get()).data().onHandQty;
+  await createDelivery(db, 'adminA', { orderId, submissionId: 'rollbackfirst1', lines: [{ deliveredQty: 1000 }], remarks: '' });
+  await createDelivery(db, 'adminA', { orderId, submissionId: 'rollbacksecond1', lines: [{ deliveredQty: 1000 }], remarks: '' });
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, 'delivered');
+  await assert.rejects(rollbackDelivery(db, 'adminA', { deliveryId: 'rollbacksecond1', reason: '' }), /reason/);
+  await assert.rejects(rollbackDelivery(db, 'userA', { deliveryId: 'rollbacksecond1', reason: 'Wrong entry' }), /Access denied/);
+  await assert.rejects(rollbackDelivery(db, 'accountA', { deliveryId: 'rollbacksecond1', reason: 'Wrong entry' }), /Access denied/);
+  await rollbackDelivery(db, 'adminA', { deliveryId: 'rollbacksecond1', reason: 'Wrong quantity' });
+  const second = (await db.doc('deliveries/rollbacksecond1').get()).data();
+  assert.equal(second.status, 'rolled_back');
+  assert.equal(second.lines[0].deliveredQty, 1000);
+  assert.equal(second.rollbackReason, 'Wrong quantity');
+  assert.equal(second.rolledBackByName, 'Admin');
+  assert.ok(second.rolledBackAt);
+  const partialOrder = (await db.doc(`orders/${orderId}`).get()).data();
+  assert.equal(partialOrder.status, 'confirmed');
+  assert.equal(partialOrder.deliveryCount, 1);
+  assert.equal(partialOrder.lastDeliveryId, 'rollbackfirst1');
+  await assert.rejects(rollbackDelivery(db, 'adminA', { deliveryId: 'rollbacksecond1', reason: 'Again' }), /already been rolled back/);
+  await assert.rejects(createDelivery(db, 'adminA', { orderId, submissionId: 'rollbacksecond1', lines: [{ deliveredQty: 1000 }], remarks: '' }), /rolled back/);
+  await rollbackDelivery(db, 'adminA', { deliveryId: 'rollbackfirst1', reason: 'Duplicate trip' });
+  const pendingOrder = (await db.doc(`orders/${orderId}`).get()).data();
+  assert.equal(pendingOrder.status, 'confirmed');
+  assert.equal(pendingOrder.deliveryCount, 0);
+  assert.equal(pendingOrder.lastDeliveryId, null);
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, stockBefore);
+  assert.equal((await db.collection('inventoryMovements').get()).size, 1);
+  await createDelivery(db, 'adminA', { orderId, submissionId: 'rollbackreplacement1', lines: [{ deliveredQty: 2000 }], remarks: '' });
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, 'delivered');
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().deliveryCount, 1);
+  const audit = await db.collection('auditLogs').where('type', '==', 'order.delivery_rolled_back').get();
+  assert.equal(audit.size, 2);
+  assert.equal(audit.docs[0].data().detail.deliveryId.startsWith('rollback'), true);
+});
+
+test('rollback of a partial delivery restores its exact remaining quantity', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  await createDelivery(db, 'adminA', { orderId, submissionId: 'partialrollback1', lines: [{ deliveredQty: 750 }], remarks: '' });
+  await rollbackDelivery(db, 'adminA', { deliveryId: 'partialrollback1', reason: 'Entered for wrong customer' });
+  await createDelivery(db, 'adminA', { orderId, submissionId: 'partialreplacement1', lines: [{ deliveredQty: 2000 }], remarks: '' });
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, 'delivered');
+});
+
+test('all rolled back deliveries permit atomic edit and cancellation while active delivery blocks both', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  await createDelivery(db, 'adminA', { orderId, submissionId: 'lifecyclepartial1', lines: [{ deliveredQty: 1000 }], remarks: '' });
+  await assert.rejects(saveOrderDraft(db, 'adminA', regularOrder(customerId, { orderId, lines: [{ kind: 'item', productId: 'itemA', quantityQty: 3000 }] })), /active deliveries/);
+  await assert.rejects(cancelOrder(db, 'adminA', orderId, 'Customer request'), /active deliveries/);
+  await rollbackDelivery(db, 'adminA', { deliveryId: 'lifecyclepartial1', reason: 'Wrong dispatch' });
+  await saveOrderDraft(db, 'adminA', regularOrder(customerId, { orderId, lines: [{ kind: 'item', productId: 'itemA', quantityQty: 3000 }] }));
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 2000);
+  assert.equal((await db.doc('deliveries/lifecyclepartial1').get()).data().status, 'rolled_back');
+  await cancelOrder(db, 'adminA', orderId, 'Customer request');
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 5000);
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, 'cancelled');
+  await assert.rejects(cancelOrder(db, 'adminA', orderId, 'Again'), /cannot be cancelled/);
+});
+
+test('invoiced order after rollback cancels while preserving approved payment history', async () => {
+  const { customerId } = await saveCustomer(db, 'adminA', customer);
+  const { orderId } = await saveOrderDraft(db, 'adminA', regularOrder(customerId));
+  await createDelivery(db, 'adminA', { orderId, submissionId: 'invoicecanceltrip1', lines: [{ deliveredQty: 2000 }], remarks: '' });
+  await createInvoiceFromOrder(db, 'adminA', orderId);
+  await db.doc('payments/approved-history').set({ orderId, invoiceId: orderId, amountPaise: 10000, verificationStatus: 'verified' });
+  await assert.rejects(cancelOrder(db, 'adminA', orderId, 'Customer request'), /active deliveries/);
+  await rollbackDelivery(db, 'adminA', { deliveryId: 'invoicecanceltrip1', reason: 'Delivery reversed' });
+  await cancelOrder(db, 'adminA', orderId, 'Customer request');
+  assert.equal((await db.doc(`orders/${orderId}`).get()).data().status, 'cancelled');
+  assert.equal((await db.doc(`invoices/${orderId}`).get()).data().status, 'cancelled');
+  assert.equal((await db.doc('payments/approved-history').get()).data().amountPaise, 10000);
+  assert.equal((await db.doc('deliveries/invoicecanceltrip1').get()).data().status, 'rolled_back');
+  assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 5000);
 });
 
 test('cancellation restores once; delivered and invoiced orders cannot use ordinary cancellation', async () => {

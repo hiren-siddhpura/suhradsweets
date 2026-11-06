@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { saveCustomer, saveOrderDraft, createInvoiceFromOrder, updateInvoiceCustomerName, cancelOrder } from '../functions/order-operations.js';
+import { saveCustomer, saveOrderDraft, createInvoiceFromOrder, updateInvoiceDetails, cancelOrder } from '../functions/order-operations.js';
 
 const require = createRequire(new URL('../functions/package.json', import.meta.url));
 const { initializeApp, deleteApp } = require('firebase-admin/app');
@@ -39,14 +39,27 @@ test('invoiced revision adjusts only the difference, preserves invoice number, a
   let invoice = (await db.doc(`invoices/${orderId}`).get()).data();
   assert.equal(invoice.invoiceNumber, original.invoiceNumber);
   assert.equal(invoice.totalPaise, 30000);
-  await updateInvoiceCustomerName(db, 'adminA', { invoiceId: orderId, fullName: 'Asha New' });
-  await assert.rejects(updateInvoiceCustomerName(db, 'accountA', { invoiceId: orderId, fullName: 'Wrong' }), /Only Admin/);
+  await updateInvoiceDetails(db, 'adminA', { invoiceId: orderId, fullName: 'Asha New', contact: '9999999999', area: 'East', address: 'New Street' });
+  await assert.rejects(updateInvoiceDetails(db, 'accountA', { invoiceId: orderId, fullName: 'Wrong', contact: '9999999999', area: '', address: '' }), /Only Admin/);
+  await assert.rejects(updateInvoiceDetails(db, 'adminA', { invoiceId: orderId, fullName: '', contact: '9999999999', area: '', address: '' }), /valid invoice customer details/);
   invoice = (await db.doc(`invoices/${orderId}`).get()).data();
   assert.equal(invoice.customerSnapshot.fullName, 'Asha New');
+  assert.equal(invoice.customerSnapshot.contact, '9999999999');
+  assert.equal(invoice.customerSnapshot.area, 'East');
+  assert.equal(invoice.customerSnapshot.address, 'New Street');
   assert.equal((await db.doc(`customers/${customerId}`).get()).data().fullName, 'Asha');
+  assert.deepEqual((await db.doc(`orders/${orderId}`).get()).data().customerSnapshot, { fullName: 'Asha New', contact: '9999999999', area: 'East', address: 'New Street' });
+  await updateInvoiceDetails(db, 'adminA', { invoiceId: orderId, fullName: 'Asha New', contact: '8888888888', area: 'East', address: 'New Street' });
+  invoice = (await db.doc(`invoices/${orderId}`).get()).data();
+  assert.equal(invoice.customerSnapshot.contact, '8888888888');
+  assert.equal(invoice.customerSnapshot.fullName, 'Asha New');
+  assert.equal(invoice.customerSnapshot.area, 'East');
+  assert.equal(invoice.customerSnapshot.address, 'New Street');
+  assert.equal((await db.doc(`customers/${customerId}`).get()).data().contact, '9876543210');
   await db.doc(`invoices/${orderId}`).update({ verifiedPaidPaise: 20000, paymentStatus: 'partial' });
   await saveOrderDraft(db, 'adminA', { ...input(1000), orderId });
   invoice = (await db.doc(`invoices/${orderId}`).get()).data();
+  assert.equal(invoice.customerSnapshot.fullName, 'Asha New');
   assert.equal(invoice.paymentStatus, 'overpaid');
   assert.equal(invoice.balancePaise, -10000);
   assert.equal((await db.doc('inventory/itemA').get()).data().onHandQty, 9000);

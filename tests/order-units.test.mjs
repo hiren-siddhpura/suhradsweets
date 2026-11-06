@@ -18,6 +18,8 @@ test('order choices are fixed and item prices are independent', () => {
 test('historical lines keep their original unit label', () => {
   assert.equal(orderLineUnitLabel({ orderUnitName: '500 GM', itemSnapshot: { unitSymbol: 'kg' } }), '500 GM');
   assert.equal(orderLineUnitLabel({ itemSnapshot: { unitSymbol: 'kg' } }), 'kg');
+  assert.equal(orderLineUnitLabel({ orderUnitName: 'KG', itemSnapshot: { name: 'Gift Packing', unitSymbol: 'PCS' } }), 'KG');
+  assert.equal(orderLineUnitLabel({ itemSnapshot: { name: 'Gift Packing', unitSymbol: 'KG' } }), 'KG');
 });
 
 test('the same product may use different units but not the same resolved unit twice', () => {

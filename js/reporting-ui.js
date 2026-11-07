@@ -1,7 +1,7 @@
 import { hasPermission, isStaff } from './permissions.js';
 import { showToast } from './ui.js';
 import { callOperation } from './operations-data.js';
-import { activeAnnouncements, allReportRows, dashboardOrderKg, dashboardStockKg, dashboardTargetKg, recentActivity, reportPage, reportUsers, targetAchievement } from './reporting-data.js';
+import { activeAnnouncements, allReportRows, dashboardBusinessExtras, dashboardOrderKg, dashboardStockKg, dashboardTargetKg, recentActivity, reportPage, reportUsers, targetAchievement } from './reporting-data.js';
 import { targetPercentage } from './dashboard-metrics.js';
 import { downloadXlsx } from './xlsx-export.js';
 import { actionLabel, activityDate, changeSummary, references } from './activity-format.js';
@@ -95,6 +95,7 @@ export function initReportingUi({ db, functions }) {
     dashboardView.insertBefore(announcementsPanel, userOnly ? cards : $('dashboard-activity-panel'));
     announcementsPanel.classList.toggle('dashboard-announcements-user', userOnly);
     announcementsPanel.hidden = userOnly;
+    $('dashboard-business').hidden = userOnly;
     $('dashboard-activity-panel').hidden = userOnly;
     if (userOnly) {
       $('dashboard-announcements').replaceChildren();
@@ -123,7 +124,7 @@ export function initReportingUi({ db, functions }) {
       return;
     }
     const stockPromise = dashboardStockKg(db, profile.role);
-    const labels = ['Total Orders', 'Target Achievement', 'Available Stock', 'Total Selling'];
+    const labels = ['Total Orders', 'Target Achievement', 'Available Stock', 'Sales Volume'];
     const icons = ['◫', '%', '◇', '▤'];
     const kg = (amount) => Number(amount).toLocaleString('en-IN', { maximumFractionDigits: 3 });
     const dashboardCard = (label, content, index, hint = '') => `<div class="card stat-card dashboard-metric"><span class="stat-icon" aria-hidden="true">${icons[index]}</span><span class="stat-label">${esc(label)}</span>${content}<small>${esc(hint)}</small></div>`;
@@ -134,12 +135,24 @@ export function initReportingUi({ db, functions }) {
     try {
       const results = await Promise.allSettled([
         dashboardOrderKg(db, profile.role, user.uid), dashboardTargetKg(db),
-        stockPromise, recentActivity(db, profile.role, user.uid), activeAnnouncements(db, profile.role, day),
+        stockPromise, recentActivity(db, profile.role, user.uid), activeAnnouncements(db, profile.role, day), dashboardBusinessExtras(db),
       ]);
       if (version !== revision || run !== dashboardRun) return;
       const errors = [];
       const value = (result, fallback = null) => { if (result.status === 'fulfilled') return result.value; errors.push(result.reason); return fallback; };
-      const orders = value(results[0]), targetKg = value(results[1]), stock = value(results[2]), activity = value(results[3]), announcements = value(results[4]);
+      const orders = value(results[0]), targetKg = value(results[1]), stock = value(results[2]), activity = value(results[3]), announcements = value(results[4]), extras = value(results[5]);
+      const business = orders?.business;
+      const businessCard = (label, main, detail = '') => `<div class="card stat-card dashboard-metric"><span class="stat-label">${esc(label)}</span><strong>${esc(main)}</strong>${detail ? `<small>${esc(detail)}</small>` : ''}</div>`;
+      const best = business?.bestItem;
+      const quantity = best ? `${(best.quantityQty / 1000).toLocaleString('en-IN', { maximumFractionDigits: 3 })} ${best.unit || 'units'} sold` : 'No eligible sales';
+      $('dashboard-business-cards').innerHTML = [
+        businessCard('Total Orders', business ? business.orderCount.toLocaleString('en-IN') : 'Unavailable', 'Excludes cancelled orders'),
+        businessCard('Total Selling', business ? money(business.sellingPaise) : 'Unavailable', 'Confirmed order value'),
+        businessCard('Best Selling Item', best?.name || (business ? 'None yet' : 'Unavailable'), best ? `${quantity} · highest sales value` : ''),
+        businessCard('Total Purchase', extras ? money(extras.purchasePaise) : 'Unavailable', 'Paid on confirmed purchases'),
+        businessCard('Top Nimit Sevak', business?.topAssigned ? userName(business.topAssigned[0]) : business ? 'None yet' : 'Unavailable', business?.topAssigned ? `${money(business.topAssigned[1])} selling` : ''),
+        ...(extras?.topLogin ? [businessCard('Top User', userName(extras.topLogin[0]), `${extras.topLogin[1]} logins`)] : []),
+      ].join('');
       const percent = orders && targetKg !== null ? targetPercentage(orders.totalKg, targetKg) : null;
       const targetFailed = results[1].status === 'rejected';
       const range = staff() ? 'All orders' : 'Your orders';

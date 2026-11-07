@@ -38,6 +38,33 @@ export function targetPercentage(soldKg, targetKg) {
   return Number.isFinite(targetKg) && targetKg > 0 ? soldKg / targetKg * 100 : null;
 }
 
+export function summarizeBusinessOrders(orders) {
+  const eligible = new Set(['confirmed', 'in_preparation', 'ready', 'delivered', 'invoiced']);
+  const assigned = new Map(), products = new Map();
+  let orderCount = 0, sellingPaise = 0;
+  for (const order of orders) {
+    if (order.status === 'cancelled') continue;
+    orderCount++;
+    if (!eligible.has(order.status)) continue;
+    const amount = Number(order.grandTotal || 0);
+    sellingPaise += amount;
+    if (order.assignedUserId) assigned.set(order.assignedUserId, (assigned.get(order.assignedUserId) || 0) + amount);
+    for (const line of order.lines || []) {
+      if (!['item', 'special'].includes(line.kind)) continue;
+      const name = line.kind === 'special' ? line.specialSnapshot?.name : line.itemSnapshot?.name;
+      const unit = line.kind === 'special' ? 'combo' : line.orderUnitName || line.itemSnapshot?.unitSymbol || '';
+      const key = `${line.kind}:${line.productId}:${unit.toLowerCase()}`;
+      const previous = products.get(key) || { key, name: name || line.productId || 'Unknown item', unit, quantityQty: 0, salesPaise: 0 };
+      previous.quantityQty += Number(line.quantityQty || 0);
+      previous.salesPaise += Number(line.lineTotalPaise || 0);
+      products.set(key, previous);
+    }
+  }
+  const bestItem = [...products.values()].sort((a, b) => b.salesPaise - a.salesPaise || a.name.localeCompare(b.name) || a.key.localeCompare(b.key))[0] || null;
+  const topAssigned = [...assigned].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0] || null;
+  return { orderCount, sellingPaise, bestItem, topAssigned };
+}
+
 export function validateTargetKg(value) {
   const text = String(value ?? '').trim();
   if (!/^\d+(\.\d{1,3})?$/.test(text) || Number(text) > 1000000000) throw new Error('Enter a nonnegative target in KG with at most three decimal places.');

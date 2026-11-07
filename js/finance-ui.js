@@ -12,6 +12,7 @@ import { uniqueId } from './unique-id.js';
 import { paymentInvoiceSummary, paymentUpload } from './payment-form-ui.js';
 import { listMasterRecords } from './master-data.js';
 import { sortUsersByName } from './user-sort.js';
+import { listOrders, listCustomers } from './order-data.js';
 import { cardIcon, cardButton, cardMore } from './mobile-card.js';
 import { getStorage, ref as storageRef, uploadBytesResumable } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-storage.js';
 
@@ -30,7 +31,7 @@ async function exportRows(name, rows) {
 }
 
 export function initFinanceUi({ db, functions }) {
-  let user = null, profile = null, invoices = [], payments = [], paymentUsers = [], paymentsLoaded = false, revision = 0, action = '', target = '', resolvedNames = new Map(), paymentOperationId = '', paymentPage = 1;
+  let user = null, profile = null, invoices = [], payments = [], paymentUsers = [], invoiceCustomers = [], orderAssignees = new Map(), paymentsLoaded = false, revision = 0, action = '', target = '', resolvedNames = new Map(), paymentOperationId = '', paymentPage = 1;
   let appliedPaymentFilters = {};
   const paymentFilterIds = ['search', 'user', 'customer', 'mode', 'status', 'from', 'to', 'order', 'invoice', 'submitter', 'verifier'];
   const readPaymentFilters = () => Object.fromEntries(paymentFilterIds.map((field) => [field, String($(`payment-${field}`).value || '').trim()]));
@@ -65,15 +66,18 @@ export function initFinanceUi({ db, functions }) {
     : payments.some((payment) => payment.invoiceId === row.id && payment.verificationStatus === 'unverified') ? 'in_process' : row.paymentStatus;
   const statusLabel = (status) => ({ unpaid: 'Unpaid', partial: 'Partially Paid', in_process: 'In process', ready_to_mark_paid: 'Ready to mark paid', paid: 'Paid', overpaid: 'Overpaid / credit review', cancelled: 'Cancelled' })[status] || status || 'Unknown';
   const statusBadge = (status) => `<span class="status-badge is-${esc(String(status || 'unknown').replace(/_/g, '-'))}">${esc(statusLabel(status))}</span>`;
+  const invoiceAssignee = (row) => orderAssignees.get(row.orderId) || row.ownerUid;
   const matching = (kind) => {
     const rows = kind === 'invoice' ? invoices : payments;
     const filters = kind === 'payment' ? appliedPaymentFilters : null;
     const search = (filters?.search ?? $(`${kind}-search`).value).trim().toLowerCase(), status = filters?.status ?? $(`${kind}-status`).value, from = filters?.from ?? $(`${kind}-from`).value, to = filters?.to ?? $(`${kind}-to`).value;
     const extra = kind === 'payment' ? Object.fromEntries(['customer', 'order', 'invoice', 'mode', 'submitter', 'verifier'].map((field) => [field, String(filters?.[field] || '').toLowerCase()])) : {};
+    const invoiceUser = kind === 'invoice' ? $('invoice-user').value : '', invoiceCustomer = kind === 'invoice' ? $('invoice-customer').value : '';
     return rows.filter((row) => {
       const haystack = `${row.invoiceNumber} ${row.orderNumber} ${row.customerSnapshot?.fullName} ${row.customerSnapshot?.contact} ${row.transactionNumber || ''} ${kind === 'payment' ? `${customerName(row)} ${paymentName(row, 'submittedBy')} ${paymentName(row, 'verifiedBy')}` : ''}`.toLowerCase();
       const day = iso(kind === 'invoice' ? row.issuedAt : row.submittedAt);
       return (!search || haystack.includes(search)) && (!status || (kind === 'invoice' ? invoiceStatus(row) : row.reversalId ? 'reversed' : row.verificationStatus) === status) && (!from || day >= from) && (!to || day <= to)
+        && (kind !== 'invoice' || (!invoiceUser || invoiceAssignee(row) === invoiceUser) && (!invoiceCustomer || row.customerId === invoiceCustomer))
         && (kind !== 'payment' || (!filters?.user || row.ownerUid === filters.user)
           && (!extra.customer || `${customerName(row)} ${row.customerSnapshot?.contact || ''}`.toLowerCase().includes(extra.customer))
           && (!extra.order || String(row.orderNumber || '').toLowerCase().includes(extra.order))
@@ -146,12 +150,21 @@ export function initFinanceUi({ db, functions }) {
     const token = ['invoices', 'payments'].includes(activePage) ? globalThis.omsLoading?.start('Loading invoices and payments…') || null : null;
     recordLoadToken = token;
     try {
-    const [invoiceResult, paymentResult, usersResult] = await Promise.allSettled([listInvoices(db, owner), listPayments(db, owner), privileged() ? listMasterRecords(db, 'users') : Promise.resolve([{ id: user.uid, displayName: profile?.displayName || profile?.fullName || profile?.name || 'My payments' }])]);
+    const [invoiceResult, paymentResult, usersResult, customerResult, orderResult] = await Promise.allSettled([listInvoices(db, owner), listPayments(db, owner), privileged() ? listMasterRecords(db, 'users') : Promise.resolve([{ id: user.uid, displayName: profile?.displayName || profile?.fullName || profile?.name || 'My payments' }]), listCustomers(db, owner), listOrders(db, owner)]);
     if (current !== revision) return;
     invoices = invoiceResult.status === 'fulfilled' ? invoiceResult.value : [];
     payments = paymentResult.status === 'fulfilled' ? paymentResult.value : [];
     paymentsLoaded = paymentResult.status === 'fulfilled';
     paymentUsers = usersResult.status === 'fulfilled' ? sortUsersByName(usersResult.value.filter((row) => row.active !== false)) : [];
+    invoiceCustomers = customerResult.status === 'fulfilled' ? customerResult.value : [];
+    orderAssignees = new Map(orderResult.status === 'fulfilled' ? orderResult.value.map((row) => [row.id, row.assignedUserId || row.ownerUid]) : []);
+    const selectedInvoiceUser = $('invoice-user').value, selectedInvoiceCustomer = $('invoice-customer').value;
+    const assignableUsers = paymentUsers.filter((row) => ['admin', 'account_admin', 'user'].includes(row.role || 'user'));
+    $('invoice-user').innerHTML = `<option value="">All Users</option>${assignableUsers.map((row) => `<option value="${esc(row.id)}">${esc(row.displayName || row.fullName || row.name || row.email || row.id)}</option>`).join('')}`;
+    $('invoice-user').value = selectedInvoiceUser;
+    for (const row of invoices) if (row.customerId && !invoiceCustomers.some((customer) => customer.id === row.customerId)) invoiceCustomers.push({ id: row.customerId, fullName: row.customerSnapshot?.fullName || row.customerId });
+    $('invoice-customer').innerHTML = `<option value="">All Customers</option>${invoiceCustomers.sort((a, b) => String(a.fullName || '').localeCompare(String(b.fullName || ''))).map((row) => `<option value="${esc(row.id)}">${esc(row.fullName || row.name || row.id)}</option>`).join('')}`;
+    $('invoice-customer').value = selectedInvoiceCustomer;
     const selectedUser = $('payment-user').value;
     $('payment-user').innerHTML = `<option value="">All users</option>${paymentUsers.map((row) => `<option value="${esc(row.id)}">${esc(row.displayName || row.fullName || row.name || row.email || row.id)}</option>`).join('')}`;
     $('payment-user').value = selectedUser;
@@ -288,18 +301,19 @@ export function initFinanceUi({ db, functions }) {
       } finally { globalThis.omsLoading?.stop(reviewToken); pendingFinance.delete(key); }
     } catch (error) { showToast(message(error), 'toast-error'); }
   }
+  const invoiceToolbar = $('invoice-search').parentElement;
+  if (invoiceToolbar?.insertAdjacentHTML) {
+    $('invoice-status').insertAdjacentHTML('afterend', '<label class="invoice-filter-field">Assigned User<select id="invoice-user"><option value="">All Users</option></select></label><label class="invoice-filter-field">Customer<select id="invoice-customer"><option value="">All Customers</option></select></label>');
+    invoiceToolbar.insertAdjacentHTML('beforeend', '<button id="invoice-refresh" type="button" class="button button-outline">Refresh</button>');
+    $('invoice-refresh').onclick = refresh;
+  }
   ['invoice', 'payment'].forEach((kind) => {
-    if (kind === 'invoice') ['search', 'status', 'from', 'to'].forEach((field) => $(`${kind}-${field}`).addEventListener('input', renderInvoices));
+    if (kind === 'invoice') ['search', 'status', 'user', 'customer', 'from', 'to'].forEach((field) => $(`${kind}-${field}`).addEventListener('input', renderInvoices));
     else $('payment-search').addEventListener('input', () => { appliedPaymentFilters.search = $('payment-search').value.trim(); paymentPage = 1; renderPayments(); });
     $(`${kind}-body`).addEventListener('click', (event) => { const button = event.target.closest('[data-finance]'); if (button) act(button.dataset.finance, button.dataset.id); });
     $(`${kind}-mobile-list`).addEventListener('click', (event) => { const button = event.target.closest('[data-finance]'); if (button) act(button.dataset.finance, button.dataset.id); });
     $(`${kind}-export`).addEventListener('click', () => exportRows(kind === 'invoice' ? 'Invoices' : 'Payments', matching(kind).map((row) => kind === 'invoice' ? { Invoice: row.invoiceNumber, Order: row.orderNumber, Customer: row.customerSnapshot?.fullName, Date: date(row.issuedAt), Total: row.totalPaise / 100, Verified: row.verifiedPaidPaise / 100, Balance: (row.totalPaise - row.verifiedPaidPaise) / 100, Status: statusLabel(invoiceStatus(row)) } : { Submitted: date(row.submittedAt), Customer: customerName(row), Contact: row.customerSnapshot?.contact, Order: row.orderNumber, Invoice: row.invoiceNumber, Collection: row.collectionNumber || '', Amount: row.amountPaise / 100, Mode: row.mode, Reference: row.transactionNumber, SubmittedBy: paymentName(row, 'submittedBy'), Status: row.reversalId ? 'reversed' : row.verificationStatus, Verifier: paymentName(row, 'verifiedBy'), VerifiedAt: date(row.verifiedAt), Attachment: row.attachment?.path || '', AttachmentName: row.attachment?.name || '', RejectionReason: row.reviewReason || '' })));
   });
-  const invoiceToolbar = $('invoice-search').parentElement;
-  if (invoiceToolbar?.insertAdjacentHTML) {
-    invoiceToolbar.insertAdjacentHTML('beforeend', '<button id="invoice-refresh" type="button" class="button button-outline">Refresh</button>');
-    $('invoice-refresh').onclick = refresh;
-  }
   $('payment-body').closest?.('table')?.querySelector('thead tr th:last-child')?.insertAdjacentHTML('beforebegin', '<th>Verified at</th>');
   $('payment-apply').onclick = () => { appliedPaymentFilters = readPaymentFilters(); paymentPage = 1; renderPayments(); };
   $('payment-clear').onclick = () => { paymentFilterIds.forEach((field) => { $(`payment-${field}`).value = ''; }); appliedPaymentFilters = {}; paymentPage = 1; renderPayments(); };
@@ -457,5 +471,5 @@ export function initFinanceUi({ db, functions }) {
     } catch (error) { $('finance-error').textContent = message(error); $('finance-error').hidden = false; } finally { $('finance-save').disabled = false; $('finance-save').textContent = action === 'submit' ? 'Submit for Verification' : 'Save'; }
   });
   document.addEventListener('oms:pagechange', (event) => { if (!['invoices', 'payments'].includes(event.detail.page)) stopRecordLoad(); if (event.detail.page !== 'payments') stopActivityLoad(); if (['invoices', 'payments'].includes(event.detail.page)) refresh(); if (event.detail.page === 'payments') loadPaymentActivity(); });
-  return { setSession(nextUser, nextProfile) { revision++; activityRevision++; stopRecordLoad(); stopActivityLoad(); user = nextUser; profile = nextProfile; invoices = []; payments = []; paymentsLoaded = false; resolvedNames = new Map(); paymentPage = 1; activityRows = []; activityPage = 1; activityCursors = [null]; if (user && profile) refresh(); else { $('invoice-body').innerHTML = ''; $('payment-body').innerHTML = ''; renderPaymentActivity(); } } };
+  return { setSession(nextUser, nextProfile) { revision++; activityRevision++; stopRecordLoad(); stopActivityLoad(); user = nextUser; profile = nextProfile; invoices = []; payments = []; paymentUsers = []; invoiceCustomers = []; orderAssignees = new Map(); paymentsLoaded = false; resolvedNames = new Map(); paymentPage = 1; activityRows = []; activityPage = 1; activityCursors = [null]; $('invoice-user').value = ''; $('invoice-customer').value = ''; if (user && profile) refresh(); else { $('invoice-body').innerHTML = ''; $('payment-body').innerHTML = ''; renderPaymentActivity(); } } };
 }

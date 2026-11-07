@@ -15,6 +15,43 @@ test('purchase file validation accepts JPG/JPEG/PNG/PDF through 5 MB and rejects
   assert.throws(() => validateAttachmentFile({ name: 'bill.svg', type: 'image/svg+xml', size: 10 }), /JPG/);
 });
 
+test('purchase cards use confirmed entry count and paid amounts across filters', async () => {
+  const nodes = new Map();
+  const el = id => {
+    if (!nodes.has(id)) nodes.set(id, { value: '', innerHTML: '', textContent: '', listeners: {}, addEventListener(type, fn) { this.listeners[type] = fn; } });
+    return nodes.get(id);
+  };
+  const records = [
+    { id: 'cash', supplierName: 'A', purchaseDate: '2026-10-10', quantity: '2', unit: 'KG', status: 'confirmed', paymentMode: 'cash', paidAmountPaise: 4500000, totalPaise: 5000000 },
+    { id: 'upi', supplierName: 'B', purchaseDate: '2026-10-11', quantity: '4', unit: 'PCS', status: 'confirmed', paymentMode: 'upi', paidAmountPaise: 3000000, totalPaise: 3000000 },
+    { id: 'bank', supplierName: 'C', purchaseDate: '2026-10-12', status: 'confirmed', paymentMode: 'bank_transfer', paidAmountPaise: 5000000, totalPaise: 5000000 },
+    { id: 'draft', supplierName: 'D', purchaseDate: '2026-10-12', status: 'draft', paymentMode: 'cash', paidAmountPaise: 100000, totalPaise: 100000 },
+    { id: 'cancel', supplierName: 'E', purchaseDate: '2026-10-12', status: 'cancelled', paymentMode: 'upi', paidAmountPaise: 200000, totalPaise: 200000 },
+  ];
+  const context = { document: { getElementById: el, addEventListener() {}, querySelector: () => null }, isStaff: () => true, showToast() {}, listPurchases: async () => records, listMasterRecords: async () => [] };
+  const source = readFileSync(new URL('../js/operations-ui.js', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '').replace('export function initOperationsUi', 'function initOperationsUi');
+  vm.runInNewContext(`${source}\nthis.init = initOperationsUi;`, context);
+  context.init({ db: {}, functions: {} }).setSession({ uid: 'admin' }, { role: 'admin' });
+  await el('purchase-refresh').listeners.click();
+  const cards = () => el('purchase-cards').innerHTML;
+  assert.match(cards(), /Total Items Purchased<\/span><strong>3<\/strong>/);
+  assert.match(cards(), /Total Amount Used<\/span><strong>₹1,25,000<\/strong>/);
+  assert.match(cards(), /Cash Used: ₹45,000/);
+  assert.match(cards(), /Online Used: ₹80,000/);
+  el('purchase-payment-mode').value = 'cash'; el('purchase-payment-mode').listeners.input();
+  assert.match(cards(), /<strong>₹45,000<\/strong>/);
+  assert.match(cards(), /Online Used: ₹0/);
+  el('purchase-payment-mode').value = 'upi'; el('purchase-payment-mode').listeners.input();
+  assert.match(cards(), /<strong>₹30,000<\/strong>/);
+  assert.match(cards(), /Cash Used: ₹0/);
+  el('purchase-payment-mode').value = ''; el('purchase-from').value = '2026-10-11'; el('purchase-to').value = '2026-10-12'; el('purchase-from').listeners.input();
+  assert.match(cards(), /<strong>₹80,000<\/strong>/);
+  el('purchase-status').value = 'cancelled'; el('purchase-status').listeners.input();
+  assert.match(cards(), /<strong>₹0<\/strong>/);
+  el('purchase-search').value = 'missing'; el('purchase-search').listeners.input();
+  assert.match(cards(), /Total Items Purchased<\/span><strong>0<\/strong>/);
+});
+
 test('trusted purchase validation checks actual bytes, MIME, ownership and size', () => {
   const bytes = Buffer.alloc(5 * 1024 * 1024); bytes.write('%PDF-');
   const metadata = { size: bytes.length, contentType: 'application/pdf', metadata: { originalName: 'bill.pdf', ownerUid: 'staff', purchaseId: 'purchase' } };

@@ -1,5 +1,5 @@
 import { collection, count, doc, documentId, getAggregateFromServer, getCountFromServer, getDoc, getDocs, limit, orderBy, query, startAfter, sum, Timestamp, where } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
-import { DASHBOARD_TARGET_ID, quantityInKg, summarizeOrderKg, validateTargetKg } from './dashboard-metrics.js';
+import { DASHBOARD_TARGET_ID, quantityInKg, summarizeOrderKg, summarizeBusinessOrders, validateTargetKg } from './dashboard-metrics.js';
 import { sortUsersByName } from './user-sort.js';
 
 const row = (snap) => ({ id: snap.id, ...snap.data() });
@@ -22,7 +22,25 @@ export async function dashboardOrderKg(db, role, uid, from, to) {
     rows.push(...result.docs.map(row));
     cursor = result.docs.length === 100 ? result.docs.at(-1) : null;
   } while (cursor);
-  return summarizeOrderKg(rows);
+  return { ...summarizeOrderKg(rows), business: summarizeBusinessOrders(rows) };
+}
+
+export async function dashboardBusinessExtras(db) {
+  const [purchases, logins] = await Promise.all([
+    getDocs(collection(db, 'purchases')),
+    getDocs(query(collection(db, 'loginLogs'), where('type', '==', 'login'))),
+  ]);
+  const purchasePaise = purchases.docs.reduce((sum, entry) => {
+    const purchase = entry.data();
+    return sum + (purchase.status === 'confirmed' && ['cash', 'upi', 'bank_transfer'].includes(purchase.paymentMode) ? Number(purchase.paidAmountPaise || 0) : 0);
+  }, 0);
+  const counts = new Map();
+  for (const entry of logins.docs) {
+    const uid = entry.data().uid;
+    if (uid) counts.set(uid, (counts.get(uid) || 0) + 1);
+  }
+  const topLogin = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0] || null;
+  return { purchasePaise, topLogin };
 }
 
 export async function dashboardTargetKg(db) {

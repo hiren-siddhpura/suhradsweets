@@ -65,12 +65,18 @@ export function initOperationsUi({ db, functions }) {
     const search = byId('purchase-search').value.toLowerCase();
     return (!search || `${purchase.supplierName} ${purchase.purchaseTypeSnapshot} ${purchase.notes || ''} ${purchase.paymentReference || ''} ${purchase.quantity ?? ''} ${purchase.unit || ''}`.toLowerCase().includes(search))
       && (!byId('purchase-status').value || purchase.status === byId('purchase-status').value)
+      && (!byId('purchase-payment-mode').value || purchase.paymentMode === byId('purchase-payment-mode').value)
       && (!byId('purchase-from').value || purchase.purchaseDate >= byId('purchase-from').value)
       && (!byId('purchase-to').value || purchase.purchaseDate <= byId('purchase-to').value);
   }).sort((a, b) => b.purchaseDate.localeCompare(a.purchaseDate));
 
   function renderPurchases() {
     const data = filteredPurchases();
+    const confirmed = data.filter((p) => p.status === 'confirmed');
+    const cashPaise = confirmed.filter((p) => p.paymentMode === 'cash').reduce((sum, p) => sum + (p.paidAmountPaise || 0), 0);
+    const onlinePaise = confirmed.filter((p) => ['upi', 'bank_transfer'].includes(p.paymentMode)).reduce((sum, p) => sum + (p.paidAmountPaise || 0), 0);
+    const rupees = (paise) => `₹${(paise / 100).toLocaleString('en-IN', { minimumFractionDigits: paise % 100 ? 2 : 0, maximumFractionDigits: 2 })}`;
+    byId('purchase-cards').innerHTML = `<div class="card ops-stat"><span>Total Items Purchased</span><strong>${confirmed.length.toLocaleString('en-IN')}</strong><small>Confirmed purchase entries</small></div><div class="card ops-stat"><span>Total Amount Used</span><strong>${rupees(cashPaise + onlinePaise)}</strong><small class="purchase-payment-breakdown"><span>Cash Used: ${rupees(cashPaise)}</span><span>Online Used: ${rupees(onlinePaise)}</span></small></div>`;
     byId('purchase-summary').textContent = `${data.length} purchases · ${data.filter((p) => p.status === 'draft').length} drafts · ${data.filter((p) => p.status === 'confirmed').length} confirmed · ₹${(data.filter((p) => p.status === 'confirmed').reduce((sum, p) => sum + (p.totalPaise || 0), 0) / 100).toLocaleString('en-IN')}`;
     byId('purchase-body').innerHTML = data.length ? data.map((p) => `<tr><td>${escaped(p.purchaseDate)}</td><td>${escaped(p.supplierName)}${/^https:\/\/drive\.google\.com\/file\/d\/[A-Za-z0-9_-]{10,}\/view\/?$/.test(p.documentUrl || '') ? ` <a href="${escaped(p.documentUrl)}" target="_blank" rel="noopener noreferrer">Document</a>` : ''}</td><td>${escaped(p.purchaseTypeSnapshot)}</td><td>${p.quantity == null || p.quantity === '' ? 'Not recorded' : escaped(p.quantity)}</td><td>${p.unit ? escaped(p.unit) : 'Not recorded'}</td><td>${((p.totalPaise || 0) / 100).toLocaleString('en-IN')}</td><td>${escaped(p.paymentStatus || 'Not recorded')}</td><td>${escaped(p.status)}</td><td class="ops-actions">${p.attachment ? `<button type="button" data-op="receipt" data-id="${escaped(p.id)}">Attachment</button>` : ''}${p.status === 'draft' ? `<button type="button" data-op="edit" data-id="${escaped(p.id)}">Edit</button><button type="button" data-op="confirm" data-id="${escaped(p.id)}">Confirm</button>` : ''}${p.status !== 'cancelled' ? `<button type="button" data-op="cancel" data-id="${escaped(p.id)}">Cancel</button>` : ''}</td></tr>`).join('') : empty(9, 'No purchases match the filters.');
     byId('purchase-mobile-list').innerHTML = data.length ? data.map((p) => `<article class="mobile-record-card"><div class="mobile-record-top"><strong>${escaped(p.supplierName)}</strong><span class="mobile-status">${escaped(p.status)}</span></div><p>${escaped(p.purchaseDate)} · ${escaped(p.purchaseTypeSnapshot)}<small>${p.quantity == null || p.quantity === '' ? 'Quantity not recorded' : `${escaped(p.quantity)} ${escaped(p.unit || '')}`}</small></p><div class="mobile-record-bottom"><b>₹${((p.totalPaise || 0) / 100).toLocaleString('en-IN')}</b><div class="mobile-record-actions">${p.attachment ? `<button type="button" data-op="receipt" data-id="${escaped(p.id)}">Attachment</button>` : ''}${p.status === 'draft' ? `<button type="button" data-op="edit" data-id="${escaped(p.id)}">Edit</button><button type="button" data-op="confirm" data-id="${escaped(p.id)}">Confirm</button>` : ''}${p.status !== 'cancelled' ? `<button type="button" data-op="cancel" data-id="${escaped(p.id)}">Cancel</button>` : ''}</div></div></article>`).join('') : '<p class="mobile-record-empty">No purchases match the current filters.</p>';
@@ -234,7 +240,7 @@ export function initOperationsUi({ db, functions }) {
   byId('inventory-refresh').addEventListener('click', () => refresh('inventory'));
   byId('purchase-export').addEventListener('click', () => exportXlsx('purchases'));
   byId('inventory-export').addEventListener('click', () => exportXlsx('inventory'));
-  ['purchase-search', 'purchase-status', 'purchase-from', 'purchase-to'].forEach((id) => byId(id).addEventListener('input', renderPurchases));
+  ['purchase-search', 'purchase-status', 'purchase-payment-mode', 'purchase-from', 'purchase-to'].forEach((id) => byId(id).addEventListener('input', renderPurchases));
   ['inventory-search', 'inventory-item', 'inventory-status', 'inventory-history-search', 'inventory-from', 'inventory-to'].forEach((id) => byId(id).addEventListener('input', renderInventory));
   byId('purchase-body').addEventListener('click', async (event) => {
     const button = event.target.closest('[data-op]'); if (!button || button.disabled || !isStaff(profile) || ['adjust', 'block', 'unblock', 'threshold'].includes(button.dataset.op) && !hasPermission(profile, 'manageStock')) return;
@@ -273,7 +279,7 @@ export function initOperationsUi({ db, functions }) {
 
   return { setSession(nextUser, nextProfile) {
     sessionVersion++; for (const page of loadTokens.keys()) stopLoad(page); user = nextUser; profile = nextProfile; loadedPage = ''; purchases = []; stocks = []; movements = []; items = []; units = []; types = [];
-    ['purchase-body', 'purchase-mobile-list', 'purchase-summary', 'inventory-body', 'inventory-mobile-list', 'inventory-cards', 'movement-body', 'movement-summary'].forEach((id) => { byId(id).innerHTML = ''; });
+    ['purchase-body', 'purchase-mobile-list', 'purchase-summary', 'purchase-cards', 'inventory-body', 'inventory-mobile-list', 'inventory-cards', 'movement-body', 'movement-summary'].forEach((id) => { byId(id).innerHTML = ''; });
     if (profile && ['purchases', 'inventory'].includes(document.querySelector('[data-page].is-active')?.dataset.page)) refresh(document.querySelector('[data-page].is-active').dataset.page);
   } };
 }

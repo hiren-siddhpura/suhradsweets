@@ -19,7 +19,7 @@ async function viewFor(role, status = 'unverified') {
   const context = {
     cardIcon, cardButton, cardMore, sortUsersByName, isStaff, hasPermission,
     document: { getElementById: node, addEventListener() {}, createElement() { const dialog = { innerHTML: '', added: '', insertAdjacentHTML(_where, html) { this.added += html; }, querySelector() { return {}; }, querySelectorAll() { return []; }, showModal() {}, close() {}, remove() {} }; return dialog; }, body: { append(dialog) { dialogs.push(dialog); } } },
-    listInvoices: async () => [], listPayments: async () => [payment], listMasterRecords: async () => [], callOperation: async () => ({ payments: [] }), showToast() {},
+    listInvoices: async () => [], listPayments: async () => [payment], listMasterRecords: async () => [], listCustomers: async () => [], listOrders: async () => [], callOperation: async () => ({ payments: [] }), showToast() {},
   };
   vm.runInNewContext(`${source}\nthis.init = initFinanceUi;`, context);
   context.init({ db: {}, functions: {} }).setSession({ uid: 'userA' }, { role, active: true, fullName: 'Reviewer' });

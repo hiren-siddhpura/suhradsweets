@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { quantityInKg, summarizeOrderKg, targetPercentage, validateTargetKg } from '../js/dashboard-metrics.js';
+import { quantityInKg, summarizeBusinessOrders, summarizeOrderKg, targetPercentage, validateTargetKg } from '../js/dashboard-metrics.js';
 import { hasPermission } from '../js/permissions.js';
 
 test('report lists show the OMS loader instead of a loading records message', async () => {
@@ -42,8 +42,8 @@ test('a missing dashboard index preserves other cards without a visible warning 
     document: { getElementById: element, querySelector: () => null, addEventListener() {}, createElement: () => ({}) },
     isStaff: (profile) => profile?.role === 'admin', hasPermission, showToast() {}, callOperation() {}, downloadXlsx() {},
     reportUsers: async () => [], targetPercentage,
-    dashboardOrderKg: async () => ({ orderCount: 7, totalKg: 10, items: [{ name: 'Sweet', kg: 10 }], excludedQuantities: 0 }),
-    dashboardTargetKg: async () => { targetReads++; return 20; },
+    dashboardOrderKg: async () => ({ orderCount: 7, totalKg: 10, items: [{ name: 'Sweet', kg: 10 }], excludedQuantities: 0, business: { orderCount: 7, sellingPaise: 12500000, bestItem: { name: 'Sweet', quantityQty: 255500, unit: 'KG' }, topAssigned: ['u1', 8000000] } }),
+    dashboardTargetKg: async () => { targetReads++; return 20; }, dashboardBusinessExtras: async () => ({ purchasePaise: 4500000, topLogin: ['u1', 12] }),
     dashboardStockKg: async () => { stockReads++; throw missingIndex; },
     listInvoices: async () => [{ paymentStatus: 'unpaid' }, { paymentStatus: 'paid' }],
     recentActivity: async () => { activityReads++; return []; }, activeAnnouncements: async (_db, role) => { announcementReads++; if (role === 'user') return userAnnouncements; throw missingIndex; },
@@ -62,6 +62,11 @@ test('a missing dashboard index preserves other cards without a visible warning 
   assert.match(element('dashboard-cards').innerHTML, /Sweet/);
   assert.equal((element('dashboard-cards').innerHTML.match(/class="card stat-card/g) || []).length, 4);
   assert.match(element('dashboard-cards').innerHTML, /Unavailable/);
+  assert.match(element('dashboard-business-cards').innerHTML, /Total Selling[\s\S]*₹1,25,000/);
+  assert.match(element('dashboard-business-cards').innerHTML, /Best Selling Item[\s\S]*255\.5 KG sold/);
+  assert.match(element('dashboard-business-cards').innerHTML, /Total Purchase[\s\S]*₹45,000/);
+  assert.match(element('dashboard-business-cards').innerHTML, /Top Nimit Sevak[\s\S]*u1[\s\S]*₹80,000\.00 selling/);
+  assert.match(element('dashboard-business-cards').innerHTML, /Top User[\s\S]*12 logins/);
   assert.match(element('dashboard-activity').innerHTML, /No recent activity/);
   assert.equal(elements.has('dashboard-message'), false);
   assert.equal(elements.has('dashboard-index-links'), false);
@@ -108,9 +113,25 @@ test('KG conversion excludes count units and sales snapshots count combos once',
   assert.throws(() => validateTargetKg('12.3456'));
 });
 
+test('business order summary excludes cancelled and draft sales and groups by assigned ID', () => {
+  const summary = summarizeBusinessOrders([
+    { status: 'confirmed', assignedUserId: 'u2', grandTotal: 5000, lines: [{ kind: 'item', productId: 'a', quantityQty: 2000, lineTotalPaise: 5000, itemSnapshot: { name: 'Sweet', unitSymbol: 'KG' } }] },
+    { status: 'invoiced', assignedUserId: 'u1', grandTotal: 9000, lines: [{ kind: 'special', productId: 'combo', quantityQty: 1000, lineTotalPaise: 9000, specialSnapshot: { name: 'Gift combo' } }] },
+    { status: 'cancelled', assignedUserId: 'u2', grandTotal: 99000, lines: [] },
+    { status: 'draft', assignedUserId: 'u2', grandTotal: 10000, lines: [] },
+    { status: 'confirmed', grandTotal: 1000, lines: [] },
+  ]);
+  assert.equal(summary.orderCount, 4);
+  assert.equal(summary.sellingPaise, 15000);
+  assert.deepEqual(summary.topAssigned, ['u1', 9000]);
+  assert.equal(summary.bestItem.name, 'Gift combo');
+  assert.equal(summary.bestItem.quantityQty, 1000);
+  assert.equal(summary.bestItem.unit, 'combo');
+});
+
 test('Regular User order count matches assigned orders across statuses and owners', async () => {
   const source = readFileSync(new URL('../js/reporting-data.js', import.meta.url), 'utf8')
-    .split('export async function dashboardTargetKg')[0]
+    .split('export async function dashboardBusinessExtras')[0]
     .replace(/^import .*;\r?\n/gm, '').replace('export async function dashboardOrderKg', 'async function dashboardOrderKg');
   const records = [
     { id: 'a', assignedUserId: 'u1', status: 'confirmed', orderDate: '2026-10-30' },
@@ -139,11 +160,11 @@ test('Regular User order count matches assigned orders across statuses and owner
 
 test('Admin and Account Admin retain the existing paginated sales count', async () => {
   const source = readFileSync(new URL('../js/reporting-data.js', import.meta.url), 'utf8')
-    .split('export async function dashboardTargetKg')[0]
+    .split('export async function dashboardBusinessExtras')[0]
     .replace(/^import .*;\r?\n/gm, '').replace('export async function dashboardOrderKg', 'async function dashboardOrderKg');
   const records = Array.from({ length: 101 }, (_, index) => ({ id: String(index), status: index === 100 ? 'cancelled' : 'confirmed', orderDate: '2026-10-31' }));
   const context = {
-    summarizeOrderKg, collection: () => ({}), where: () => ({}), orderBy: () => ({}),
+    summarizeOrderKg, summarizeBusinessOrders, collection: () => ({}), where: () => ({}), orderBy: () => ({}),
     startAfter: (cursor) => ({ cursor }), limit: (size) => ({ size }), query: (_, ...terms) => terms,
     getDocs: async (terms) => {
       const cursor = terms.find((term) => term.cursor)?.cursor;

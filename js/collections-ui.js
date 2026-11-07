@@ -42,11 +42,11 @@ export function initCollectionsUi({ db, functions }) {
   if (heading) heading.after(root); else parent.append(root);
   const $ = (id) => root.querySelector(`#${id}`);
   const filterValue = (id) => String($(id)?.value ?? '');
-  let user = null, profile = null, collections = [], payments = [], invoices = [], ownerNames = new Map(), paymentUsers = [], selectedPendingUser = '', draft = null, viewingId = null, loadingRevision = 0, busy = false, exportedRows = [], appliedFilters = {};
+  let user = null, profile = null, collections = [], payments = [], invoices = [], orders = [], ownerNames = new Map(), paymentUsers = [], selectedPendingUser = '', draft = null, viewingId = null, loadingRevision = 0, busy = false, exportedRows = [], appliedFilters = {};
   const own = () => isStaff(profile) ? null : user?.uid;
   const invoiceAvailable = eligibleCollectionInvoice;
   function renderPendingPayments() {
-    const groups = pendingPaymentGroups(invoices, paymentUsers);
+    const groups = pendingPaymentGroups(invoices, paymentUsers, orders);
     $('pending-payment-users').innerHTML = groups.length ? `<table class="delivery-users-table pending-payment-table"><thead><tr><th scope="col">Assigned User</th><th scope="col">Pending Invoices</th><th scope="col">Pending Amount</th><th scope="col">Action</th></tr></thead><tbody>${groups.map((group) => `<tr><th scope="row">${esc(group.userName)}</th><td>${group.count}</td><td>${rupees(group.amountPaise)}</td><td><button type="button" class="ops-link" data-pending-payment-user="${esc(group.userId)}" aria-label="View pending payments for ${esc(group.userName)}">View Pending →</button></td></tr>`).join('')}</tbody></table>` : '<p class="payment-pending-empty">No pending payments 🎉</p>';
     const group = groups.find((item) => item.userId === selectedPendingUser);
     $('pending-payment-details').hidden = !group;
@@ -62,7 +62,14 @@ export function initCollectionsUi({ db, functions }) {
       ...collections.map((row) => ({ type: 'bulk', row, ownerUid: row.ownerUid, modes: row.entries?.map((entry) => entry.mode) || [], status: row.status, amount: row.totalPaise, method: new Set(row.entries?.map((entry) => entry.mode)).size > 1 ? 'Mixed' : paymentName(row.entries?.[0]?.mode) || '—', day: row.collectionDate || '', at: row.submittedAt?.seconds || 0, reference: shortCollectionNumber(row.collectionNumber || row.id), collector: row.submittedByName || '', customer: row.allocations?.map((item) => item.customerName).join(' ') || '' })),
     ];
     const { search = '', user: selectedUser = '', customer = '', mode = '', type = '', status = '', from = '', to = '' } = appliedFilters;
-    const rows = records.filter((item) => (!type || item.type === type) && (!selectedUser || item.ownerUid === selectedUser) && (!mode || item.modes.includes(mode)) && (!status || item.status === status) && (!from || item.day >= from) && (!to || item.day <= to) && (!search || `${item.reference} ${item.row.invoiceNumber || ''} ${item.row.collectionNumber || ''}`.toLowerCase().includes(search.toLowerCase())) && (!customer || item.customer.toLowerCase().includes(customer.toLowerCase()))).sort((a, b) => b.at - a.at);
+    const pendingInvoiceIds = new Set(pendingPaymentGroups(invoices, paymentUsers, orders).find((group) => group.userId === selectedPendingUser)?.invoices.map((invoice) => invoice.id) || []);
+    const rows = records.filter((item) => {
+      const assignedPending = selectedPendingUser && selectedUser === selectedPendingUser;
+      const matchesUser = !selectedUser || (assignedPending
+        ? item.type === 'single' ? pendingInvoiceIds.has(item.row.invoiceId) : item.row.allocations?.some((allocation) => pendingInvoiceIds.has(allocation.invoiceId))
+        : item.ownerUid === selectedUser);
+      return (!type || item.type === type) && matchesUser && (!mode || item.modes.includes(mode)) && (!status || item.status === status) && (!from || item.day >= from) && (!to || item.day <= to) && (!search || `${item.reference} ${item.row.invoiceNumber || ''} ${item.row.collectionNumber || ''}`.toLowerCase().includes(search.toLowerCase())) && (!customer || item.customer.toLowerCase().includes(customer.toLowerCase()));
+    }).sort((a, b) => b.at - a.at);
     const stats = paymentStatusStats(rows, invoices, appliedFilters);
     const statCard = (label, value, share, base) => `<div class="card ops-stat payment-summary-stat"><span>${label}</span><strong>${rupees(value)}</strong><small>${share.toLocaleString('en-IN', { maximumFractionDigits: 1 })}% of ${base}</small><div class="payment-summary-track" role="progressbar" aria-label="${label} percentage of ${base}" aria-valuenow="${share.toFixed(1)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${Math.min(100, share)}%"></span></div></div>`;
     $('collection-cards').innerHTML = statCard('Total Payments', stats.totalPayments, stats.totalPaymentsPercent, 'total payment amount') + statCard('Pending Payments', stats.pendingPayments, stats.pendingPaymentsPercent, 'total payment amount') + statCard('Approved Payments', stats.approvedPayments, stats.approvedPaymentsPercent, 'total payment amount') + statCard('Pending Collection', stats.pendingCollection, stats.pendingCollectionPercent, 'total collection amount') + statCard('Cash Collection', stats.cashCollection, stats.cashCollectionPercent, 'total collection amount') + statCard('Online Collection', stats.onlineCollection, stats.onlineCollectionPercent, 'total collection amount');
@@ -84,13 +91,13 @@ export function initCollectionsUi({ db, functions }) {
     const revision = ++loadingRevision, token = globalThis.omsLoading?.start('Loading collections…');
     try {
       const owner = own();
-      const [collectionRows, paymentRows, invoiceRows] = await Promise.all([listCollections(db, owner), listPayments(db, owner), listInvoices(db, owner)]);
+      const [collectionRows, paymentRows, invoiceRows, orderRows] = await Promise.all([listCollections(db, owner), listPayments(db, owner), listInvoices(db, owner), listOrders(db, owner)]);
       if (revision !== loadingRevision) return;
-      collections = collectionRows; payments = paymentRows; invoices = invoiceRows;
+      collections = collectionRows; payments = paymentRows; invoices = invoiceRows; orders = orderRows;
       let userRows = [{ id: user.uid, displayName: profile.displayName || profile.fullName || profile.name || 'My payments' }];
       if (isStaff(profile)) {
         try { userRows = (await getDocs(collection(db, 'users'))).docs.map((doc) => ({ id: doc.id, ...doc.data() })); }
-        catch { userRows = [...new Set([...payments, ...collections].map((row) => row.ownerUid).filter(Boolean))].map((id) => ({ id, displayName: ownerNames.get(id) || id })); }
+        catch { userRows = [...new Set(orders.map((row) => row.assignedUserId || row.ownerUid).filter(Boolean))].map((id) => ({ id, displayName: ownerNames.get(id) || id })); }
       }
       paymentUsers = userRows;
       const selectedUser = $('collection-user').value;
@@ -347,5 +354,5 @@ export function initCollectionsUi({ db, functions }) {
   };
   document.addEventListener('oms:pagechange', (event) => { if (event.detail.page === 'payments') load(); });
   document.addEventListener('oms:payment-changed', load);
-  return { setSession(nextUser, nextProfile) { loadingRevision++; user = nextUser; profile = nextProfile; collections = []; payments = []; invoices = []; paymentUsers = []; selectedPendingUser = ''; appliedFilters = {}; ownerNames = new Map(); if (user && profile) load(); else { $('collection-list').innerHTML = ''; $('pending-payment-users').innerHTML = ''; $('pending-payment-details').hidden = true; $('collection-dialog').close(); } } };
+  return { setSession(nextUser, nextProfile) { loadingRevision++; user = nextUser; profile = nextProfile; collections = []; payments = []; invoices = []; orders = []; paymentUsers = []; selectedPendingUser = ''; appliedFilters = {}; ownerNames = new Map(); if (user && profile) load(); else { $('collection-list').innerHTML = ''; $('pending-payment-users').innerHTML = ''; $('pending-payment-details').hidden = true; $('collection-dialog').close(); } } };
 }

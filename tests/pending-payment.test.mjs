@@ -16,3 +16,15 @@ test('groups outstanding invoice balances and excludes completed invoices', () =
   assert.deepEqual(group.invoices.map((invoice) => invoice.remainingPaise), [15000, 10000]);
   assert.deepEqual(pendingPaymentGroups([]), []);
 });
+
+test('uses the current order assignee instead of the invoice owner or creator', () => {
+  const groups = pendingPaymentGroups(
+    [{ id: 'invoice', orderId: 'order', ownerUid: 'original', createdBy: 'admin', totalPaise: 1750000, verifiedPaidPaise: 0, paymentStatus: 'unpaid' }],
+    [{ id: 'assigned', displayName: 'Jaimin Gajjar' }],
+    [{ id: 'order', ownerUid: 'original', assignedUserId: 'assigned' }],
+  );
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].userId, 'assigned');
+  assert.equal(groups[0].userName, 'Jaimin Gajjar');
+  assert.equal(groups[0].amountPaise, 1750000);
+});
